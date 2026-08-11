@@ -4,3 +4,4 @@ remote-mic-app/
 .DS_Store
 .build/
 *.xcuserstate
+dist/
