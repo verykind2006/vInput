@@ -1,0 +1,6 @@
+# 参考用的上游仓库克隆，不属于本项目
+remote-mic-app/
+
+.DS_Store
+.build/
+*.xcuserstate
