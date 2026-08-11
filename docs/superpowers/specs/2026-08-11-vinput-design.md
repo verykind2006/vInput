@@ -95,8 +95,8 @@ RC003 按住语音键约 60 秒后固件会主动结束 ATVV 会话。remote-mic
 └──────────────────────────────────────────────────┘
                     ↓ 最终文本
 ┌─ 输出层  TextSink ───────────────────────────────┐
-│  KeyboardInjectorSink  ← 移植                     │
-│  ClipboardSink         ← 长文本与降级路径          │
+│  TypingSink     ← CGEventKeyboardSetUnicodeString │
+│  ClipboardSink  ← 长文本与降级路径                 │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -208,8 +208,8 @@ vInput/
     ├── Polish/       Polisher(protocol)
     │                 LocalPolisher(MLX), CloudPolisher, NonePolisher, Profile
     ├── Output/       TextSink(protocol)
-    │                 KeyboardInjectorSink, ClipboardSink, TargetAppGuard
-    │   └── Vendored/ KeyboardInjector                          ← GPL 来源
+    │                 TypingSink, ClipboardSink, TargetAppGuard
+    │   └── Vendored/ AccessibilityFocusLocator（M6 才引入，见第八节）← GPL 来源
     ├── UI/           HUDPanel, HUDView, MenuBar, Settings/
     └── Support/      Hotkey, Logger
 ```
@@ -220,15 +220,21 @@ vInput/
 
 ## 八、代码来源与许可
 
-vInput 采用 **GPL-3.0-only**，因为它移植了 remote-mic-app（GPL-3.0-only）的以下文件：
+vInput 采用 **GPL-3.0-only**，因为它移植了 remote-mic-app（GPL-3.0-only）的以下代码：
 
-| 文件 | 约行数 | 作用 |
-|---|---|---|
-| `ATVVProtocol.swift` | 161 | ATV Voice 协议常量、能力协商、IMA ADPCM 解码、帧累积 |
-| `XiaomiBluetoothBridge.swift` | 1048 | CoreBluetooth 状态机：配对、重连、MTU 分片、会话生命周期 |
-| `KeyboardInjector.swift` | 1382 | 文本注入前台应用 |
+| 来源 | 约行数 | 作用 | 引入时机 |
+|---|---|---|---|
+| `ATVVProtocol.swift` | 161 | ATV Voice 协议常量、能力协商、IMA ADPCM 解码、帧累积 | M3 |
+| `XiaomiBluetoothBridge.swift` | 1048 | CoreBluetooth 状态机：配对、重连、MTU 分片、会话生命周期 | M3 |
+| `KeyboardInjector.swift` 中的 Accessibility 焦点定位部分 | 约 400 | 遍历 AX 树寻找可输入元素、候选打分、确认焦点 | M6，可选 |
 
 选择移植而非重写的理由：`XiaomiBluetoothBridge` 是整个项目中唯一必须依靠真机反复调试才能稳定的部分（系统蓝牙栈行为、分片丢包、双设备隔离），重写意味着重踩已被踩过的坑，且这部分对 vInput 的差异化价值最低。
+
+**关于 `KeyboardInjector.swift` 的更正**：该文件不具备文本注入能力（全仓库无 `CGEventKeyboardSetUnicodeString` 或 `UniChar` 的使用）。它是一个*按键动作*注入器，将 `ButtonAction`（音量、播放控制、打开应用、自定义快捷键）转换为 CGEvent 键码，服务于 remote-mic-app 的按键映射功能——而按键映射明确不在 vInput 范围内。
+
+因此 vInput 的文本注入（`TypingSink`）**自行实现**，基于 `CGEventKeyboardSetUnicodeString`，约 150 行，无 GPL 牵连。该文件中确有价值的是其 Accessibility 焦点定位逻辑，但那属于稳固化阶段的可选优化，M1 不需要。
+
+**M1 至 M2 不引入任何移植代码**，届时可自由选择许可；GPL-3.0-only 的约束自 M3 引入 BLE 代码起生效。
 
 README 中须署明派生自 [HD838A/remote-mic-app](https://github.com/HD838A/remote-mic-app)，并保留其上游 [nijez/open-voice-bridge](https://github.com/nijez/open-voice-bridge) 的溯源信息。
 
@@ -268,8 +274,9 @@ remote-mic-app 的 Logo 与 App Icon 是需单独授权的专有资产，**不�
 |---|---|---|
 | 麦克风 | 内置麦录音 | 首次使用内置麦触发时 |
 | 蓝牙 | 连接遥控器、接收语音 | 首次使用遥控器时 |
-| 辅助功能 | 注入文本到前台应用 | onboarding 中引导 |
-| 输入监控 | 全局快捷键 | onboarding 中引导 |
+| 辅助功能 | 注入文本到前台应用（`CGEvent.post`） | onboarding 中引导 |
+
+**不需要「输入监控」权限。** 全局快捷键使用 Carbon 的 `RegisterEventHotKey`（HIToolbox），该 API 不需要任何隐私授权。只有发送 CGEvent 才需要辅助功能。
 
 开发期注意：辅助功能授权绑定应用签名，**每次重新签名后需重新授权**。
 
