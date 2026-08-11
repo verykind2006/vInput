@@ -5,3 +5,4 @@ remote-mic-app/
 .build/
 *.xcuserstate
 dist/
+vendor/
