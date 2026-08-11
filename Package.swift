@@ -22,13 +22,6 @@ let package = Package(
             ],
             path: "Sources/vInput"
         ),
-        .executableTarget(
-            name: "vInputSpike",
-            dependencies: [
-                .product(name: "WhisperKit", package: "WhisperKit")
-            ],
-            path: "Sources/vInputSpike"
-        ),
         .testTarget(
             name: "vInputTests",
             dependencies: ["vInput"],
