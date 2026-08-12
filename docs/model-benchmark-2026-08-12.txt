@@ -1,0 +1,149 @@
+Building for production...
+[0/6] Write sources
+[3/6] Write swift-version--1AB21518FC5DEDBE.txt
+[5/8] Compiling ArgmaxCore ArgmaxCoreError.swift
+/Users/vk/Library/CloudStorage/OneDrive-个人/projects/vInput/vendor/WhisperKit/Sources/ArgmaxCore/FoundationExtensions.swift:192:16: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+190 |         var machineModel = [CChar](repeating: 0, count: Int(size))
+191 |         sysctlbyname(name, &machineModel, &size, nil, 0)
+192 |         return String(cString: machineModel)
+    |                `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+193 |     }
+194 | 
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[6/8] Emitting module ArgmaxCore
+[8/11] Compiling WhisperKit AudioChunker.swift
+/Users/vk/Library/CloudStorage/OneDrive-个人/projects/vInput/vendor/WhisperKit/Sources/WhisperKit/Core/Audio/EnergyVAD.swift:7:20: warning: class 'EnergyVAD' must restate inherited '@unchecked Sendable' conformance
+ 5 | 
+ 6 | /// Voice activity detection based on energy threshold
+ 7 | public final class EnergyVAD: VoiceActivityDetector {
+   |                    `- warning: class 'EnergyVAD' must restate inherited '@unchecked Sendable' conformance
+ 8 |     public let energyThreshold: Float
+ 9 | 
+
+/Users/vk/Library/CloudStorage/OneDrive-个人/projects/vInput/vendor/WhisperKit/Sources/WhisperKit/Core/Text/LogitsFilter.swift:174:22: warning: 'applyActivation(activation:input:output:batchSize:filterParameters:)' is deprecated: Use the BNNSGraph API instead. [#DeprecatedDeclaration]
+172 | 
+173 |         do {
+174 |             try BNNS.applyActivation(
+    |                      `- warning: 'applyActivation(activation:input:output:batchSize:filterParameters:)' is deprecated: Use the BNNSGraph API instead. [#DeprecatedDeclaration]
+175 |                 activation: BNNS.ActivationFunction.logSoftmax,
+176 |                 input: logprobsInputDescriptor,
+
+/Users/vk/Library/CloudStorage/OneDrive-个人/projects/vInput/vendor/WhisperKit/Sources/WhisperKit/Core/Text/LogitsFilter.swift:175:34: warning: 'ActivationFunction' is deprecated: Use the BNNSGraph API instead. [#DeprecatedDeclaration]
+173 |         do {
+174 |             try BNNS.applyActivation(
+175 |                 activation: BNNS.ActivationFunction.logSoftmax,
+    |                                  `- warning: 'ActivationFunction' is deprecated: Use the BNNSGraph API instead. [#DeprecatedDeclaration]
+176 |                 input: logprobsInputDescriptor,
+177 |                 output: logprobs,
+
+/Users/vk/Library/CloudStorage/OneDrive-个人/projects/vInput/vendor/WhisperKit/Sources/WhisperKit/Core/Text/TokenSampler.swift:116:27: warning: 'applyActivation(activation:input:output:batchSize:filterParameters:)' is deprecated: Use the BNNSGraph API instead. [#DeprecatedDeclaration]
+114 |                 )
+115 | 
+116 |                 try! BNNS.applyActivation(
+    |                           `- warning: 'applyActivation(activation:input:output:batchSize:filterParameters:)' is deprecated: Use the BNNSGraph API instead. [#DeprecatedDeclaration]
+117 |                     activation: BNNS.ActivationFunction.linear(alpha: Float(1 / temperature)),
+118 |                     input: logitsDescriptor,
+
+/Users/vk/Library/CloudStorage/OneDrive-个人/projects/vInput/vendor/WhisperKit/Sources/WhisperKit/Core/Text/TokenSampler.swift:117:38: warning: 'ActivationFunction' is deprecated: Use the BNNSGraph API instead. [#DeprecatedDeclaration]
+115 | 
+116 |                 try! BNNS.applyActivation(
+117 |                     activation: BNNS.ActivationFunction.linear(alpha: Float(1 / temperature)),
+    |                                      `- warning: 'ActivationFunction' is deprecated: Use the BNNSGraph API instead. [#DeprecatedDeclaration]
+118 |                     input: logitsDescriptor,
+119 |                     output: scaledLogits,
+
+/Users/vk/Library/CloudStorage/OneDrive-个人/projects/vInput/vendor/WhisperKit/Sources/WhisperKit/Core/Text/TokenSampler.swift:133:22: warning: 'applyActivation(activation:input:output:batchSize:filterParameters:)' is deprecated: Use the BNNSGraph API instead. [#DeprecatedDeclaration]
+131 |             )
+132 | 
+133 |             try BNNS.applyActivation(
+    |                      `- warning: 'applyActivation(activation:input:output:batchSize:filterParameters:)' is deprecated: Use the BNNSGraph API instead. [#DeprecatedDeclaration]
+134 |                 activation: BNNS.ActivationFunction.softmax,
+135 |                 input: softmaxInput!,
+
+/Users/vk/Library/CloudStorage/OneDrive-个人/projects/vInput/vendor/WhisperKit/Sources/WhisperKit/Core/Text/TokenSampler.swift:134:34: warning: 'ActivationFunction' is deprecated: Use the BNNSGraph API instead. [#DeprecatedDeclaration]
+132 | 
+133 |             try BNNS.applyActivation(
+134 |                 activation: BNNS.ActivationFunction.softmax,
+    |                                  `- warning: 'ActivationFunction' is deprecated: Use the BNNSGraph API instead. [#DeprecatedDeclaration]
+135 |                 input: softmaxInput!,
+136 |                 output: softmaxOutput!,
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[9/11] Emitting module WhisperKit
+/Users/vk/Library/CloudStorage/OneDrive-个人/projects/vInput/vendor/WhisperKit/Sources/WhisperKit/Core/Audio/EnergyVAD.swift:7:20: warning: class 'EnergyVAD' must restate inherited '@unchecked Sendable' conformance
+ 5 | 
+ 6 | /// Voice activity detection based on energy threshold
+ 7 | public final class EnergyVAD: VoiceActivityDetector {
+   |                    `- warning: class 'EnergyVAD' must restate inherited '@unchecked Sendable' conformance
+ 8 |     public let energyThreshold: Float
+ 9 | 
+[11/13] Compiling vInputBench Bench.swift
+[11/13] Write Objects.LinkFileList
+[12/13] Linking vInputBench
+Build of product 'vInputBench' complete! (66.59s)
+待测模型: openai_whisper-base, openai_whisper-large-v3-v20240930_turbo, openai_whisper-large-v3
+
+======================================================================
+【openai_whisper-base】
+======================================================================
+加载耗时 7.93s
+
+  [闲聊短句] 音频 3.98s → 转写 0.13s (31.02x 实时)
+    原文: 行那我明天上午再看看这个事儿吧你先忙
+    输出: 行那我明天上午再看看這個128你先忙
+
+  [技术短句] 音频 5.14s → 转写 0.13s (38.15x 实时)
+    原文: 帮我把这个函数里的依赖数组改一下，然后跑一遍测试
+    输出: 幫我把這個寒暑裏的依賴樹足改一下,然後跑一遍測試。
+
+  [技术密集] 音频 12.07s → 转写 1.14s (10.61x 实时)
+    原文: 把 useEffect 里的依赖数组补上 loading 状态，然后把这个组件的 props 类型定义抽到单独的文件里，顺便修一下快捷键之外的那个报错
+    输出: 發user effect 的依賴數足補上 loading 狂態,然後把這個組件的pro-slation 定義抽到單獨的文件裡,順便修一下快節件之外的內個暴錯。
+
+  [长文] 音频 24.61s → 转写 0.36s (67.60x 实时)
+    原文: 今天下午三点我们讨论一下发版计划，看看相关的计划是否可行，以及在可行范围内我们要付出怎样的代价，怎么用最小的代价实现我们的发版目标。另外还需要确认一下测试环境的准备情况，以及灰度发布的具体时间窗口，如果有风险要提前上报。
+    输出: 今天下午三點我們討論一下發版計畫,看看相關的計畫是否可行,以及在可行範圍內我們要付出怎樣的代價,怎麼用最小的代價實現我們的發版目標,另外還需要確認一下測試環境的準備情況,以及灰毒發布的具體時間窗口,如果有風險要提前上報,
+
+======================================================================
+【openai_whisper-large-v3-v20240930_turbo】
+======================================================================
+加载耗时 124.51s
+
+  [闲聊短句] 音频 3.98s → 转写 0.60s (6.64x 实时)
+    原文: 行那我明天上午再看看这个事儿吧你先忙
+    输出: 行那我明天上午再看看这个事儿吧你先忙
+
+  [技术短句] 音频 5.14s → 转写 0.71s (7.24x 实时)
+    原文: 帮我把这个函数里的依赖数组改一下，然后跑一遍测试
+    输出: 帮我把这个函数里的依赖数足改一下,然后跑一遍测试。
+
+  [技术密集] 音频 12.07s → 转写 1.09s (11.05x 实时)
+    原文: 把 useEffect 里的依赖数组补上 loading 状态，然后把这个组件的 props 类型定义抽到单独的文件里，顺便修一下快捷键之外的那个报错
+    输出: 把UseEffect里的依赖数组补上loading状态,然后把这个组件的Profs类型定义抽到单独的文件里,顺便修一下快捷键之外的那个报错。
+
+  [长文] 音频 24.61s → 转写 1.58s (15.55x 实时)
+    原文: 今天下午三点我们讨论一下发版计划，看看相关的计划是否可行，以及在可行范围内我们要付出怎样的代价，怎么用最小的代价实现我们的发版目标。另外还需要确认一下测试环境的准备情况，以及灰度发布的具体时间窗口，如果有风险要提前上报。
+    输出: 今天下午3点我们讨论一下发板计划看看相关的计划是否可行以及在可行范围内我们要付出怎样的代价怎么用最小的代价实现我们的发板目标另外还需要确认一下测试环境的准备情况以及灰度发布的具体时间窗口如果有风险要提前上报
+
+======================================================================
+【openai_whisper-large-v3】
+======================================================================
+加载耗时 37.98s
+
+  [闲聊短句] 音频 3.98s → 转写 2.02s (1.98x 实时)
+    原文: 行那我明天上午再看看这个事儿吧你先忙
+    输出: 行那我明天上午再看看这个事吧你先忙。
+
+  [技术短句] 音频 5.14s → 转写 2.95s (1.75x 实时)
+    原文: 帮我把这个函数里的依赖数组改一下，然后跑一遍测试
+    输出: 帮我把这个函数里的依赖数组改一下,然后跑一遍测试。
+
+  [技术密集] 音频 12.07s → 转写 5.14s (2.35x 实时)
+    原文: 把 useEffect 里的依赖数组补上 loading 状态，然后把这个组件的 props 类型定义抽到单独的文件里，顺便修一下快捷键之外的那个报错
+    输出: 把use effect里的依赖数组补上loading状态,然后把这个组件的props类型定义抽到单独的文件里,顺便修一下快捷键之外的那个报错。
+
+  [长文] 音频 24.61s → 转写 8.71s (2.82x 实时)
+    原文: 今天下午三点我们讨论一下发版计划，看看相关的计划是否可行，以及在可行范围内我们要付出怎样的代价，怎么用最小的代价实现我们的发版目标。另外还需要确认一下测试环境的准备情况，以及灰度发布的具体时间窗口，如果有风险要提前上报。
+    输出: 今天下午3点我们讨论一下发版计划,看看相关的计划是否可行,以及在可行范围内我们要付出怎样的代价,怎么用最小的代价实现我们的发版目标,另外还需要确认一下测试环境的准备情况,以及灰度发布的具体时间窗口,如果有风险要提前上报。
+
