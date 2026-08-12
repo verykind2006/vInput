@@ -35,10 +35,10 @@ struct DictationSessionTests {
     }
 
     @Test("start 后进入 listening 并启动音频源")
-    func startBeginsListening() throws {
+    func startBeginsListening() async throws {
         let (session, source, _, _) = makeSession()
 
-        try session.start()
+        try await session.start()
 
         #expect(session.state == .listening)
         #expect(source.startCallCount == 1)
@@ -48,7 +48,7 @@ struct DictationSessionTests {
     func fullRoundTripDeliversText() async throws {
         let (session, source, _, sink) = makeSession(transcript: "你好世界")
 
-        try session.start()
+        try await session.start()
         source.emitSilence(seconds: 1)
         await session.finish()
 
@@ -60,7 +60,7 @@ struct DictationSessionTests {
     func transcriberReceivesAllSamples() async throws {
         let (session, source, transcriber, _) = makeSession()
 
-        try session.start()
+        try await session.start()
         source.emit([0.1, 0.2, 0.3])
         source.emit([0.4, 0.5])
         await session.finish()
@@ -73,7 +73,7 @@ struct DictationSessionTests {
     func emptyTranscriptSkipsInjection() async throws {
         let (session, source, _, sink) = makeSession(transcript: "")
 
-        try session.start()
+        try await session.start()
         source.emitSilence(seconds: 1)
         await session.finish()
 
@@ -85,7 +85,7 @@ struct DictationSessionTests {
     func whitespaceOnlyTranscriptSkipsInjection() async throws {
         let (session, source, _, sink) = makeSession(transcript: "  \n  ")
 
-        try session.start()
+        try await session.start()
         source.emitSilence(seconds: 1)
         await session.finish()
 
@@ -98,7 +98,7 @@ struct DictationSessionTests {
         var observed: [DictationSession.State] = []
         session.onStateChange = { observed.append($0) }
 
-        try session.start()
+        try await session.start()
         source.emitSilence(seconds: 1)
         await session.finish()
 
@@ -124,7 +124,7 @@ struct DictationSessionTests {
         var reported: Error?
         session.onError = { reported = $0 }
 
-        try session.start()
+        try await session.start()
         source.emitSilence(seconds: 1)
         await session.finish()
 
@@ -150,7 +150,7 @@ struct DictationSessionTests {
             targetGuard: guardian
         )
 
-        try session.start()
+        try await session.start()
         source.emitSilence(seconds: 1)
         await session.finish()
 
@@ -166,7 +166,7 @@ struct DictationSessionTests {
     func successClearsRetainedAudio() async throws {
         let (session, source, _, _) = makeSession()
 
-        try session.start()
+        try await session.start()
         source.emitSilence(seconds: 1)
         await session.finish()
 
@@ -189,7 +189,7 @@ struct DictationSessionTests {
         var reported: Error?
         session.onError = { reported = $0 }
 
-        try session.start()
+        try await session.start()
         source.emitSilence(seconds: 1)
         await session.finish()
 
@@ -198,12 +198,12 @@ struct DictationSessionTests {
     }
 
     @Test("音频源报错时终止会话并上报")
-    func audioSourceFailureEndsSession() throws {
+    func audioSourceFailureEndsSession() async throws {
         let (session, source, _, _) = makeSession()
         var reported: Error?
         session.onError = { reported = $0 }
 
-        try session.start()
+        try await session.start()
         source.fail(with: AudioSourceError.engineFailedToStart("device lost"))
 
         #expect(session.state == .idle)
@@ -211,12 +211,12 @@ struct DictationSessionTests {
     }
 
     @Test("音频源启动失败时状态不进入 listening")
-    func startFailureStaysIdle() {
+    func startFailureStaysIdle() async {
         let (session, source, _, _) = makeSession()
         source.startError = AudioSourceError.microphonePermissionDenied
 
-        #expect(throws: AudioSourceError.microphonePermissionDenied) {
-            try session.start()
+        await #expect(throws: AudioSourceError.microphonePermissionDenied) {
+            try await session.start()
         }
         #expect(session.state == .idle)
     }
@@ -230,7 +230,7 @@ struct DictationSessionTests {
         var reported: Error?
         session.onError = { reported = $0 }
 
-        try session.start()
+        try await session.start()
         source.emitSilence(seconds: 1)
         current = "com.tencent.xinWeChat"
         await session.finish()
@@ -242,11 +242,11 @@ struct DictationSessionTests {
     // MARK: - 重入保护
 
     @Test("listening 期间再次 start 不产生第二个会话")
-    func doubleStartIsIgnored() throws {
+    func doubleStartIsIgnored() async throws {
         let (session, source, _, _) = makeSession()
 
-        try session.start()
-        try session.start()
+        try await session.start()
+        try await session.start()
 
         #expect(source.startCallCount == 1)
     }
@@ -265,7 +265,7 @@ struct DictationSessionTests {
     func noSamplesReturnsToIdle() async throws {
         let (session, _, transcriber, sink) = makeSession()
 
-        try session.start()
+        try await session.start()
         await session.finish()
 
         #expect(transcriber.receivedSamples.isEmpty)
@@ -291,15 +291,15 @@ struct DictationSessionTests {
         )
 
         // 第一轮转写失败，音频被保留
-        try session.start()
+        try await session.start()
         source.emitSilence(seconds: 1)
         await session.finish()
         #expect(session.retainedSampleCount == 16_000)
 
         // 第二轮启动失败（麦克风被占用等），这与上一轮内容毫无关系
         source.startError = AudioSourceError.microphonePermissionDenied
-        #expect(throws: AudioSourceError.microphonePermissionDenied) {
-            try session.start()
+        await #expect(throws: AudioSourceError.microphonePermissionDenied) {
+            try await session.start()
         }
 
         // 规则二：上一轮的音频不能因此丢失，retry 仍须可用
@@ -330,7 +330,7 @@ struct DictationSessionTests {
         // 给转写制造一个挂起窗口，好让错误在 .transcribing 期间到达。
         transcriber.delay = .milliseconds(80)
 
-        try session.start()
+        try await session.start()
         source.emitSilence(seconds: 1)
 
         let finishTask = Task { await session.finish() }
@@ -354,7 +354,7 @@ struct DictationSessionTests {
         var stateAtCallback: DictationSession.State?
         session.onText = { _ in stateAtCallback = session.state }
 
-        try session.start()
+        try await session.start()
         source.emitSilence(seconds: 1)
         await session.finish()
 
@@ -362,7 +362,7 @@ struct DictationSessionTests {
         #expect(sink.received == ["第一段"])
 
         // 状态已是 idle，调用方可以在回调里直接启动下一轮
-        try session.start()
+        try await session.start()
         #expect(session.state == .listening)
     }
 
@@ -373,7 +373,7 @@ struct DictationSessionTests {
         var stateAtCallback: DictationSession.State?
         session.onError = { _ in stateAtCallback = session.state }
 
-        try session.start()
+        try await session.start()
         source.emitSilence(seconds: 1)
         await session.finish()
 
@@ -384,11 +384,11 @@ struct DictationSessionTests {
     func secondSessionStartsClean() async throws {
         let (session, source, transcriber, _) = makeSession()
 
-        try session.start()
+        try await session.start()
         source.emit([0.1, 0.2])
         await session.finish()
 
-        try session.start()
+        try await session.start()
         source.emit([0.9])
         await session.finish()
 

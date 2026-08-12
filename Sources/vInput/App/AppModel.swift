@@ -197,12 +197,16 @@ final class AppModel {
 
         switch session.state {
         case .idle:
-            do {
-                try session.start()
-                log.log("开始录音，模型=\(activeModelName)")
-            } catch {
-                log.log("录音启动失败：\(error)")
-                phase = .error(String(describing: error))
+            // start() 现在是 async（要等预览引擎启动），与下面 finish()
+            // 一样用 Task 包一层，toggle() 本身保持同步好继续挂在按钮上。
+            Task {
+                do {
+                    try await session.start()
+                    log.log("开始录音，模型=\(activeModelName)")
+                } catch {
+                    log.log("录音启动失败：\(error)")
+                    phase = .error(String(describing: error))
+                }
             }
         case .listening:
             log.log("结束录音，进入转写")

@@ -21,11 +21,15 @@ final class DictationSession {
     var onError: ((Error) -> Void)?
     /// 成功注入后回调，携带最终文本。
     var onText: ((String) -> Void)?
+    /// 预览更新时回调，供 HUD 显示。
+    var onPreview: ((PreviewText) -> Void)?
 
     private let audioSource: AudioSource
     private let transcriber: Transcriber
     private let sink: TextSink
     private let targetGuard: TargetAppGuard
+    /// 流式预览引擎。可为 nil——预览是锦上添花，缺席不影响主路径。
+    private var previewEngine: PreviewEngine?
 
     private var buffer = AudioBuffer(sampleRate: AudioFormat.sampleRate)
     private var targetToken: String?
@@ -39,12 +43,14 @@ final class DictationSession {
         audioSource: AudioSource,
         transcriber: Transcriber,
         sink: TextSink,
-        targetGuard: TargetAppGuard
+        targetGuard: TargetAppGuard,
+        previewEngine: PreviewEngine? = nil
     ) {
         self.audioSource = audioSource
         self.transcriber = transcriber
         self.sink = sink
         self.targetGuard = targetGuard
+        self.previewEngine = previewEngine
 
         audioSource.onFrame = { [weak self] samples in
             self?.buffer.append(samples)
@@ -59,12 +65,23 @@ final class DictationSession {
             self.transition(to: .idle)
             self.onError?(error)
         }
+
+        bindPreview(previewEngine)
+    }
+
+    /// 把预览引擎的更新转发到 `onPreview`。
+    private func bindPreview(_ engine: PreviewEngine?) {
+        engine?.onUpdate = { [weak self] preview in
+            Task { @MainActor [weak self] in
+                self?.onPreview?(preview)
+            }
+        }
     }
 
     // MARK: - 生命周期
 
     /// 开始采集。重复调用会被忽略。
-    func start() throws {
+    func start() async throws {
         guard state == .idle else { return }
 
         buffer.reset()
@@ -76,6 +93,14 @@ final class DictationSession {
         try audioSource.start()
         retainedSamples = []
         transition(to: .listening)
+
+        // 预览是锦上添花：启动失败只记日志，录音照常进行。
+        // 绝不能让预览侧的故障影响主路径，也不上报为会话错误。
+        do {
+            try await previewEngine?.start()
+        } catch {
+            AppLogger.shared.log("预览启动失败，本次无预览：\(error)")
+        }
     }
 
     /// 结束采集并走完转写与注入。
@@ -83,10 +108,29 @@ final class DictationSession {
         guard state == .listening else { return }
 
         audioSource.stop()
+        // 必须先停预览再转写：两者共享同一套解码器实例，
+        // 重叠会产生数据竞争。stop() 内部会等推理循环真正退出。
+        await previewEngine?.stop()
+
         let samples = buffer.samples
         buffer.reset()
 
         await process(samples)
+    }
+
+    /// 取消当前会话：丢弃音频，不注入任何内容。
+    ///
+    /// 与转写失败保留音频（供 retry）语义不同——取消是用户主动放弃，
+    /// 因此显式清空 retainedSamples。
+    func cancel() async {
+        guard state == .listening else { return }
+
+        audioSource.stop()
+        await previewEngine?.stop()
+
+        buffer.reset()
+        retainedSamples = []
+        transition(to: .idle)
     }
 
     /// 用上一次失败时保留的音频重新走一遍。
