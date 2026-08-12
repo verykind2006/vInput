@@ -44,10 +44,6 @@ private struct MenuContent: View {
     var body: some View {
         Text(statusText)
 
-        if !model.activeModelName.isEmpty {
-            Text("模型：\(model.activeModelName)")
-        }
-
         if !model.lastText.isEmpty {
             Divider()
             Text("上次：\(model.lastText.prefix(40))")
@@ -55,13 +51,73 @@ private struct MenuContent: View {
 
         Divider()
         Button("开始 / 结束听写  ⌥D") { model.toggle() }
+
+        Divider()
+        modelMenu
+
         Divider()
         Button("退出") { NSApplication.shared.terminate(nil) }
             .keyboardShortcut("q")
     }
 
+    @ViewBuilder
+    private var modelMenu: some View {
+        Menu(modelMenuTitle) {
+            ForEach(model.availableModels) { candidate in
+                Button {
+                    model.selectModel(candidate)
+                } label: {
+                    // 用前缀标记当前生效的模型；菜单项无法直接加勾选标记。
+                    Text(candidate.name == model.activeModelName
+                         ? "✓ \(candidate.name)"
+                         : "   \(candidate.name)")
+                }
+                .disabled(!model.canSwitchModel)
+            }
+
+            if model.availableModels.isEmpty {
+                Text("vendor/models 下没有模型")
+            }
+
+            Divider()
+            Button("其他目录…") { chooseModelFolder() }
+                .disabled(!model.canSwitchModel)
+        }
+        .onAppear { model.refreshAvailableModels() }
+    }
+
+    private var modelMenuTitle: String {
+        if let loading = model.loadingModelName {
+            return "模型：正在加载 \(loading)…"
+        }
+        return "模型：\(model.activeModelName)"
+    }
+
+    /// 打开目录选择器。
+    ///
+    /// LSUIElement 应用默认不激活，不先 activate 的话面板会出现在
+    /// 其他窗口后面且不接受键盘输入。这里是设置类操作，抢焦点无妨——
+    /// 听写路径上的 HUD 才必须避免抢焦点。
+    private func chooseModelFolder() {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
+        let panel = NSOpenPanel()
+        panel.title = "选择 Whisper 模型目录"
+        panel.message = "选择包含 AudioEncoder.mlmodelc、TextDecoder.mlmodelc、MelSpectrogram.mlmodelc 的目录"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+
+        if panel.runModal() == .OK, let url = panel.url {
+            model.selectModelFromFolder(url.path)
+        }
+    }
+
     private var statusText: String {
-        switch model.phase {
+        if let loading = model.loadingModelName {
+            return "正在加载模型 \(loading)…首次可能需要一两分钟"
+        }
+        return switch model.phase {
         case .idle:
             switch model.permissionStatus {
             case .ready: "就绪"
