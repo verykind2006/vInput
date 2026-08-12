@@ -84,7 +84,7 @@ struct ModelCatalogTests {
         #expect(!found.contains { $0.name == "半下载的模型" })
     }
 
-    @Test("按偏好顺序排列，large-v3 在 base 之前")
+    @Test("按偏好顺序排列，turbo 优先于 large-v3，base 垫底")
     func discoverSortsByPreference() throws {
         let root = try makeRoot(models: [
             "openai_whisper-base": true,
@@ -94,9 +94,11 @@ struct ModelCatalogTests {
 
         let names = ModelCatalog.discover(in: root).map(\.name)
 
+        // 默认取速度与质量的平衡点：turbo 比 large-v3 快 3–5.5 倍，
+        // 其代价（个别错字、长文标点缺失）由 M4 润色层解决。
         #expect(names == [
-            "openai_whisper-large-v3",
             "openai_whisper-large-v3-v20240930_turbo",
+            "openai_whisper-large-v3",
             "openai_whisper-base",
         ])
     }
