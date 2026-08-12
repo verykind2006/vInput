@@ -17,6 +17,8 @@ final class AppModel {
     private(set) var phase: Phase = .idle
     private(set) var lastText: String = ""
     private(set) var permissionStatus: Permissions.Status = .ready
+    /// 实际选中的模型，显示在菜单栏，方便确认切换是否生效。
+    private(set) var activeModelName: String = ""
 
     private let permissions = Permissions()
     private let hotkey = HotkeyRegistrar()
@@ -29,23 +31,36 @@ final class AppModel {
     /// 本地模型目录。WhisperKit 内置的下载器在丢包网络下会整体超时，
     /// 模型由 scripts/fetch-model.sh 用 curl 预拉。目录不存在时
     /// 回退到按名称下载。
-    private static func resolvedModelFolder() -> String? {
-        let path = Bundle.main.bundleURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("vendor/models/openai_whisper-base")
-            .path
-        return FileManager.default.fileExists(atPath: path) ? path : nil
+    ///
+    /// 按 `preferredModels` 的顺序取第一个本地已存在的，
+    /// 因此换模型只需下载对应目录，无需改代码。
+    private static func resolvedModel() -> (name: String, folder: String?) {
+        let root = Bundle.main.bundleURL
+            .deletingLastPathComponent()   // dist/
+            .deletingLastPathComponent()   // 仓库根
+
+        for name in ModelPreference.preferredModels {
+            let path = root.appendingPathComponent("vendor/models/\(name)").path
+            if FileManager.default.fileExists(atPath: path) {
+                return (name, path)
+            }
+        }
+        // 一个本地模型都没有，交给 WhisperKit 自行下载（此网络下大概率失败，
+        // 会以 TranscribeError.engineFailed 的形式出现在菜单栏状态里）。
+        return (ModelPreference.preferredModels.last ?? "base", nil)
     }
 
     func bootstrap() {
         permissionStatus = permissions.status()
 
+        let model = Self.resolvedModel()
+        activeModelName = model.name
+
         let session = DictationSession(
             audioSource: SystemMicSource(),
             transcriber: WhisperKitTranscriber(
-                modelName: "base",
-                modelFolder: Self.resolvedModelFolder(),
+                modelName: model.name,
+                modelFolder: model.folder,
                 language: "zh"
             ),
             sink: RoutingTextSink(

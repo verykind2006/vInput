@@ -44,6 +44,10 @@ private struct MenuContent: View {
     var body: some View {
         Text(statusText)
 
+        if !model.activeModelName.isEmpty {
+            Text("模型：\(model.activeModelName)")
+        }
+
         if !model.lastText.isEmpty {
             Divider()
             Text("上次：\(model.lastText.prefix(40))")
