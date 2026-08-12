@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>vInput</string>
+    <key>CFBundleDisplayName</key>
+    <string>vInput</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.vinput.app</string>
+    <key>CFBundleExecutable</key>
+    <string>vInput</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>vInput 需要使用麦克风来录制你的语音并在本机转写成文字。音频不会上传，也不会保存到磁盘。</string>
+</dict>
+</plist>
