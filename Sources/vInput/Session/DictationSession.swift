@@ -51,8 +51,11 @@ final class DictationSession {
         }
         audioSource.onStop = { [weak self] error in
             guard let self, let error else { return }
-            // 采集过程中出错：终止会话，已收到的音频丢弃
-            // （M1 不做部分转写；M3 蓝牙断连场景会重新审视）。
+            // 只在仍在采集时才中止。若已经进入转写或注入阶段，
+            // 音频已经完整拿到手了，此时中止反而是在丢字——那正是
+            // 规则二要防的事。M3 的蓝牙源会在断连时异步报错，
+            // 这条 guard 是它的正确性前提。
+            guard self.state == .listening else { return }
             self.transition(to: .idle)
             self.onError?(error)
         }
@@ -65,10 +68,13 @@ final class DictationSession {
         guard state == .idle else { return }
 
         buffer.reset()
-        retainedSamples = []
         targetToken = targetGuard.capture()
 
+        // 先启动音频源，成功之后才丢弃上一次保留的音频。
+        // 顺序反过来的话，一次失败的启动会把上次转写失败保留下来、
+        // 本可 retry() 找回的内容静默吞掉，违反规则二。
         try audioSource.start()
+        retainedSamples = []
         transition(to: .listening)
     }
 
@@ -121,16 +127,26 @@ final class DictationSession {
 
         transition(to: .injecting)
 
+        let outcome: Result<Void, Error>
         do {
             // 规则三：注入前确认目标应用没变
             try targetGuard.verify(targetToken)
             try sink.send(trimmed)
-            onText?(trimmed)
+            outcome = .success(())
         } catch {
-            onError?(error)
+            outcome = .failure(error)
         }
 
+        // 先回到 idle 再触发终态回调，与转写失败路径保持一致。
+        // 否则调用方在 onText/onError 里同步调用 start() 会被
+        // guard state == .idle 静默挡住，两条路径行为不一致。
         transition(to: .idle)
+        switch outcome {
+        case .success:
+            onText?(trimmed)
+        case .failure(let error):
+            onError?(error)
+        }
     }
 
     private func transition(to newState: State) {
