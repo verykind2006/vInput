@@ -1,15 +1,13 @@
 import Foundation
 import WhisperKit
 
-/// 模型对比工具。用同一组音频跑多个模型，比较质量与耗时。
+/// 模型对比与切换诊断工具。
 ///
 /// 用法：
 /// ```bash
-/// ./scripts/bench.sh
+/// ./scripts/bench.sh          # 对比所有模型
+/// ./scripts/bench.sh switch   # 诊断运行时切换（走与 App 相同的代码路径）
 /// ```
-///
-/// 测试音频由 scripts/bench.sh 用系统 TTS 生成，覆盖三个目标场景：
-/// 闲聊短句、技术术语密集、长文。
 @main
 struct Bench {
     static let modelsRoot =
@@ -42,6 +40,65 @@ struct Bench {
     ]
 
     static func main() async {
+        if CommandLine.arguments.contains("switch") {
+            await diagnoseSwitching()
+        } else {
+            await compareModels()
+        }
+    }
+
+    // MARK: - 切换诊断
+
+    /// 复现 App 的运行时切换路径：large-v3 → turbo，两边各转写一次。
+    static func diagnoseSwitching() async {
+        let all = discoverModels()
+        guard all.count >= 2 else {
+            print("需要至少两个模型才能测切换，当前只有 \(all)"); exit(1)
+        }
+        let first = all[0]
+        let second = all[1]
+
+        guard let floats = try? AudioProcessor.loadAudioAsFloatArray(
+            fromPath: "\(audioRoot)/short.wav"
+        ) else {
+            print("测试音频缺失，先跑一次 ./scripts/bench.sh"); exit(1)
+        }
+
+        print("初始模型: \(first)")
+        var t = Date()
+        let transcriber = WhisperKitTranscriberShim(name: first, root: modelsRoot)
+        do {
+            try await transcriber.prepare()
+            print("  加载 \(fmt(Date().timeIntervalSince(t)))s")
+            t = Date()
+            let text = try await transcriber.transcribe(floats)
+            print("  转写 \(fmt(Date().timeIntervalSince(t)))s → \(quoted(text))")
+        } catch {
+            print("  失败: \(error)"); exit(1)
+        }
+
+        print("\n切换到: \(second)")
+        t = Date()
+        let next = WhisperKitTranscriberShim(name: second, root: modelsRoot)
+        do {
+            try await next.prepare()
+            print("  加载 \(fmt(Date().timeIntervalSince(t)))s  ← App 在此期间禁用录音")
+            t = Date()
+            let text = try await next.transcribe(floats)
+            print("  转写 \(fmt(Date().timeIntervalSince(t)))s → \(quoted(text))")
+            if text.isEmpty {
+                print("\n*** 复现：切换后转写结果为空 ***")
+            } else {
+                print("\n切换后转写正常。若 App 中无输出，问题在 UI 层而非转写层。")
+            }
+        } catch {
+            print("  失败: \(error)")
+        }
+    }
+
+    // MARK: - 模型对比
+
+    static func compareModels() async {
         let models = discoverModels()
         guard !models.isEmpty else {
             print("vendor/models 下没有模型"); exit(1)
@@ -87,23 +144,51 @@ struct Bench {
         }
     }
 
+    // MARK: - 辅助
+
     static func discoverModels() -> [String] {
         let fm = FileManager.default
         let found = (try? fm.contentsOfDirectory(atPath: modelsRoot)) ?? []
-        // 按 ModelPreference 的顺序排，未列入的排在后面
         let order = [
-            "openai_whisper-base",
-            "openai_whisper-small",
-            "openai_whisper-medium",
-            "openai_whisper-large-v3-v20240930_turbo",
             "openai_whisper-large-v3",
+            "openai_whisper-large-v3-v20240930_turbo",
+            "openai_whisper-medium",
+            "openai_whisper-small",
+            "openai_whisper-base",
         ]
         return found
             .filter { !$0.hasPrefix(".") }
             .sorted { (order.firstIndex(of: $0) ?? .max) < (order.firstIndex(of: $1) ?? .max) }
     }
 
-    static func fmt(_ value: Double) -> String {
-        String(format: "%.2f", value)
+    static func fmt(_ value: Double) -> String { String(format: "%.2f", value) }
+    static func quoted(_ text: String) -> String { text.isEmpty ? "(空)" : "「\(text)」" }
+}
+
+/// 复刻 App 中 WhisperKitTranscriber 的行为，用于诊断。
+/// 保持与生产代码相同的 DecodingOptions。
+actor WhisperKitTranscriberShim {
+    private let folder: String
+    private var pipe: WhisperKit?
+
+    init(name: String, root: String) {
+        self.folder = "\(root)/\(name)"
+    }
+
+    func prepare() async throws {
+        guard pipe == nil else { return }
+        pipe = try await WhisperKit(WhisperKitConfig(modelFolder: folder))
+    }
+
+    func transcribe(_ samples: [Float]) async throws -> String {
+        try await prepare()
+        guard let pipe else { return "" }
+        let results = try await pipe.transcribe(
+            audioArray: samples,
+            decodeOptions: DecodingOptions(
+                language: "zh", suppressBlank: true, chunkingStrategy: .vad
+            )
+        )
+        return results.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

@@ -14,7 +14,12 @@ struct vInputApp: App {
     }
 
     private var iconName: String {
-        switch delegate.model.phase {
+        // 加载模型可能持续一两分钟，而菜单一点即关——状态藏在菜单里
+        // 等于没有反馈。图标是加载期唯一可见的信号，必须优先反映它。
+        if delegate.model.loadingModelName != nil {
+            return "arrow.trianglehead.2.clockwise.rotate.90"
+        }
+        return switch delegate.model.phase {
         case .idle: "mic"
         case .listening: "mic.fill"
         case .working: "waveform"
@@ -56,6 +61,12 @@ private struct MenuContent: View {
         modelMenu
 
         Divider()
+        Button("打开日志") {
+            NSWorkspace.shared.selectFile(
+                AppLogger.shared.path,
+                inFileViewerRootedAtPath: ""
+            )
+        }
         Button("退出") { NSApplication.shared.terminate(nil) }
             .keyboardShortcut("q")
     }

@@ -63,7 +63,9 @@ final class AppModel {
 
         let transcriber = SwitchableTranscriber(
             initial: initial,
-            makeTranscriber: AppModel.makeTranscriber
+            // 写成显式的 @Sendable 闭包字面量：直接引用静态方法时，
+            // 函数值本身不带 @Sendable，转换会触发数据竞争警告。
+            makeTranscriber: { @Sendable model in AppModel.makeTranscriber(model) }
         )
         self.transcriber = transcriber
 
@@ -87,12 +89,15 @@ final class AppModel {
             }
         }
         session.onError = { [weak self] error in
+            AppLogger.shared.log("会话出错：\(error)")
             self?.phase = .error(String(describing: error))
         }
         session.onText = { [weak self] text in
+            AppLogger.shared.logTranscript(text, context: "注入成功")
             self?.lastText = text
         }
         self.session = session
+        AppLogger.shared.log("启动完成，模型=\(initial.name) 可用模型=\(availableModels.map(\.name))")
 
         do {
             try hotkey.register(keyCode: hotkeyCode, modifiers: hotkeyModifiers) { [weak self] in
@@ -122,20 +127,38 @@ final class AppModel {
 
     /// 切换到指定模型。加载可能耗时数十秒，期间 `loadingModelName` 非空。
     func selectModel(_ model: ModelDescriptor) {
-        guard let transcriber, canSwitchModel, model.name != activeModelName else { return }
+        let log = AppLogger.shared
+        guard let transcriber else {
+            log.log("切换模型被拒：transcriber 尚未初始化")
+            return
+        }
+        guard canSwitchModel else {
+            log.log("切换模型被拒：canSwitchModel=false loading=\(loadingModelName ?? "nil") sessionState=\(String(describing: session?.state))")
+            return
+        }
+        guard model.name != activeModelName else {
+            log.log("切换模型跳过：已经是 \(model.name)")
+            return
+        }
 
+        log.log("开始切换模型 \(activeModelName) → \(model.name) 目录=\(model.folder)")
         loadingModelName = model.name
         phase = .idle
 
-        Task {
+        Task { [weak self] in
+            let started = Date()
             do {
                 try await transcriber.switchTo(model)
-                activeModelName = model.name
+                self?.activeModelName = model.name
+                log.log("切换成功 \(model.name) 耗时 \(Int(Date().timeIntervalSince(started)))s")
             } catch {
                 // 切换失败时旧模型仍然可用，见 SwitchableTranscriber 的保证。
-                phase = .error("加载模型「\(model.name)」失败：\(error)")
+                log.log("切换失败 \(model.name): \(error)")
+                self?.phase = .error("加载模型「\(model.name)」失败：\(error)")
             }
-            loadingModelName = nil
+            // 无论成败都必须解除加载态，否则 toggle() 会被永久挡住。
+            self?.loadingModelName = nil
+            log.log("加载态已解除，当前模型 \(self?.activeModelName ?? "?")")
         }
     }
 
@@ -154,12 +177,20 @@ final class AppModel {
 
     /// 快捷键触发：未在录音则开始，正在录音则结束。
     func toggle() {
-        guard let session else { return }
+        let log = AppLogger.shared
+        guard let session else {
+            log.log("toggle 被拒：session 尚未初始化")
+            return
+        }
         // 模型正在编译/加载时不接受录音请求。
-        guard loadingModelName == nil else { return }
+        guard loadingModelName == nil else {
+            log.log("toggle 被拒：正在加载模型 \(loadingModelName!)")
+            return
+        }
 
         permissionStatus = permissions.status()
         guard permissionStatus == .ready else {
+            log.log("toggle 被拒：权限不足 \(permissionStatus)")
             handleMissingPermission()
             return
         }
@@ -168,14 +199,16 @@ final class AppModel {
         case .idle:
             do {
                 try session.start()
+                log.log("开始录音，模型=\(activeModelName)")
             } catch {
+                log.log("录音启动失败：\(error)")
                 phase = .error(String(describing: error))
             }
         case .listening:
+            log.log("结束录音，进入转写")
             Task { await session.finish() }
         case .transcribing, .injecting:
-            // 正在处理上一段，忽略。
-            break
+            log.log("toggle 忽略：正在处理上一段（\(session.state)）")
         }
     }
 
