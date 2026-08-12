@@ -82,7 +82,7 @@ open dist/vInput.app
 
 ## 已知的待决问题（不阻塞 M1 验收）
 
-1. **输出繁体字。** spec 未涵盖此需求，需补。候选方案：`DecodingOptions` 给简体 initial prompt，或输出后接繁简转换。
+1. ~~**输出繁体字。**~~ **已解决。** 转写层出口用系统内置 ICU 音译器（`CFStringTransform` + `"Hant-Hans"`）统一转简体，零依赖零延迟。已是简体的文本、英文标识符、数字标点均不受影响。见 `Sources/vInput/Transcribe/ChineseScript.swift`。验收时请确认步骤 1 与步骤 4 的输出确为简体。
 2. **`base` 模型技术中文不可用。** 转写只花 0.75 秒处理 5 秒音频，性能预算充裕，应评估换 `large-v3-turbo`：
    ```bash
    ./scripts/fetch-model.sh openai_whisper-large-v3-v20240930_turbo

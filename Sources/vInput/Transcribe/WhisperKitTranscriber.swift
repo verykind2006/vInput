@@ -17,12 +17,21 @@ actor WhisperKitTranscriber: Transcriber {
     /// `scripts/fetch-model.sh` 用 curl 预先拉取。
     private let modelFolder: String?
     private let language: String
+    /// 把输出统一转成简体。Whisper 即便指定 language="zh" 也常输出繁体。
+    /// 面向繁体用户时可关闭。
+    private let normalizeToSimplified: Bool
     private var pipe: WhisperKit?
 
-    init(modelName: String = "base", modelFolder: String? = nil, language: String = "zh") {
+    init(
+        modelName: String = "base",
+        modelFolder: String? = nil,
+        language: String = "zh",
+        normalizeToSimplified: Bool = true
+    ) {
         self.modelName = modelName
         self.modelFolder = modelFolder
         self.language = language
+        self.normalizeToSimplified = normalizeToSimplified
     }
 
     func prepare() async throws {
@@ -54,10 +63,11 @@ actor WhisperKitTranscriber: Transcriber {
                 audioArray: samples,
                 decodeOptions: options
             )
-            return results
+            let text = results
                 .map(\.text)
                 .joined()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            return normalizeToSimplified ? ChineseScript.toSimplified(text) : text
         } catch {
             throw TranscribeError.engineFailed(error.localizedDescription)
         }
