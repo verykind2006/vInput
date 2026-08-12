@@ -16,6 +16,13 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
+            name: "vInputBench",
+            dependencies: [
+                .product(name: "WhisperKit", package: "WhisperKit")
+            ],
+            path: "Sources/vInputBench"
+        ),
+        .executableTarget(
             name: "vInput",
             dependencies: [
                 .product(name: "WhisperKit", package: "WhisperKit")
