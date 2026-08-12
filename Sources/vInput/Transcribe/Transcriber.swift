@@ -19,3 +19,15 @@ protocol Transcriber: Sendable {
     /// - Returns: 去除首尾空白的转写文本，可能为空字符串（静音）
     func transcribe(_ samples: [Float]) async throws -> String
 }
+
+/// 能够产出流式预览引擎的转写器。
+///
+/// 单独成一个协议而非并入 `Transcriber`：`FakeTranscriber` 与未来可能的
+/// 云端转写器都不需要这个能力，不该被迫实现它。
+protocol PreviewCapable {
+    /// 基于当前已加载的模型构造一个预览引擎。
+    ///
+    /// - Parameter processor: 音频来源，由调用方推入样本
+    /// - Returns: 预览引擎；模型尚未加载时返回 nil
+    func makePreviewEngine(processor: SourceBackedAudioProcessor) async -> PreviewEngine?
+}

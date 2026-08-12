@@ -5,7 +5,7 @@ import WhisperKit
 ///
 /// 用 actor 而非 class，是因为模型加载与推理都不可重入：
 /// 两个会话同时触发时，第二个必须排队而不是并发进入 Core ML。
-actor WhisperKitTranscriber: Transcriber {
+actor WhisperKitTranscriber: Transcriber, PreviewCapable {
     /// 低于此时长的音频不送去转写，避免 Whisper 对极短片段产生幻觉文本。
     static let minimumDuration: TimeInterval = 0.3
 
@@ -84,5 +84,25 @@ actor WhisperKitTranscriber: Transcriber {
         } catch {
             throw TranscribeError.engineFailed(error.localizedDescription)
         }
+    }
+
+    /// 基于当前已加载的模型构造预览引擎。
+    ///
+    /// **重要：返回的引擎与本转写器共享同一套解码器实例。**
+    /// 两者并发执行会在解码器状态上产生数据竞争，调用方
+    /// （`DictationSession`）必须保证预览停止后才发起全量转写。
+    func makePreviewEngine(processor: SourceBackedAudioProcessor) async -> PreviewEngine? {
+        guard let pipe else { return nil }
+        guard let tokenizer = pipe.tokenizer else { return nil }
+
+        return StreamingPreviewEngine(
+            audioEncoder: pipe.audioEncoder,
+            featureExtractor: pipe.featureExtractor,
+            segmentSeeker: pipe.segmentSeeker,
+            textDecoder: pipe.textDecoder,
+            tokenizer: tokenizer,
+            processor: processor,
+            decodingOptions: DecodingOptions(language: language, suppressBlank: true)
+        )
     }
 }

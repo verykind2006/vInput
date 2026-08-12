@@ -30,3 +30,17 @@ struct WhisperKitTranscriberTests {
         }
     }
 }
+
+@Suite("WhisperKitTranscriber 预览能力")
+struct WhisperKitTranscriberPreviewTests {
+    @Test("模型未加载时不产出预览引擎")
+    func noPreviewBeforeModelLoads() async {
+        // 指向不存在的目录，prepare 必然失败，pipe 保持 nil
+        let transcriber = WhisperKitTranscriber(modelFolder: "/nonexistent/model")
+        let processor = SourceBackedAudioProcessor()
+
+        let engine = await transcriber.makePreviewEngine(processor: processor)
+
+        #expect(engine == nil)
+    }
+}
