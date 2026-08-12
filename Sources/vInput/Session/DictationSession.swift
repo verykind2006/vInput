@@ -133,6 +133,16 @@ final class DictationSession {
         transition(to: .idle)
     }
 
+    /// 运行时挂载预览引擎。
+    ///
+    /// 单独提供而非只在构造时传入：预览引擎依赖已加载的模型，而模型
+    /// 加载是异步的，且换模型后需要重新挂载。
+    func attachPreviewEngine(_ engine: PreviewEngine?) {
+        guard state == .idle else { return }
+        previewEngine = engine
+        bindPreview(engine)
+    }
+
     /// 用上一次失败时保留的音频重新走一遍。
     func retry() async {
         guard state == .idle, !retainedSamples.isEmpty else { return }

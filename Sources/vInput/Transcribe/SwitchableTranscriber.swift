@@ -47,4 +47,9 @@ actor SwitchableTranscriber: Transcriber {
     func transcribe(_ samples: [Float]) async throws -> String {
         try await current.transcribe(samples)
     }
+
+    /// 取当前后端的预览能力。换模型后需重新调用。
+    func currentPreviewCapable() -> (any PreviewCapable)? {
+        current as? PreviewCapable
+    }
 }
