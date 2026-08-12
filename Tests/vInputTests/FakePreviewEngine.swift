@@ -36,6 +36,20 @@ final class FakePreviewEngine: PreviewEngine, @unchecked Sendable {
     }
 }
 
+/// 承载 @Sendable 闭包写入的预览结果。
+///
+/// `PreviewEngine.onUpdate` 是 @Sendable 闭包，捕获并改写局部 var
+/// 在 Swift 6 语言模式下是编译错误，因此测试里用它转一手。
+final class PreviewBox: @unchecked Sendable {
+    private var storage: PreviewText?
+    private let lock = NSLock()
+
+    var value: PreviewText? {
+        get { lock.lock(); defer { lock.unlock() }; return storage }
+        set { lock.lock(); storage = newValue; lock.unlock() }
+    }
+}
+
 /// 线程安全的自增计数器，用于断言调用先后顺序。
 final class OrderCounter: @unchecked Sendable {
     private var value = 0
@@ -58,12 +72,14 @@ struct FakePreviewEngineTests {
     @Test("emit 会把预览推给 onUpdate")
     func emitDeliversPreview() {
         let engine = FakePreviewEngine()
-        var received: PreviewText?
-        engine.onUpdate = { received = $0 }
+        // onUpdate 是 @Sendable 闭包，不能捕获并改写局部 var——
+        // 那在 Swift 6 语言模式下是编译错误。用引用类型盒子承载。
+        let received = PreviewBox()
+        engine.onUpdate = { received.value = $0 }
 
         engine.emit(confirmed: "已确认", unconfirmed: "未确认", energy: [0.5])
 
-        #expect(received == PreviewText(confirmed: "已确认", unconfirmed: "未确认", energy: [0.5]))
+        #expect(received.value == PreviewText(confirmed: "已确认", unconfirmed: "未确认", energy: [0.5]))
     }
 
     @Test("start 抛出预设的错误")
