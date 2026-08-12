@@ -58,16 +58,29 @@ actor WhisperKitTranscriber: Transcriber {
         guard let pipe else { throw TranscribeError.modelNotReady }
 
         do {
-            let options = DecodingOptions(language: language)
+            let options = DecodingOptions(
+                language: language,
+                // WhisperKit 默认 false。开启后抑制空白 token，
+                // 减少静音段凭空生成内容。
+                suppressBlank: true,
+                // 用能量 VAD 切掉静音段。静音是字幕署名类幻觉
+                // （「( 字幕:XXX )」）的主要触发源。
+                chunkingStrategy: .vad
+            )
             let results = try await pipe.transcribe(
                 audioArray: samples,
                 decodeOptions: options
             )
-            let text = results
+            let raw = results
                 .map(\.text)
                 .joined()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            return normalizeToSimplified ? ChineseScript.toSimplified(text) : text
+
+            // 上面两项只能减少幻觉，无法根除——WhisperKit 未实现
+            // OpenAI 参考实现默认启用的 nonSpeechTokens 抑制。
+            // 因此再过一层保守的尾巴过滤兜底。
+            let cleaned = TranscriptCleaner.clean(raw)
+            return normalizeToSimplified ? ChineseScript.toSimplified(cleaned) : cleaned
         } catch {
             throw TranscribeError.engineFailed(error.localizedDescription)
         }
