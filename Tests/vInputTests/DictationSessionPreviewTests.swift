@@ -54,6 +54,7 @@ struct DictationSessionPreviewTests {
 
     @Test("finish 时先停预览再转写")
     func stopsPreviewBeforeTranscribing() async throws {
+        FakePreviewEngine.orderCounter.reset()
         let (session, source, transcriber, _, preview) = makeSession()
 
         try await session.start()
@@ -61,8 +62,12 @@ struct DictationSessionPreviewTests {
         await session.finish()
 
         // 共享解码器实例，重叠会产生数据竞争。停在前是硬要求。
-        #expect(preview.stopCallCount == 1)
-        #expect(transcriber.receivedSamples.count == 1)
+        //
+        // 必须比较**先后顺序**而非调用次数：只断言两者各发生一次的话，
+        // 把 stop 挪到 transcribe 之后测试照样通过——这条回归测试就白写了。
+        let stopOrder = try #require(preview.stopOrder)
+        let transcribeOrder = try #require(transcriber.firstTranscribeOrder)
+        #expect(stopOrder < transcribeOrder)
     }
 
     @Test("完整一轮后文本仍然正常注入")
