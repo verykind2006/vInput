@@ -1,4 +1,7 @@
-import AVFoundation
+// AVFAudio 尚未标注 Sendable。AVAudioPCMBuffer 在 AVAudioConverter
+// 的输入闭包里是同步消费的，不存在跨线程逃逸，因此用 @preconcurrency
+// 抑制该模块的 Sendable 警告。
+@preconcurrency import AVFoundation
 import Foundation
 
 /// 从系统默认输入设备采集音频，并统一转换为 16 kHz 单声道 Float32。
