@@ -151,7 +151,7 @@ final class AppModel {
         }
 
         // 预览引擎依赖已加载的模型，异步挂载。
-        Task { await attachPreview() }
+        Task { await warmUpAndAttachPreview() }
     }
 
     func shutdown() {
@@ -192,6 +192,27 @@ final class AppModel {
     ///
     /// 单独一步而非在 bootstrap 里做：预览引擎需要已加载的模型，
     /// 而模型加载是异步且可能失败的。失败时会话照常工作，只是没有预览。
+    /// 预热模型，然后挂载预览引擎。
+    ///
+    /// **必须先预热。** 预览引擎要从已加载的 `WhisperKit` 实例取解码器组件，
+    /// 而模型是懒加载的——首次转写时才 `prepare()`。启动时直接调
+    /// `attachPreview()` 必然拿到 nil（真机日志实测：「模型未就绪，本次
+    /// 运行无实时预览」），且不会重试，等于实时预览永远不工作。
+    ///
+    /// 顺带解决另一个问题：模型首次加载要做 Core ML 到神经引擎的编译
+    /// （实测 40–125 秒）。放到启动后台做，用户第一次说话就不必干等。
+    private func warmUpAndAttachPreview() async {
+        guard let transcriber else { return }
+        do {
+            try await transcriber.prepare()
+            AppLogger.shared.log("模型预热完成")
+        } catch {
+            AppLogger.shared.log("模型预热失败，本次运行无实时预览：\(error)")
+            return
+        }
+        await attachPreview()
+    }
+
     private func attachPreview() async {
         guard let transcriber, let session else { return }
         guard let previewCapable = await transcriber.currentPreviewCapable() else {

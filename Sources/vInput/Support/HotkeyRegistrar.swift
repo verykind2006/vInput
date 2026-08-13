@@ -43,29 +43,26 @@ final class HotkeyRegistrar {
     private static let signature: OSType = 0x76_49_4E_50
 
     private var hotKeyRef: EventHotKeyRef?
-    private var eventHandler: EventHandlerRef?
     private var callbackID: UInt32?
 
-    /// 注册快捷键。
-    /// - Parameters:
-    ///   - keyCode: Carbon 虚拟键码，例如 `UInt32(kVK_ANSI_D)`
-    ///   - modifiers: Carbon 修饰键掩码，例如 `UInt32(optionKey | cmdKey)`
-    func register(
-        keyCode: UInt32,
-        modifiers: UInt32,
-        handler: @escaping () -> Void
-    ) throws {
-        unregister()
+    /// Carbon 的事件处理器**全进程只能装一次**。
+    ///
+    /// 每个 registrar 各装一次的话，第二个会失败并返回
+    /// `eventHandlerAlreadyInstalledErr`（-9866）——M2 加了 Esc 取消键
+    /// 之后真机复现过：⌥D 装成功、Esc 装失败，取消功能静默失效。
+    /// 处理器本身只做「把热键 ID 转发给回调表」，与具体是哪个热键无关，
+    /// 因此共用一个即可。
+    private static var sharedHandler: EventHandlerRef?
 
-        let id = HotkeyCallbackTable.shared.register(handler)
-        callbackID = id
+    private static func installSharedHandlerIfNeeded() throws {
+        guard sharedHandler == nil else { return }
 
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
         )
 
-        let installStatus = InstallEventHandler(
+        let status = InstallEventHandler(
             GetApplicationEventTarget(),
             { _, event, _ -> OSStatus in
                 var pressedID = EventHotKeyID()
@@ -91,13 +88,29 @@ final class HotkeyRegistrar {
             1,
             &eventType,
             nil,
-            &eventHandler
+            &sharedHandler
         )
-        guard installStatus == noErr else {
-            HotkeyCallbackTable.shared.unregister(id)
-            callbackID = nil
-            throw HotkeyError.handlerInstallFailed(installStatus)
+        guard status == noErr else {
+            sharedHandler = nil
+            throw HotkeyError.handlerInstallFailed(status)
         }
+    }
+
+    /// 注册快捷键。
+    /// - Parameters:
+    ///   - keyCode: Carbon 虚拟键码，例如 `UInt32(kVK_ANSI_D)`
+    ///   - modifiers: Carbon 修饰键掩码，例如 `UInt32(optionKey | cmdKey)`
+    func register(
+        keyCode: UInt32,
+        modifiers: UInt32,
+        handler: @escaping () -> Void
+    ) throws {
+        unregister()
+
+        try Self.installSharedHandlerIfNeeded()
+
+        let id = HotkeyCallbackTable.shared.register(handler)
+        callbackID = id
 
         let hotKeyID = EventHotKeyID(signature: Self.signature, id: id)
         let registerStatus = RegisterEventHotKey(
@@ -119,10 +132,8 @@ final class HotkeyRegistrar {
             UnregisterEventHotKey(hotKeyRef)
             self.hotKeyRef = nil
         }
-        if let eventHandler {
-            RemoveEventHandler(eventHandler)
-            self.eventHandler = nil
-        }
+        // 不移除 sharedHandler：它是全进程共用的，别的 registrar
+        // 可能还在用。它只做转发，留着不产生任何副作用。
         if let callbackID {
             HotkeyCallbackTable.shared.unregister(callbackID)
             self.callbackID = nil
