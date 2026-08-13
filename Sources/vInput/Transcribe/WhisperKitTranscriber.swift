@@ -102,7 +102,15 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
             textDecoder: pipe.textDecoder,
             tokenizer: tokenizer,
             processor: processor,
-            decodingOptions: DecodingOptions(language: language, suppressBlank: true)
+            // skipSpecialTokens 默认为 false，此时 segment.text 里会带
+            // <|zh|>、<|0.00|> 这类原始标记。最终注入读的是
+            // TranscriptionResult.text（已处理过）所以看不出来，而预览直接
+            // 读 segments[].text——真机反馈「一堆尖角符」就是这个。
+            decodingOptions: DecodingOptions(
+                language: language,
+                skipSpecialTokens: true,
+                suppressBlank: true
+            )
         )
     }
 }
