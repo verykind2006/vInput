@@ -66,31 +66,31 @@ struct SpecialTokenStrippingTests {
     @Test("剥除语言与时间戳标记")
     func stripsLanguageAndTimestamps() {
         let raw = "<|zh|><|0.00|>帮我改一下依赖数组<|5.14|>"
-        #expect(StreamingPreviewEngine.stripSpecialTokens(raw) == "帮我改一下依赖数组")
+        #expect(TranscriptCleaner.stripSpecialTokens(raw) == "帮我改一下依赖数组")
     }
 
     @Test("剥除任务与结束标记")
     func stripsTaskAndEndTokens() {
         let raw = "<|startoftranscript|><|transcribe|>正文<|endoftext|>"
-        #expect(StreamingPreviewEngine.stripSpecialTokens(raw) == "正文")
+        #expect(TranscriptCleaner.stripSpecialTokens(raw) == "正文")
     }
 
     @Test("普通文本不受影响")
     func plainTextUnchanged() {
         let text = "把 useEffect 里的依赖数组改一下"
-        #expect(StreamingPreviewEngine.stripSpecialTokens(text) == text)
+        #expect(TranscriptCleaner.stripSpecialTokens(text) == text)
     }
 
     @Test("用户真说的尖括号内容不被误删")
     func keepsGenuineAngleBrackets() {
         // 只匹配 <|...|> 这种形式，普通尖括号保留
         let text = "把 <div> 改成 <span>"
-        #expect(StreamingPreviewEngine.stripSpecialTokens(text) == text)
+        #expect(TranscriptCleaner.stripSpecialTokens(text) == text)
     }
 
     @Test("空字符串安全")
     func emptyIsSafe() {
-        #expect(StreamingPreviewEngine.stripSpecialTokens("") == "")
+        #expect(TranscriptCleaner.stripSpecialTokens("") == "")
     }
 }
 

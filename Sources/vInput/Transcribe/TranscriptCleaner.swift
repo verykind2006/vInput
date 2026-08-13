@@ -12,6 +12,26 @@ import Foundation
 /// **设计取向：宁可漏删，不可误删。** 只匹配明确无歧义的字幕署名模式；
 /// 「谢谢观看」这类用户可能真的会说的话一律保留。
 enum TranscriptCleaner {
+    /// Whisper 的原始特殊标记：`<|zh|>`、`<|0.00|>`、`<|endoftext|>` 等。
+    ///
+    /// 只匹配 `<|…|>` 这一形式，用户真说的 `<div>` 不受影响。
+    private static let specialToken = try! NSRegularExpression(
+        pattern: "<\\|[^|]*\\|>",
+        options: []
+    )
+
+    /// 剥除特殊标记。
+    ///
+    /// **两条路径都需要它。** `TranscriptionResult.text` 是处理过的，
+    /// 而 `segment.text` 是原始的——预览一直读 segments，最终转写在改用
+    /// 分段过滤后也开始读 segments，两处都会漏出标记。真机上两次都出现过。
+    static func stripSpecialTokens(_ text: String) -> String {
+        let range = NSRange(text.startIndex..., in: text)
+        return specialToken.stringByReplacingMatches(
+            in: text, options: [], range: range, withTemplate: ""
+        )
+    }
+
     /// 括号内含字幕署名关键词的整段。
     ///
     /// 关键词紧跟在开括号后（允许空白），避免误删
@@ -55,7 +75,10 @@ enum TranscriptCleaner {
     static func clean(_ text: String) -> String {
         guard !text.isEmpty else { return text }
 
-        var result = text
+        // 必须先剥标记。否则文本以 <|endoftext|> 结尾，下面几条
+        // 「结尾处」的规则一条都匹配不上——真机上就是这样两道防线一起失效。
+        var result = stripSpecialTokens(text)
+
         for regex in [bracketedCredit, trailingCredit, trailingFiller] {
             let range = NSRange(result.startIndex..., in: result)
             result = regex.stringByReplacingMatches(

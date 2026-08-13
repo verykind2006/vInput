@@ -74,23 +74,6 @@ final class StreamingPreviewEngine: PreviewEngine, @unchecked Sendable {
         self.makeTranscriber = makeTranscriber
     }
 
-    /// 兜底剥除残留的特殊标记，如 `<|zh|>`、`<|0.00|>`、`<|endoftext|>`。
-    ///
-    /// 已经用 `skipSpecialTokens: true` 从源头关掉了，但流式路径经过
-    /// SegmentSeeker 的多个分支，且不同 WhisperKit 版本行为可能变化——
-    /// 这些标记一旦漏到 HUD 上非常刺眼，多这一道保险值得。
-    private static let specialToken = try! NSRegularExpression(
-        pattern: "<\\|[^|]*\\|>",
-        options: []
-    )
-
-    static func stripSpecialTokens(_ text: String) -> String {
-        let range = NSRange(text.startIndex..., in: text)
-        return specialToken.stringByReplacingMatches(
-            in: text, options: [], range: range, withTemplate: ""
-        )
-    }
-
     /// 把 WhisperKit 的流式状态转换成 HUD 需要的形状。
     ///
     /// 接收拆分后的字段而非整个 `AudioStreamTranscriber.State`：该类型
@@ -102,8 +85,8 @@ final class StreamingPreviewEngine: PreviewEngine, @unchecked Sendable {
         unconfirmedSegments: [TranscriptionSegment],
         bufferEnergy: [Float]
     ) -> PreviewText {
-        let confirmed = stripSpecialTokens(confirmedSegments.map(\.text).joined())
-        let unconfirmed = stripSpecialTokens(unconfirmedSegments.map(\.text).joined())
+        let confirmed = TranscriptCleaner.stripSpecialTokens(confirmedSegments.map(\.text).joined())
+        let unconfirmed = TranscriptCleaner.stripSpecialTokens(unconfirmedSegments.map(\.text).joined())
         return PreviewText(
             confirmed: ChineseScript.toSimplified(confirmed.trimmingCharacters(in: .whitespaces)),
             unconfirmed: ChineseScript.toSimplified(unconfirmed.trimmingCharacters(in: .whitespaces)),

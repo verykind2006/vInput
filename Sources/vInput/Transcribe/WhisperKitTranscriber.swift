@@ -86,6 +86,10 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
         do {
             let options = DecodingOptions(
                 language: language,
+                // segment.text 是原始文本，不开这个会带 <|zh|>、<|0.00|>
+                // 这类标记。TranscriptionResult.text 是处理过的，但我们
+                // 为了做分段级过滤直接读 segments，必须自己关掉。
+                skipSpecialTokens: true,
                 // WhisperKit 默认 false。开启后抑制空白 token，
                 // 减少静音段凭空生成内容。
                 suppressBlank: true,
