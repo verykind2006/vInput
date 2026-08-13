@@ -28,11 +28,28 @@ enum TranscriptCleaner {
         options: [.caseInsensitive]
     )
 
+    /// 结尾处的套话式幻觉。
+    ///
+    /// 这些是 Whisper 中文训练数据（大量带字幕视频）的高频尾巴，在静音段
+    /// 尤其容易凭空生成。真机验收中「谢谢观看」反复出现。
+    ///
+    /// **这里推翻了此前的判断。** 最初认为「用户可能真的会说谢谢观看」而
+    /// 不予过滤，实际使用下来它作为幻觉出现的频率远高于用户真说的频率。
+    /// 折中：只删**位于结尾**且**独立成句**的这几句，句中出现一律保留——
+    /// 「今天就讲到这里，谢谢观看大家的支持」不会被误伤。
+    /// 只吞掉幻觉前的空白与逗号，**保留句末标点**——
+    /// 「今天下午三点开会。谢谢观看」应还原成「今天下午三点开会。」，
+    /// 把句号一起删掉是过度清理。
+    private static let trailingFiller = try! NSRegularExpression(
+        pattern: "\\s*[，,]?\\s*(谢谢大家观看|谢谢观看|感谢观看|谢谢收看|请不吝点赞订阅[^。]*)[。.！!\\s]*$",
+        options: []
+    )
+
     static func clean(_ text: String) -> String {
         guard !text.isEmpty else { return text }
 
         var result = text
-        for regex in [bracketedCredit, trailingCredit] {
+        for regex in [bracketedCredit, trailingCredit, trailingFiller] {
             let range = NSRange(result.startIndex..., in: result)
             result = regex.stringByReplacingMatches(
                 in: result,

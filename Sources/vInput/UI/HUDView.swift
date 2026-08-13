@@ -38,25 +38,36 @@ struct HUDView: View {
 
     @ViewBuilder
     private var transcript: some View {
-        if model.confirmedLines.isEmpty && model.unconfirmedText.isEmpty {
-            Text(model.statusText)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(height: 22 * CGFloat(HUDViewModel.maxLines), alignment: .topLeading)
-        } else {
-            // 已确认用正常颜色、未确认用半透明：没有这个区分的话，
-            // 文本会时不时整段跳变，观感如同故障。
-            (Text(model.confirmedLines.joined())
-                .foregroundStyle(.primary)
-             + Text(model.unconfirmedText)
-                .foregroundStyle(.secondary.opacity(0.6)))
-                .font(.callout)
-                .frame(
-                    height: 22 * CGFloat(HUDViewModel.maxLines),
-                    alignment: .topLeading
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
+        Group {
+            if model.confirmedLines.isEmpty && model.unconfirmedText.isEmpty {
+                Text(model.statusText)
+                    .foregroundStyle(.secondary)
+            } else {
+                // 已确认用正常颜色、未确认用半透明：没有这个区分的话，
+                // 文本会时不时整段跳变，观感如同故障。
+                //
+                // 折好的行用换行符连接，不要 joined() 拼成一整串——那样
+                // 折行等于白做，交给 SwiftUI 自己在固定高度的框里乱折，
+                // 中英混排时断行位置会很难看。
+                Text(model.confirmedLines.joined(separator: "\n"))
+                    .foregroundStyle(.primary)
+                + Text(model.unconfirmedText)
+                    .foregroundStyle(.secondary.opacity(0.55))
+            }
         }
+        .font(.system(size: 15))
+        // 行距略放开：中文密排在小面板里很挤。
+        .lineSpacing(4)
+        .multilineTextAlignment(.leading)
+        .lineLimit(HUDViewModel.maxLines)
+        .truncationMode(.head)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: 26 * CGFloat(HUDViewModel.maxLines),
+            alignment: .topLeading
+        )
+        // 文本增长时不要逐字弹跳
+        .animation(.easeOut(duration: 0.12), value: model.confirmedLines)
     }
 
     private var footer: some View {

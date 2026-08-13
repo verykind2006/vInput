@@ -33,19 +33,53 @@ final class SourceBackedAudioProcessor: AudioProcessing, @unchecked Sendable {
 
     // MARK: - 外部投喂
 
+    /// 每个能量值必须恰好对应 100ms 音频。
+    ///
+    /// 这不是我们的选择，是 WhisperKit 的硬性契约——`isVoiceDetected`
+    /// 里写着「Each energy value corresponds to 1 buffer length (100ms of
+    /// audio), hence we divide by 0.1」，并据此把时长换算成要检查的能量
+    /// 个数。按来帧长度（约 85ms）记录会让它的静音判断窗口算错。
+    static let energyBlockSamples = Int(AudioFormat.sampleRate * 0.1)
+
+    /// 尚未凑满一个 100ms 块的残余样本。
+    private var pendingForEnergy: [Float] = []
+
     /// 由 `AudioSource` 的回调推入一批样本。
+    ///
+    /// 来帧长度由音频源决定（`SystemMicSource` 约 85ms），与能量分块
+    /// 无关——样本原样累积，能量按固定 100ms 结算。
     func append(_ chunk: [Float]) {
         guard !chunk.isEmpty else { return }
 
-        // 复用 WhisperKit 的能量算法。AudioStreamTranscriber 用
-        // relativeEnergy 配合 silenceThreshold(0.3) 做静音判断，
-        // 自己另写一套归一化会让它的判断失准。
-        let relative = AudioProcessor.calculateRelativeEnergy(of: chunk, relativeTo: nil)
-
         lock.lock()
         samples.append(contentsOf: chunk)
-        energies.append(relative)
+
+        pendingForEnergy.append(contentsOf: chunk)
+        while pendingForEnergy.count >= Self.energyBlockSamples {
+            let block = Array(pendingForEnergy.prefix(Self.energyBlockSamples))
+            pendingForEnergy.removeFirst(Self.energyBlockSamples)
+            // 复用 WhisperKit 的能量算法：AudioStreamTranscriber 用
+            // relativeEnergy 配合 silenceThreshold 做静音判断，
+            // 自己另写一套归一化会让它的判断失准。
+            energies.append(AudioProcessor.calculateRelativeEnergy(of: block, relativeTo: nil))
+        }
         lock.unlock()
+    }
+
+    /// 本次会话的能量统计，用于诊断真实麦克风的音量水平。
+    ///
+    /// 存在的理由：静音阈值默认 0.3，而 TTS 合成音与真人对着麦克风说话
+    /// 的响度差很多。没有这组数据就只能猜为什么预览迟迟不出字。
+    func energySummary() -> (count: Int, median: Float, max: Float, aboveThreshold: Int) {
+        lock.lock(); defer { lock.unlock() }
+        guard !energies.isEmpty else { return (0, 0, 0, 0) }
+        let sorted = energies.sorted()
+        return (
+            count: energies.count,
+            median: sorted[sorted.count / 2],
+            max: sorted[sorted.count - 1],
+            aboveThreshold: energies.filter { $0 > 0.3 }.count
+        )
     }
 
     /// 会话结束时清空，为下一次录音做准备。
@@ -53,6 +87,7 @@ final class SourceBackedAudioProcessor: AudioProcessing, @unchecked Sendable {
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         energies.removeAll(keepingCapacity: true)
+        pendingForEnergy.removeAll(keepingCapacity: true)
         lock.unlock()
     }
 

@@ -54,10 +54,26 @@ struct TranscriptCleanerTests {
         #expect(TranscriptCleaner.clean(text) == text)
     }
 
-    @Test("谢谢观看这类词不删——用户可能真的这么说")
-    func keepsAmbiguousPhrases() {
-        let text = "今天就讲到这里谢谢观看"
+    @Test("结尾独立的谢谢观看会被删——真机验收中它反复作为幻觉出现")
+    func removesTrailingFiller() {
+        // 推翻了最初「用户可能真的这么说」的判断：实际使用中它作为幻觉
+        // 出现的频率远高于用户真说的频率。
+        #expect(TranscriptCleaner.clean("今天下午三点开会。谢谢观看") == "今天下午三点开会。")
+        // 连接用的逗号随幻觉一起删掉，句末标点则保留
+        #expect(TranscriptCleaner.clean("说了一些话，谢谢大家观看。") == "说了一些话")
+        #expect(TranscriptCleaner.clean("正文内容 感谢观看") == "正文内容")
+    }
+
+    @Test("句中出现的谢谢观看不被误删")
+    func keepsFillerMidSentence() {
+        // 只删结尾独立成句的，句中出现一律保留
+        let text = "谢谢观看大家的支持我很感动"
         #expect(TranscriptCleaner.clean(text) == text)
+    }
+
+    @Test("整段就是幻觉套话时返回空")
+    func fillerOnlyYieldsEmpty() {
+        #expect(TranscriptCleaner.clean("谢谢观看") == "")
     }
 
     @Test("普通文本完全不受影响")

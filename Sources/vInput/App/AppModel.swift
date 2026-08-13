@@ -186,6 +186,20 @@ final class AppModel {
         hudTimer = nil
         recordingStartedAt = nil
         hud.hide()
+
+        // 记录本次录音的能量分布。真机反馈「预览要 20-30 秒才出字」，
+        // 而流式转写的静音阈值是 0.3——若真人对着麦克风说话的能量普遍
+        // 低于该值，转写就会被 VAD 一直挡住。TTS 合成音测不出这个问题
+        // （它的能量 93% 在阈值之上），必须用真实数据判断。
+        let energy = previewProcessor.energySummary()
+        if energy.count > 0 {
+            AppLogger.shared.log(
+                "本次能量：\(energy.count) 个块 中位 \(String(format: "%.3f", energy.median)) "
+                + "最大 \(String(format: "%.3f", energy.max)) "
+                + "超阈值(0.3) \(energy.aboveThreshold) 个 "
+                + "(\(energy.aboveThreshold * 100 / energy.count)%)"
+            )
+        }
     }
 
     /// 在模型加载完成后把预览引擎挂到会话上。

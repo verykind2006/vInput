@@ -21,14 +21,48 @@ struct SourceBackedAudioProcessorTests {
         #expect(Array(processor.audioSamples) == [0.1, 0.2, 0.3, 0.4, 0.5])
     }
 
-    @Test("每推入一批就产出一个能量值")
-    func producesOneEnergyPerChunk() {
+    @Test("能量按固定 100ms 结算，与来帧长度无关")
+    func energyBlocksAreFixedSize() {
+        let processor = SourceBackedAudioProcessor()
+        let block = SourceBackedAudioProcessor.energyBlockSamples   // 1600 @16kHz
+
+        // WhisperKit 的 isVoiceDetected 硬编码假设「每个能量值 = 100ms」，
+        // 并据此把时长换算成要检查的能量个数。若按来帧长度记录
+        // （SystemMicSource 约 85ms），它的静音判断窗口就会算错。
+        processor.append(Array(repeating: 0.5, count: block / 2))
+        #expect(processor.relativeEnergy.isEmpty, "不足一个 100ms 块时不应结算")
+
+        processor.append(Array(repeating: 0.5, count: block / 2))
+        #expect(processor.relativeEnergy.count == 1, "凑满一块才产出一个能量值")
+
+        // 一次推入两块半，应产出两个，余下半块留待下次
+        processor.append(Array(repeating: 0.5, count: block * 2 + block / 2))
+        #expect(processor.relativeEnergy.count == 3)
+    }
+
+    @Test("样本累积不受能量分块影响")
+    func samplesAreNotAffectedByEnergyBlocking() {
         let processor = SourceBackedAudioProcessor()
 
-        processor.append([0.5, 0.5, 0.5])
-        processor.append([0.1, 0.1, 0.1])
+        // 来帧长度任意，样本必须一个不少地原样累积
+        processor.append([0.1, 0.2, 0.3])
+        processor.append([0.4, 0.5])
 
-        #expect(processor.relativeEnergy.count == 2)
+        #expect(Array(processor.audioSamples) == [0.1, 0.2, 0.3, 0.4, 0.5])
+        #expect(processor.relativeEnergy.isEmpty)
+    }
+
+    @Test("reset 后残余的不足一块的样本也被清掉")
+    func resetClearsPendingBlock() {
+        let processor = SourceBackedAudioProcessor()
+        let block = SourceBackedAudioProcessor.energyBlockSamples
+
+        processor.append(Array(repeating: 0.5, count: block / 2))
+        processor.reset()
+        // 若残余未清，这半块会与新会话的样本拼在一起，能量偏移一个块
+        processor.append(Array(repeating: 0.5, count: block / 2))
+
+        #expect(processor.relativeEnergy.isEmpty)
     }
 
     @Test("能量值落在 0…1 区间")
