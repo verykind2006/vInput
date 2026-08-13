@@ -1,3 +1,4 @@
+import WhisperKit
 import Testing
 @testable import vInput
 
@@ -42,5 +43,75 @@ struct WhisperKitTranscriberPreviewTests {
         let engine = await transcriber.makePreviewEngine(processor: processor)
 
         #expect(engine == nil)
+    }
+}
+
+@Suite("结尾无语音分段过滤")
+struct TrailingNonSpeechFilterTests {
+    private func segment(_ text: String, noSpeech: Float, id: Int = 0) -> TranscriptionSegment {
+        TranscriptionSegment(
+            id: id, seek: 0, start: 0, end: 1, text: text,
+            tokens: [], tokenLogProbs: [], temperature: 0,
+            avgLogprob: 0, compressionRatio: 1, noSpeechProb: noSpeech
+        )
+    }
+
+    @Test("剥掉结尾判为无语音的分段")
+    func dropsTrailingHallucination() {
+        let segments = [
+            segment("今天下午三点开会", noSpeech: 0.05),
+            segment("谢谢大家", noSpeech: 0.92),
+        ]
+        #expect(WhisperKitTranscriber.textDroppingTrailingNonSpeech(segments) == "今天下午三点开会")
+    }
+
+    @Test("连续多段无语音一并剥掉")
+    func dropsMultipleTrailing() {
+        let segments = [
+            segment("正文", noSpeech: 0.1),
+            segment("谢谢观看", noSpeech: 0.8),
+            segment("请点赞订阅", noSpeech: 0.95),
+        ]
+        #expect(WhisperKitTranscriber.textDroppingTrailingNonSpeech(segments) == "正文")
+    }
+
+    @Test("句子中间被判无语音的分段不动")
+    func keepsMidSentenceSegments() {
+        // 中间某段被判无语音多半是模型判断失误，删掉就是真的丢字
+        let segments = [
+            segment("前半句", noSpeech: 0.1),
+            segment("中间这段", noSpeech: 0.9),
+            segment("后半句", noSpeech: 0.1),
+        ]
+        #expect(WhisperKitTranscriber.textDroppingTrailingNonSpeech(segments) == "前半句中间这段后半句")
+    }
+
+    @Test("全部是语音时一段不少")
+    func keepsAllWhenAllSpeech() {
+        let segments = [
+            segment("第一段", noSpeech: 0.1),
+            segment("第二段", noSpeech: 0.2),
+        ]
+        #expect(WhisperKitTranscriber.textDroppingTrailingNonSpeech(segments) == "第一段第二段")
+    }
+
+    @Test("恰好等于阈值的分段被剥掉")
+    func atThresholdIsDropped() {
+        let segments = [
+            segment("正文", noSpeech: 0.1),
+            segment("套话", noSpeech: WhisperKitTranscriber.nonSpeechProbability),
+        ]
+        #expect(WhisperKitTranscriber.textDroppingTrailingNonSpeech(segments) == "正文")
+    }
+
+    @Test("全部被判无语音时返回空串而非崩溃")
+    func allNonSpeechYieldsEmpty() {
+        let segments = [segment("谢谢观看", noSpeech: 0.99)]
+        #expect(WhisperKitTranscriber.textDroppingTrailingNonSpeech(segments).isEmpty)
+    }
+
+    @Test("空分段安全")
+    func emptySegmentsAreSafe() {
+        #expect(WhisperKitTranscriber.textDroppingTrailingNonSpeech([]).isEmpty)
     }
 }

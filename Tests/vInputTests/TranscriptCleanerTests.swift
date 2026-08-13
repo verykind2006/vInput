@@ -71,6 +71,22 @@ struct TranscriptCleanerTests {
         #expect(TranscriptCleaner.clean(text) == text)
     }
 
+    @Test("谢谢大家同样作为结尾幻觉被删")
+    func removesTrailingThanksEveryone() {
+        // 真机反馈：结尾冒出「谢谢大家」。它比「谢谢观看」更可能是真话，
+        // 但实测作为幻觉出现的频率明显更高。主防线是分段级的无语音概率
+        // 过滤，这里是兜底。
+        #expect(TranscriptCleaner.clean("这次测试结果比较满意。谢谢大家") == "这次测试结果比较满意。")
+        #expect(TranscriptCleaner.clean("正文内容，谢谢大家。") == "正文内容")
+    }
+
+    @Test("长短语优先匹配，不会截半")
+    func longestPhraseWins() {
+        // 若「谢谢大家」排在「谢谢大家观看」之前，会留下孤零零的「观看」
+        #expect(TranscriptCleaner.clean("正文。谢谢大家观看") == "正文。")
+        #expect(TranscriptCleaner.clean("正文。谢谢大家收看") == "正文。")
+    }
+
     @Test("整段就是幻觉套话时返回空")
     func fillerOnlyYieldsEmpty() {
         #expect(TranscriptCleaner.clean("谢谢观看") == "")

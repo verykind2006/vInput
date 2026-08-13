@@ -48,6 +48,32 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
         }
     }
 
+    /// 判定一段是幻觉所用的「无语音概率」下限。
+    ///
+    /// 与 `DecodingOptions.noSpeechThreshold` 的默认值一致。该阈值在解码
+    /// 过程中用于决定是否跳过整个窗口，这里用同一把尺子做事后过滤。
+    static let nonSpeechProbability: Float = 0.6
+
+    /// 丢弃结尾处「其实没人说话」的分段，再把剩下的拼成文本。
+    ///
+    /// Whisper 的中文训练数据含大量带字幕视频，音频结尾的静音段极易让它
+    /// 凭空生成「谢谢观看」「谢谢大家」这类套话。真机反复出现过。
+    ///
+    /// **只从结尾往前剥，不动中间。** 句子中间某段被判为无语音多半是模型
+    /// 判断失误，删掉就是真的丢字了——那正是规则二要防的事。
+    nonisolated static func textDroppingTrailingNonSpeech(
+        _ segments: [TranscriptionSegment]
+    ) -> String {
+        var kept = segments[...]
+        while let last = kept.last, last.noSpeechProb >= nonSpeechProbability {
+            kept = kept.dropLast()
+        }
+        return kept
+            .map(\.text)
+            .joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     func transcribe(_ samples: [Float]) async throws -> String {
         let duration = Double(samples.count) / AudioFormat.sampleRate
         guard duration >= Self.minimumDuration else {
@@ -71,14 +97,15 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
                 audioArray: samples,
                 decodeOptions: options
             )
-            let raw = results
-                .map(\.text)
-                .joined()
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // 按分段过滤，而不是把所有文本拼起来再猜词。
+            // 模型自己给出了每段「其实没人说话」的概率，用它比维护
+            // 一张幻觉短语表可靠得多——短语表打不完，且每加一个词
+            // 就多一分误删真话的风险。
+            let segments = results.flatMap(\.segments)
+            let raw = Self.textDroppingTrailingNonSpeech(segments)
 
-            // 上面两项只能减少幻觉，无法根除——WhisperKit 未实现
-            // OpenAI 参考实现默认启用的 nonSpeechTokens 抑制。
-            // 因此再过一层保守的尾巴过滤兜底。
+            // 分段过滤只能拿掉「整段都是幻觉」的情形。若幻觉与真实语音
+            // 混在同一段里（模型对该段整体判为有语音），仍需短语兜底。
             let cleaned = TranscriptCleaner.clean(raw)
             return normalizeToSimplified ? ChineseScript.toSimplified(cleaned) : cleaned
         } catch {
