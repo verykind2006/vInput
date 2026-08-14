@@ -87,25 +87,9 @@ struct RemoteConnectionStateTests {
         #expect(!text.isEmpty)
     }
 
-    @Test("全部八个已知 key 都有中文译文")
-    func allKnownKeysTranslated() {
-        let keys = [
-            "bluetooth.status.off",
-            "bluetooth.status.permission_denied",
-            "bluetooth.status.unsupported",
-            "bluetooth.status.resetting",
-            "bluetooth.status.initializing",
-            "bluetooth.status.unavailable",
-            "connection.error.voice_service_missing",
-            "connection.error.voice_channel_incomplete",
-        ]
-        for key in keys {
-            let state = RemoteConnectionState(bridgeState: .failed(LocalizedMessage(key)))
-            guard case .unavailable(let text) = state else {
-                Issue.record("\(key) 应映射为 unavailable")
-                continue
-            }
-            #expect(!text.contains("."), "\(key) 未被译成中文，仍是 i18n key")
-        }
-    }
+    // 「所有可达 key 都有译文」的覆盖检查见
+    // RemoteConnectionI18nCoverageTests：它直接扫描源码里的
+    // LocalizedMessage 构造点，而不是维护一份会脱节的手抄清单。
+    // 原先此处硬编码八个 key，实际可达的是十六个——差额里有三个
+    // 是跨行构造的，手工 grep 与真机验收都没看见。
 }

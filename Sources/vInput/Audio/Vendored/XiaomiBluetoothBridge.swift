@@ -836,8 +836,13 @@ extension XiaomiBluetoothBridge: CBCentralManagerDelegate {
         default:
             shouldDiscardCachedIdentity = false
         }
+        // streaming 一并记录，是为了让「录音中途断连是否丢字」这件事
+        // 在日常使用中被动留痕：断连时若 streaming=true，紧随其后应当出现
+        // 一条「注入成功」——那就是规则二在这条路径上的现场证据，不需要
+        // 谁专门去拔电池复现。
         AppLogger.shared.log(
-            "BLE DISCONNECTED phase=\(lifecycle) cached_identifier_cleared=\(shouldDiscardCachedIdentity) " +
+            "BLE DISCONNECTED phase=\(lifecycle) streaming=\(streaming) " +
+                "cached_identifier_cleared=\(shouldDiscardCachedIdentity) " +
                 "error=\(error?.localizedDescription ?? "none")"
         )
         let delay = shouldRun ? (requestedReconnectDelay ?? 3) : nil

@@ -49,33 +49,44 @@ enum RemoteConnectionState: Equatable {
         }
     }
 
-    /// 把 i18n key 译成中文。
+    /// i18n key 到中文的映射表。
     ///
     /// 上游的本地化系统未移植（那会牵进整套设置与语言切换），
     /// `LocalizedMessage` 只剩 key。直接展示会是 "bluetooth.status.off"
     /// 这种字符串，所以在这里做一次映射。
-    private static func translate(_ message: LocalizedMessage) -> String {
-        switch message.key {
-        case "bluetooth.status.off":
-            return "蓝牙已关闭"
-        case "bluetooth.status.permission_denied":
-            return "未授予蓝牙权限"
-        case "bluetooth.status.unsupported":
-            return "本机不支持蓝牙"
-        case "bluetooth.status.resetting":
-            return "蓝牙重置中"
-        case "bluetooth.status.initializing":
-            return "蓝牙初始化中"
-        case "bluetooth.status.unavailable":
-            return "蓝牙不可用"
-        case "connection.error.voice_service_missing":
-            return "遥控器不支持语音"
-        case "connection.error.voice_channel_incomplete":
-            return "语音通道不完整"
-        default:
-            // 上游新增状态时的兜底。宁可笼统也不要把 i18n key 甩给用户，
-            // 具体原因已经记在日志里。
-            return "连接异常"
-        }
+    ///
+    /// **必须覆盖所有会进入 `.failed` / `.bluetoothUnavailable` 的 key。**
+    /// `RemoteConnectionStateTests` 会扫描源码里全部 `LocalizedMessage(...)`
+    /// 的构造点，任何新 key 若既不在本表、也不在测试的「不作为故障展示」
+    /// 白名单里，测试就会失败——上游新增状态时不会静默退化成「连接异常」。
+    static let translations: [String: String] = [
+        "bluetooth.status.off": "蓝牙已关闭",
+        "bluetooth.status.permission_denied": "未授予蓝牙权限",
+        "bluetooth.status.unsupported": "本机不支持蓝牙",
+        "bluetooth.status.resetting": "蓝牙重置中",
+        "bluetooth.status.initializing": "蓝牙初始化中",
+        "bluetooth.status.unavailable": "蓝牙不可用",
+        "connection.error.voice_service_missing": "遥控器不支持语音",
+        "connection.error.voice_channel_incomplete": "语音通道不完整",
+        // 以下五项经 failInitialization / rejectUnsupportedAudio 间接进入
+        // .failed，同样会显示给用户。此前漏映射，一律退化成「连接异常」，
+        // 把「遥控器不支持 16kHz」这类可操作的信息也一并抹平了。
+        "connection.error.voice_service_timeout": "遥控器语音服务无响应",
+        "connection.error.invalid_voice_response": "遥控器语音响应无法解析",
+        "connection.error.unsupported_16khz_codec": "遥控器不支持 16kHz 编码",
+        "connection.error.unsupported_8khz_codec": "遥控器不支持 8kHz 编码",
+        "connection.error.voice_channel_subscription_inactive": "语音通道订阅未生效",
+        // 这三项是跨行构造的，手工 grep 与真机验收都漏了，由覆盖测试抓出。
+        "connection.error.voice_service_discovery_failed": "未找到遥控器的语音服务",
+        "connection.error.voice_channel_discovery_failed": "未找到语音数据通道",
+        "connection.error.voice_channel_subscription_failed": "语音通道订阅失败",
+    ]
+
+    /// 未映射 key 的兜底文案。宁可笼统也不要把 i18n key 甩给用户，
+    /// 具体原因已经记在日志里。
+    static let untranslatedFallback = "连接异常"
+
+    static func translate(_ message: LocalizedMessage) -> String {
+        translations[message.key] ?? untranslatedFallback
     }
 }
