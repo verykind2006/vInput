@@ -36,6 +36,7 @@ final class AppModel {
 
     private let bluetoothSource = BluetoothRemoteSource()
     private let hidListener = RemoteHIDListener()
+    private let keepalive = VoiceSessionKeepalive()
     private var remoteCoordinator: RemoteCoordinator?
     private var bluetoothBridge: XiaomiBluetoothBridge?
     private var audioRouter: AudioSourceRouter?
@@ -397,16 +398,32 @@ final class AppModel {
                     AppLogger.shared.log("遥控器录音启动失败：\(error)")
                 }
             }
+            self.keepalive.start()
         }
         coordinator.onFinishSession = { [weak self] in
+            self?.keepalive.stop()
             guard let session = self?.session else { return }
             AppLogger.shared.log("遥控器语音键松开，进入转写")
             Task { await session.finish() }
         }
         coordinator.onCancelSession = { [weak self] in
+            self?.keepalive.stop()
             guard let session = self?.session else { return }
             AppLogger.shared.log("遥控器返回键按下，取消会话")
             Task { await session.cancel() }
+        }
+
+        keepalive.onExtend = { [weak self] in
+            guard let bridge = self?.bluetoothBridge else { return }
+            if !bridge.requestMicrophoneExtend() {
+                // 单次失败不中断会话——下一个间隔还会再试，
+                // 连接真正断开时由桥的生命周期终止。
+                AppLogger.shared.log("MIC_EXTEND 写入失败，将在下个间隔重试")
+            }
+        }
+        keepalive.onTimeout = { [weak self] in
+            AppLogger.shared.log("达到 \(Int(VoiceSessionKeepalive.maxDuration)) 秒上限，主动结束会话")
+            self?.remoteCoordinator?.handleVoiceStop()
         }
         remoteCoordinator = coordinator
 
