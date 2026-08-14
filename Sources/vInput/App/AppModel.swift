@@ -30,10 +30,25 @@ final class AppModel {
     private var session: DictationSession?
     private var transcriber: SwitchableTranscriber?
     private var modelRoot: String = ""
+    private let hudModel = HUDViewModel()
+    // 不能用 lazy：@Observable 宏为存储属性生成 init accessor，
+    // 与 lazy 的存储语义冲突，编译期报错。构造 HUDPanel/
+    // CancelHotkeyController 本身没有副作用，非 lazy 无影响。
+    private let hud: HUDPanel
+    private let cancelHotkey: CancelHotkeyController
+    private let previewProcessor = SourceBackedAudioProcessor()
+    /// 录音开始时刻，用于 HUD 的时长显示。
+    private var recordingStartedAt: Date?
+    private var hudTimer: Timer?
 
     /// 默认快捷键：Option + D。
     private let hotkeyCode = UInt32(kVK_ANSI_D)
     private let hotkeyModifiers = UInt32(optionKey)
+
+    init() {
+        hud = HUDPanel(model: hudModel)
+        cancelHotkey = CancelHotkeyController(registrar: EscHotkeyRegistrar())
+    }
 
     /// 构造底层转写器。
     ///
@@ -69,8 +84,9 @@ final class AppModel {
         )
         self.transcriber = transcriber
 
+        let micSource = SystemMicSource()
         let session = DictationSession(
-            audioSource: SystemMicSource(),
+            audioSource: micSource,
             transcriber: transcriber,
             sink: RoutingTextSink(
                 typing: TypingSink(),
@@ -87,6 +103,14 @@ final class AppModel {
             case .listening: self.phase = .listening
             case .transcribing, .injecting: self.phase = .working
             }
+            self.hudModel.phase = state
+            self.cancelHotkey.update(for: state)
+
+            if state == .listening {
+                self.beginHUD()
+            } else if state == .idle {
+                self.endHUD()
+            }
         }
         session.onError = { [weak self] error in
             AppLogger.shared.log("会话出错：\(error)")
@@ -96,7 +120,26 @@ final class AppModel {
             AppLogger.shared.logTranscript(text, context: "注入成功")
             self?.lastText = text
         }
+        session.onPreview = { [weak self] preview in
+            self?.hudModel.preview = preview
+        }
         self.session = session
+
+        // DictationSession 构造时已接管 onFrame，这里在其之上再包一层，
+        // 让同一路音频也进预览处理器。分叉点在 AudioSource 之后——
+        // 这样 M3 接蓝牙时，预览无需任何改动即可工作。
+        let sessionTap = micSource.onFrame
+        let processor = previewProcessor
+        micSource.onFrame = { samples in
+            sessionTap?(samples)
+            processor.append(samples)
+        }
+
+        cancelHotkey.onCancel = { [weak self] in
+            guard let self, let session = self.session else { return }
+            AppLogger.shared.log("用户按 Esc 取消会话")
+            Task { await session.cancel() }
+        }
         AppLogger.shared.log("启动完成，模型=\(initial.name) 可用模型=\(availableModels.map(\.name))")
 
         do {
@@ -106,10 +149,96 @@ final class AppModel {
         } catch {
             phase = .error("快捷键注册失败：\(error)")
         }
+
+        // 预览引擎依赖已加载的模型，异步挂载。
+        Task { await warmUpAndAttachPreview() }
     }
 
     func shutdown() {
         hotkey.unregister()
+    }
+
+    // MARK: - HUD
+
+    private func beginHUD() {
+        hudModel.preview = .empty
+        hudModel.energy = []
+        hudModel.elapsed = 0
+        hudModel.previewDegraded = false
+        recordingStartedAt = Date()
+        hud.show()
+
+        // 20 fps：波形要这个频率才不卡顿。时长只显示到秒，顺带一起更新。
+        // 能量直接从 previewProcessor 读，不等流式转写的状态回调——
+        // 那是 1–2 秒一次，用它驱动波形会一顿一顿的。
+        hudTimer?.invalidate()
+        hudTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, let started = self.recordingStartedAt else { return }
+                self.hudModel.elapsed = Date().timeIntervalSince(started)
+                self.hudModel.energy = self.previewProcessor.relativeEnergy
+            }
+        }
+    }
+
+    private func endHUD() {
+        hudTimer?.invalidate()
+        hudTimer = nil
+        recordingStartedAt = nil
+        hud.hide()
+
+        // 记录本次录音的能量分布。真机反馈「预览要 20-30 秒才出字」，
+        // 而流式转写的静音阈值是 0.3——若真人对着麦克风说话的能量普遍
+        // 低于该值，转写就会被 VAD 一直挡住。TTS 合成音测不出这个问题
+        // （它的能量 93% 在阈值之上），必须用真实数据判断。
+        let energy = previewProcessor.energySummary()
+        if energy.count > 0 {
+            AppLogger.shared.log(
+                "本次能量：\(energy.count) 个块 中位 \(String(format: "%.3f", energy.median)) "
+                + "最大 \(String(format: "%.3f", energy.max)) "
+                + "超阈值(0.3) \(energy.aboveThreshold) 个 "
+                + "(\(energy.aboveThreshold * 100 / energy.count)%)"
+            )
+        }
+    }
+
+    /// 在模型加载完成后把预览引擎挂到会话上。
+    ///
+    /// 单独一步而非在 bootstrap 里做：预览引擎需要已加载的模型，
+    /// 而模型加载是异步且可能失败的。失败时会话照常工作，只是没有预览。
+    /// 预热模型，然后挂载预览引擎。
+    ///
+    /// **必须先预热。** 预览引擎要从已加载的 `WhisperKit` 实例取解码器组件，
+    /// 而模型是懒加载的——首次转写时才 `prepare()`。启动时直接调
+    /// `attachPreview()` 必然拿到 nil（真机日志实测：「模型未就绪，本次
+    /// 运行无实时预览」），且不会重试，等于实时预览永远不工作。
+    ///
+    /// 顺带解决另一个问题：模型首次加载要做 Core ML 到神经引擎的编译
+    /// （实测 40–125 秒）。放到启动后台做，用户第一次说话就不必干等。
+    private func warmUpAndAttachPreview() async {
+        guard let transcriber else { return }
+        do {
+            try await transcriber.prepare()
+            AppLogger.shared.log("模型预热完成")
+        } catch {
+            AppLogger.shared.log("模型预热失败，本次运行无实时预览：\(error)")
+            return
+        }
+        await attachPreview()
+    }
+
+    private func attachPreview() async {
+        guard let transcriber, let session else { return }
+        guard let previewCapable = await transcriber.currentPreviewCapable() else {
+            AppLogger.shared.log("当前转写器不支持预览")
+            return
+        }
+        guard let engine = await previewCapable.makePreviewEngine(processor: previewProcessor) else {
+            AppLogger.shared.log("模型未就绪，本次运行无实时预览")
+            return
+        }
+        session.attachPreviewEngine(engine)
+        AppLogger.shared.log("实时预览已就绪")
     }
 
     // MARK: - 运行时换模型
@@ -150,6 +279,8 @@ final class AppModel {
             do {
                 try await transcriber.switchTo(model)
                 self?.activeModelName = model.name
+                // 换模型后预览引擎绑的是旧解码器，必须重新挂载。
+                await self?.attachPreview()
                 log.log("切换成功 \(model.name) 耗时 \(Int(Date().timeIntervalSince(started)))s")
             } catch {
                 // 切换失败时旧模型仍然可用，见 SwitchableTranscriber 的保证。
@@ -197,12 +328,16 @@ final class AppModel {
 
         switch session.state {
         case .idle:
-            do {
-                try session.start()
-                log.log("开始录音，模型=\(activeModelName)")
-            } catch {
-                log.log("录音启动失败：\(error)")
-                phase = .error(String(describing: error))
+            // start() 现在是 async（要等预览引擎启动），与下面 finish()
+            // 一样用 Task 包一层，toggle() 本身保持同步好继续挂在按钮上。
+            Task {
+                do {
+                    try await session.start()
+                    log.log("开始录音，模型=\(activeModelName)")
+                } catch {
+                    log.log("录音启动失败：\(error)")
+                    phase = .error(String(describing: error))
+                }
             }
         case .listening:
             log.log("结束录音，进入转写")

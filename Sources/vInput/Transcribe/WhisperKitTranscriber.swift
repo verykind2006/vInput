@@ -5,7 +5,7 @@ import WhisperKit
 ///
 /// 用 actor 而非 class，是因为模型加载与推理都不可重入：
 /// 两个会话同时触发时，第二个必须排队而不是并发进入 Core ML。
-actor WhisperKitTranscriber: Transcriber {
+actor WhisperKitTranscriber: Transcriber, PreviewCapable {
     /// 低于此时长的音频不送去转写，避免 Whisper 对极短片段产生幻觉文本。
     static let minimumDuration: TimeInterval = 0.3
 
@@ -48,6 +48,32 @@ actor WhisperKitTranscriber: Transcriber {
         }
     }
 
+    /// 判定一段是幻觉所用的「无语音概率」下限。
+    ///
+    /// 与 `DecodingOptions.noSpeechThreshold` 的默认值一致。该阈值在解码
+    /// 过程中用于决定是否跳过整个窗口，这里用同一把尺子做事后过滤。
+    static let nonSpeechProbability: Float = 0.6
+
+    /// 丢弃结尾处「其实没人说话」的分段，再把剩下的拼成文本。
+    ///
+    /// Whisper 的中文训练数据含大量带字幕视频，音频结尾的静音段极易让它
+    /// 凭空生成「谢谢观看」「谢谢大家」这类套话。真机反复出现过。
+    ///
+    /// **只从结尾往前剥，不动中间。** 句子中间某段被判为无语音多半是模型
+    /// 判断失误，删掉就是真的丢字了——那正是规则二要防的事。
+    nonisolated static func textDroppingTrailingNonSpeech(
+        _ segments: [TranscriptionSegment]
+    ) -> String {
+        var kept = segments[...]
+        while let last = kept.last, last.noSpeechProb >= nonSpeechProbability {
+            kept = kept.dropLast()
+        }
+        return kept
+            .map(\.text)
+            .joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     func transcribe(_ samples: [Float]) async throws -> String {
         let duration = Double(samples.count) / AudioFormat.sampleRate
         guard duration >= Self.minimumDuration else {
@@ -60,6 +86,10 @@ actor WhisperKitTranscriber: Transcriber {
         do {
             let options = DecodingOptions(
                 language: language,
+                // segment.text 是原始文本，不开这个会带 <|zh|>、<|0.00|>
+                // 这类标记。TranscriptionResult.text 是处理过的，但我们
+                // 为了做分段级过滤直接读 segments，必须自己关掉。
+                skipSpecialTokens: true,
                 // WhisperKit 默认 false。开启后抑制空白 token，
                 // 减少静音段凭空生成内容。
                 suppressBlank: true,
@@ -71,18 +101,47 @@ actor WhisperKitTranscriber: Transcriber {
                 audioArray: samples,
                 decodeOptions: options
             )
-            let raw = results
-                .map(\.text)
-                .joined()
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // 按分段过滤，而不是把所有文本拼起来再猜词。
+            // 模型自己给出了每段「其实没人说话」的概率，用它比维护
+            // 一张幻觉短语表可靠得多——短语表打不完，且每加一个词
+            // 就多一分误删真话的风险。
+            let segments = results.flatMap(\.segments)
+            let raw = Self.textDroppingTrailingNonSpeech(segments)
 
-            // 上面两项只能减少幻觉，无法根除——WhisperKit 未实现
-            // OpenAI 参考实现默认启用的 nonSpeechTokens 抑制。
-            // 因此再过一层保守的尾巴过滤兜底。
+            // 分段过滤只能拿掉「整段都是幻觉」的情形。若幻觉与真实语音
+            // 混在同一段里（模型对该段整体判为有语音），仍需短语兜底。
             let cleaned = TranscriptCleaner.clean(raw)
             return normalizeToSimplified ? ChineseScript.toSimplified(cleaned) : cleaned
         } catch {
             throw TranscribeError.engineFailed(error.localizedDescription)
         }
+    }
+
+    /// 基于当前已加载的模型构造预览引擎。
+    ///
+    /// **重要：返回的引擎与本转写器共享同一套解码器实例。**
+    /// 两者并发执行会在解码器状态上产生数据竞争，调用方
+    /// （`DictationSession`）必须保证预览停止后才发起全量转写。
+    func makePreviewEngine(processor: SourceBackedAudioProcessor) async -> PreviewEngine? {
+        guard let pipe else { return nil }
+        guard let tokenizer = pipe.tokenizer else { return nil }
+
+        return StreamingPreviewEngine(
+            audioEncoder: pipe.audioEncoder,
+            featureExtractor: pipe.featureExtractor,
+            segmentSeeker: pipe.segmentSeeker,
+            textDecoder: pipe.textDecoder,
+            tokenizer: tokenizer,
+            processor: processor,
+            // skipSpecialTokens 默认为 false，此时 segment.text 里会带
+            // <|zh|>、<|0.00|> 这类原始标记。最终注入读的是
+            // TranscriptionResult.text（已处理过）所以看不出来，而预览直接
+            // 读 segments[].text——真机反馈「一堆尖角符」就是这个。
+            decodingOptions: DecodingOptions(
+                language: language,
+                skipSpecialTokens: true,
+                suppressBlank: true
+            )
+        )
     }
 }

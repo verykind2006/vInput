@@ -34,7 +34,7 @@ struct SwitchableTranscriberTests {
     @Test("转写委托给当前模型")
     func delegatesToCurrent() async throws {
         let factory = Factory()
-        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: factory.make)
+        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: { @Sendable in factory.make($0) })
 
         let text = try await sut.transcribe([0.1, 0.2, 0.3])
 
@@ -45,7 +45,7 @@ struct SwitchableTranscriberTests {
     @Test("切换后转写走新模型")
     func switchChangesBackend() async throws {
         let factory = Factory()
-        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: factory.make)
+        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: { @Sendable in factory.make($0) })
 
         try await sut.switchTo(descriptor("large-v3"))
         let text = try await sut.transcribe([0.1])
@@ -57,7 +57,7 @@ struct SwitchableTranscriberTests {
     @Test("切换到同一个模型不重复构造")
     func switchingToSameIsNoop() async throws {
         let factory = Factory()
-        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: factory.make)
+        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: { @Sendable in factory.make($0) })
 
         try await sut.switchTo(descriptor("base"))
 
@@ -68,7 +68,7 @@ struct SwitchableTranscriberTests {
     @Test("新模型加载失败时保持原模型可用")
     func failedSwitchKeepsPreviousModel() async throws {
         let factory = Factory()
-        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: factory.make)
+        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: { @Sendable in factory.make($0) })
 
         // 预置一个 prepare 会失败的替身
         let broken = FakeTranscriber()
@@ -88,7 +88,7 @@ struct SwitchableTranscriberTests {
     @Test("切换会排在进行中的转写之后，不打断它")
     func switchWaitsForInFlightTranscription() async throws {
         let factory = Factory()
-        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: factory.make)
+        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: { @Sendable in factory.make($0) })
         factory.fakes["base"]?.delay = .milliseconds(120)
 
         // 先发起一次慢转写
@@ -108,7 +108,7 @@ struct SwitchableTranscriberTests {
     @Test("prepare 委托给当前模型")
     func prepareDelegates() async throws {
         let factory = Factory()
-        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: factory.make)
+        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: { @Sendable in factory.make($0) })
 
         try await sut.prepare()
 

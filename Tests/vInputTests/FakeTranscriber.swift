@@ -15,6 +15,12 @@ final class FakeTranscriber: Transcriber, @unchecked Sendable {
 
     private(set) var receivedSamples: [[Float]] = []
     private(set) var prepareCallCount = 0
+    /// 首次 transcribe 被调用时的全局序号。
+    ///
+    /// 与 `FakePreviewEngine.stopOrder` 共用同一个计数器，用于断言
+    /// 「先停预览、再发起全量转写」——两者共享同一套 WhisperKit 解码器
+    /// 实例，顺序反了会产生数据竞争。只比较计数是抓不到顺序问题的。
+    private(set) var firstTranscribeOrder: Int?
 
     func prepare() async throws {
         prepareCallCount += 1
@@ -22,6 +28,9 @@ final class FakeTranscriber: Transcriber, @unchecked Sendable {
     }
 
     func transcribe(_ samples: [Float]) async throws -> String {
+        if firstTranscribeOrder == nil {
+            firstTranscribeOrder = FakePreviewEngine.orderCounter.next()
+        }
         receivedSamples.append(samples)
         if delay > .zero { try await Task.sleep(for: delay) }
         if let transcribeError { throw transcribeError }
