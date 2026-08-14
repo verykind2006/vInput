@@ -60,6 +60,7 @@ private struct MenuContent: View {
 
         Divider()
         modelMenu
+        correctionMenu
 
         Divider()
         Button("打开日志") {
@@ -96,6 +97,38 @@ private struct MenuContent: View {
                 .disabled(!model.canSwitchModel)
         }
         .onAppear { model.refreshAvailableModels() }
+    }
+
+    /// 校正子菜单。做成子菜单而非顶层两个按钮：开关与模型目录是同一件事的
+    /// 两个面，且与上面的「模型：…」子菜单结构对齐，顶层菜单不再变长。
+    @ViewBuilder
+    private var correctionMenu: some View {
+        Menu("校正：\(model.correctionEnabled ? "开" : "关")") {
+            Button(model.correctionEnabled ? "关闭校正" : "开启校正") {
+                model.toggleCorrection()
+            }
+
+            Divider()
+            // 让用户知道当前用的是哪个模型——校正效果好坏几乎全由它决定。
+            Text(model.correctionModelName.map { "模型：\($0)" } ?? "模型：默认（首次使用时下载）")
+            Button("指定校正模型…") { chooseCorrectionModelFolder() }
+        }
+    }
+
+    /// 选择校正模型目录。activate 的理由同 `chooseModelFolder`。
+    private func chooseCorrectionModelFolder() {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
+        let panel = NSOpenPanel()
+        panel.title = "选择校正模型目录"
+        panel.message = "选择本地 MLX 模型目录（含 config.json、tokenizer.json 与权重文件）"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+
+        if panel.runModal() == .OK, let url = panel.url {
+            model.selectCorrectionModel(directory: url)
+        }
     }
 
     private var modelMenuTitle: String {

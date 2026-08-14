@@ -25,7 +25,19 @@ final class AppModel {
     /// 实测可达 40–125 秒，期间必须让用户看到进度而不是以为卡死。
     private(set) var loadingModelName: String?
 
+    /// 校正是否启用，菜单据此显示「校正：开 / 关」。
+    ///
+    /// 真实存储在 UserDefaults（需跨启动保留），这里是它的可观察镜像：
+    /// @Observable 只跟踪自身的存储属性，若菜单直接读 UserDefaults，
+    /// 点完开关标题不会刷新。写入时两边一起更新，UI 只读这一份。
+    private(set) var correctionEnabled: Bool = false
+    /// 当前校正模型目录名，未指定时为 nil（此时按标识符下载）。
+    /// 同样是 UserDefaults 的可观察镜像，理由同上。
+    private(set) var correctionModelName: String?
+
     private let permissions = Permissions()
+    /// 校正偏好。开关状态与模型目录都要跨启动保留。
+    private let correctionPreference = CorrectionPreference()
     private let hotkey = HotkeyRegistrar()
     private var session: DictationSession?
     private var transcriber: SwitchableTranscriber?
@@ -59,6 +71,9 @@ final class AppModel {
     init() {
         hud = HUDPanel(model: hudModel)
         cancelHotkey = CancelHotkeyController(registrar: EscHotkeyRegistrar())
+        // 镜像上次退出时的偏好，菜单打开即是正确状态。
+        correctionEnabled = correctionPreference.isEnabled
+        correctionModelName = correctionPreference.modelDirectory?.lastPathComponent
     }
 
     /// 构造底层转写器。
@@ -142,6 +157,8 @@ final class AppModel {
             self?.hudModel.preview = preview
         }
         self.session = session
+        // 会话与全部回调就绪后再挂校正，让上次启动保存的开关状态生效。
+        applyCorrectionPreference()
 
         // 分叉点收敛到路由器：无论音频来自内置麦还是蓝牙遥控器，
         // 都经由同一处流向预览处理器。这是 M2「分叉在 AudioSource 之后」
@@ -260,6 +277,57 @@ final class AppModel {
         }
         session.attachPreviewEngine(engine)
         AppLogger.shared.log("实时预览已就绪")
+    }
+
+    // MARK: - 校正
+
+    /// 依据偏好构造校正流水线。关闭时返回 nil，会话行为与从前完全一致。
+    ///
+    /// 模型不在此处预热：这是个 2 GB 级的模型，加载耗时且占内存，而校正
+    /// 默认关闭，多数启动根本用不到它。首次校正时由 `MLXCorrector.prepare()`
+    /// 惰性加载，代价是第一次会稍慢——但有 3 秒超时兜底，超时退回原文，
+    /// 不会卡住用户。
+    private func makeCorrectionPipeline() -> CorrectionPipeline? {
+        guard correctionPreference.isEnabled else { return nil }
+        return CorrectionPipeline(
+            corrector: MLXCorrector(modelDirectory: correctionPreference.modelDirectory)
+        )
+    }
+
+    /// 把当前偏好应用到会话上。
+    ///
+    /// **不重建会话**——本仓库的运行时配置变更一律就地替换（换 Whisper
+    /// 模型走 `SwitchableTranscriber.switchTo`，挂预览引擎走
+    /// `attachPreviewEngine`）。重建会话会丢掉已绑定的回调，
+    /// 且与既有模式不一致。
+    ///
+    /// `attachCorrectionPipeline` 只在 idle 时生效。录音/转写途中改设置
+    /// 会被静默丢弃，所以这里补一条日志，免得出现「点了没反应也没线索」。
+    private func applyCorrectionPreference() {
+        guard let session else { return }
+        if session.state != .idle {
+            AppLogger.shared.log("校正设置本次会话不生效（当前 \(session.state)），下次录音起生效")
+        }
+        session.attachCorrectionPipeline(makeCorrectionPipeline())
+    }
+
+    /// 切换校正开关。改动立即就地生效（若正在录音则下次会话生效）。
+    func toggleCorrection() {
+        correctionPreference.isEnabled.toggle()
+        correctionEnabled = correctionPreference.isEnabled
+        applyCorrectionPreference()
+        AppLogger.shared.log("校正已\(correctionEnabled ? "开启" : "关闭")")
+    }
+
+    /// 指定本地校正模型目录。
+    ///
+    /// 与 M1 的 Whisper 模型选择同一交互：4B 模型能否胜任中文常识判断
+    /// 事先无法确定，用户可自行换更大的模型试，无需等待代码改动。
+    func selectCorrectionModel(directory: URL) {
+        correctionPreference.modelDirectory = directory
+        correctionModelName = directory.lastPathComponent
+        applyCorrectionPreference()
+        AppLogger.shared.log("校正模型已切换：\(directory.lastPathComponent)")
     }
 
     // MARK: - 运行时换模型
