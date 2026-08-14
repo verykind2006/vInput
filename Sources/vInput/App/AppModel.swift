@@ -129,6 +129,7 @@ final class AppModel {
         }
         session.onError = { [weak self] error in
             AppLogger.shared.log("会话出错：\(error)")
+            guard AppModel.isUserFacing(error) else { return }
             self?.phase = .error(String(describing: error))
         }
         session.onText = { [weak self] text in
@@ -378,6 +379,18 @@ final class AppModel {
         case .ready:
             break
         }
+    }
+
+    /// 该错误是否需要展示给用户。
+    ///
+    /// 唯一不展示的是「音频过短」：按一下语音键就松开是常见误触，
+    /// 为此弹一个错误状态是噪音。其余错误都要让用户知道——
+    /// 尤其是注入失败与目标应用改变，那关系到用户说的话去了哪里。
+    nonisolated static func isUserFacing(_ error: Error) -> Bool {
+        if let error = error as? TranscribeError, error == .audioTooShort {
+            return false
+        }
+        return true
     }
 
     // MARK: - 遥控器
