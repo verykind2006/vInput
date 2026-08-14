@@ -284,15 +284,24 @@ final class XiaomiBluetoothBridge: NSObject {
 
     @discardableResult
     func requestMicrophoneExtend() -> Bool {
-        guard microphoneOpened,
-              streaming,
-              let command = ATVVProtocol.microphoneExtend(
-                  version: capabilities.version,
-                  sessionID: sessionID
-              ),
-              write(command)
-        else {
-            AppLogger.shared.log("ATVV MIC_EXTEND rejected session=\(sessionID)")
+        // 分开判断而非一个 guard 串起来：这三种失败原因完全不同，
+        // 混成一句 "rejected" 会让真机日志失去诊断价值——上一版就是
+        // 因此把「会话根本没开」误当成「设备拒绝了续期」。
+        guard ATVVSessionGate.canExtendMicrophone(streaming: streaming) else {
+            AppLogger.shared.log("ATVV MIC_EXTEND 跳过：当前无进行中的会话")
+            return false
+        }
+        guard let command = ATVVProtocol.microphoneExtend(
+            version: capabilities.version,
+            sessionID: sessionID
+        ) else {
+            AppLogger.shared.log(
+                "ATVV MIC_EXTEND 跳过：协议版本 \(capabilities.version) 不支持续期"
+            )
+            return false
+        }
+        guard write(command) else {
+            AppLogger.shared.log("ATVV MIC_EXTEND 写入失败 session=\(sessionID)")
             return false
         }
         AppLogger.shared.log("ATVV MIC_EXTEND request session=\(sessionID)")

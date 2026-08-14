@@ -112,6 +112,22 @@ enum ATVVSessionGate {
         microphoneOpened && !streaming ? now : nil
     }
 
+    /// 能否为当前会话发送 `MIC_EXTEND` 续期。
+    ///
+    /// **只看 `streaming`，不看 `microphoneOpened`。** 后者只在主机主动开麦
+    /// （`requestMicrophoneOpen`）时置位；而 RC003 的实际用法是用户按遥控器
+    /// 上的实体语音键，由**设备主动**发起会话——那条路径只置 `streaming`。
+    /// 若把 `microphoneOpened` 也纳入条件，保活在真实场景下永远发不出去。
+    ///
+    /// 真机日志证据：一次 42 秒的会话里只有 `STREAM START`，没有任何
+    /// `MIC_OPEN host_request`，四次续期全部被自己的 guard 拦下。
+    ///
+    /// 语义上也该如此：`MIC_EXTEND` 延长的是一个正在进行的音频流，
+    /// 这个流由谁发起与能否延长无关。
+    static func canExtendMicrophone(streaming: Bool) -> Bool {
+        streaming
+    }
+
     static func shouldIgnoreStreamAfterCancelledOpen(
         cancelledAt: Date?,
         now: Date = Date()

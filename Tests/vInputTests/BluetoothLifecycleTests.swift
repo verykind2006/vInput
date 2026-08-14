@@ -61,3 +61,19 @@ struct ATVVSessionGateTests {
         #expect(ATVVSessionGate.cancelledOpenDate(microphoneOpened: false, streaming: false, now: now) == nil)
     }
 }
+
+@Suite("语音会话续期门禁")
+struct MicrophoneExtendGateTests {
+    /// 这是 RC003 的真实用法：用户按遥控器上的实体语音键，会话由设备
+    /// 主动发起，主机从未调用 requestMicrophoneOpen，microphoneOpened
+    /// 始终为 false。旧实现把它列入 guard，导致保活从未发出过一个字节。
+    @Test("设备主动发起的会话也能续期")
+    func extendsDeviceInitiatedSession() {
+        #expect(ATVVSessionGate.canExtendMicrophone(streaming: true))
+    }
+
+    @Test("没有进行中的会话时不续期")
+    func skipsWhenNotStreaming() {
+        #expect(!ATVVSessionGate.canExtendMicrophone(streaming: false))
+    }
+}
