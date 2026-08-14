@@ -34,13 +34,32 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
         self.normalizeToSimplified = normalizeToSimplified
     }
 
+    /// tokenizer 等辅助文件的存放目录。
+    ///
+    /// **必须显式指定。** WhisperKit 的默认值是 `~/Documents/huggingface`
+    /// （见其 `HubApi.swift:109`），而 `~/Documents` 是 macOS 的 TCC 保护
+    /// 目录。本应用是 LSUIElement（纯菜单栏、无主窗口），访问受保护目录
+    /// 触发的授权弹窗无处呈现，`open()` 会无限期阻塞——真机实测卡住 5 分钟
+    /// 仍未返回，堆栈停在 `HubApi.configuration(fileURL:)` 的 `open()` 上。
+    ///
+    /// 换到应用支持目录后不受 TCC 约束。这本来也更合适：模型缓存不该写进
+    /// 用户的「文稿」文件夹。
+    nonisolated static func defaultDownloadBase() -> URL {
+        let base = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("vInput/huggingface", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }
+
     func prepare() async throws {
         guard pipe == nil else { return }
         do {
+            let downloadBase = Self.defaultDownloadBase()
             let config = if let modelFolder {
-                WhisperKitConfig(modelFolder: modelFolder)
+                WhisperKitConfig(downloadBase: downloadBase, modelFolder: modelFolder)
             } else {
-                WhisperKitConfig(model: modelName)
+                WhisperKitConfig(model: modelName, downloadBase: downloadBase)
             }
             pipe = try await WhisperKit(config)
         } catch {
