@@ -30,6 +30,15 @@ final class AppModel {
     private var session: DictationSession?
     private var transcriber: SwitchableTranscriber?
     private var modelRoot: String = ""
+
+    private(set) var remoteState: RemoteConnectionState = .disconnected
+    private(set) var remoteBattery: Int?
+
+    private let bluetoothSource = BluetoothRemoteSource()
+    private let hidListener = RemoteHIDListener()
+    private var remoteCoordinator: RemoteCoordinator?
+    private var bluetoothBridge: XiaomiBluetoothBridge?
+    private var audioRouter: AudioSourceRouter?
     private let hudModel = HUDViewModel()
     // 不能用 lazy：@Observable 宏为存储属性生成 init accessor，
     // 与 lazy 的存储语义冲突，编译期报错。构造 HUDPanel/
@@ -85,8 +94,13 @@ final class AppModel {
         self.transcriber = transcriber
 
         let micSource = SystemMicSource()
+        let router = AudioSourceRouter(sources: [
+            .microphone: micSource,
+            .bluetooth: bluetoothSource,
+        ])
+        self.audioRouter = router
         let session = DictationSession(
-            audioSource: micSource,
+            audioSource: router,
             transcriber: transcriber,
             sink: RoutingTextSink(
                 typing: TypingSink(),
@@ -125,12 +139,12 @@ final class AppModel {
         }
         self.session = session
 
-        // DictationSession 构造时已接管 onFrame，这里在其之上再包一层，
-        // 让同一路音频也进预览处理器。分叉点在 AudioSource 之后——
-        // 这样 M3 接蓝牙时，预览无需任何改动即可工作。
-        let sessionTap = micSource.onFrame
+        // 分叉点收敛到路由器：无论音频来自内置麦还是蓝牙遥控器，
+        // 都经由同一处流向预览处理器。这是 M2「分叉在 AudioSource 之后」
+        // 那个决定的兑现——蓝牙接上后 HUD 与实时预览零改动可用。
+        let sessionTap = router.onFrame
         let processor = previewProcessor
-        micSource.onFrame = { samples in
+        router.onFrame = { samples in
             sessionTap?(samples)
             processor.append(samples)
         }
@@ -152,10 +166,13 @@ final class AppModel {
 
         // 预览引擎依赖已加载的模型，异步挂载。
         Task { await warmUpAndAttachPreview() }
+
+        startRemote()
     }
 
     func shutdown() {
         hotkey.unregister()
+        stopRemote()
     }
 
     // MARK: - HUD
@@ -328,6 +345,7 @@ final class AppModel {
 
         switch session.state {
         case .idle:
+            audioRouter?.select(.microphone)
             // start() 现在是 async（要等预览引擎启动），与下面 finish()
             // 一样用 Task 包一层，toggle() 本身保持同步好继续挂在按钮上。
             Task {
@@ -359,5 +377,87 @@ final class AppModel {
         case .ready:
             break
         }
+    }
+
+    // MARK: - 遥控器
+
+    private func startRemote() {
+        let coordinator = RemoteCoordinator(source: bluetoothSource)
+
+        coordinator.onStartSession = { [weak self] in
+            guard let self, let session = self.session else { return }
+            // 模型加载中不接受录音请求，与 ⌥D 的守卫保持一致
+            guard self.loadingModelName == nil else { return }
+            self.audioRouter?.select(.bluetooth)
+            Task {
+                do {
+                    try await session.start()
+                    AppLogger.shared.log("遥控器语音键按下，开始录音")
+                } catch {
+                    AppLogger.shared.log("遥控器录音启动失败：\(error)")
+                }
+            }
+        }
+        coordinator.onFinishSession = { [weak self] in
+            guard let session = self?.session else { return }
+            AppLogger.shared.log("遥控器语音键松开，进入转写")
+            Task { await session.finish() }
+        }
+        coordinator.onCancelSession = { [weak self] in
+            guard let session = self?.session else { return }
+            AppLogger.shared.log("遥控器返回键按下，取消会话")
+            Task { await session.cancel() }
+        }
+        remoteCoordinator = coordinator
+
+        hidListener.onCancelPressed = { [weak coordinator] in
+            coordinator?.handleCancelPressed()
+        }
+        hidListener.start()
+
+        let bridge = XiaomiBluetoothBridge(delegate: self)
+        bluetoothBridge = bridge
+        bridge.start()
+    }
+
+    private func stopRemote() {
+        hidListener.stop()
+        bluetoothBridge?.stop()
+        bluetoothBridge = nil
+        remoteCoordinator = nil
+    }
+}
+
+// MARK: - XiaomiBluetoothBridgeDelegate
+
+extension AppModel: @MainActor XiaomiBluetoothBridgeDelegate {
+    func bluetoothBridge(_ bridge: XiaomiBluetoothBridge, didChange state: BluetoothBridgeState) {
+        AppLogger.shared.log("遥控器状态：\(state)")
+        remoteState = RemoteConnectionState(bridgeState: state)
+    }
+
+    func bluetoothBridgeDidStartVoice(_ bridge: XiaomiBluetoothBridge) {
+        remoteCoordinator?.handleVoiceStart()
+    }
+
+    func bluetoothBridgeDidStopVoice(_ bridge: XiaomiBluetoothBridge) {
+        remoteCoordinator?.handleVoiceStop()
+    }
+
+    func bluetoothBridge(_ bridge: XiaomiBluetoothBridge, didDecode samples: [Int16]) {
+        remoteCoordinator?.handleDecoded(samples)
+    }
+
+    func bluetoothBridge(_ bridge: XiaomiBluetoothBridge, didUpdateBatteryLevel level: Int?) {
+        remoteBattery = level
+    }
+
+    func bluetoothBridge(_ bridge: XiaomiBluetoothBridge, didIdentifyRemoteModel model: XiaomiRemoteModel) {
+        AppLogger.shared.log("识别到遥控器型号：\(model)")
+    }
+
+    func bluetoothBridge(_ bridge: XiaomiBluetoothBridge, didUpdatePowerState state: RemotePowerState?) {
+        // 本项目不使用电源状态，仅记录
+        AppLogger.shared.log("遥控器电源状态：\(String(describing: state))")
     }
 }

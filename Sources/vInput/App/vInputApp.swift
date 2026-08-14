@@ -48,6 +48,7 @@ private struct MenuContent: View {
 
     var body: some View {
         Text(statusText)
+        Text(model.remoteState.menuLabel(battery: model.remoteBattery))
 
         if !model.lastText.isEmpty {
             Divider()
