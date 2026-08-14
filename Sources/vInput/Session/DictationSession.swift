@@ -10,6 +10,8 @@ final class DictationSession {
         case idle
         case listening
         case transcribing
+        /// 转写已完成，正在校正。HUD 据此显示「正在校正」。
+        case correcting
         case injecting
     }
 
@@ -30,6 +32,12 @@ final class DictationSession {
     private let targetGuard: TargetAppGuard
     /// 流式预览引擎。可为 nil——预览是锦上添花，缺席不影响主路径。
     private var previewEngine: PreviewEngine?
+    /// 校正流水线。可为 nil——校正是锦上添花，缺席不影响主路径。
+    ///
+    /// 是 `var` 而非 `let`：用户可在菜单栏随时开关校正、更换模型，
+    /// 而本仓库不重建会话（`AppModel` 里的 session 只构造一次，
+    /// 换 Whisper 模型走的是 `SwitchableTranscriber.switchTo`）。
+    private var correctionPipeline: CorrectionPipeline?
 
     private var buffer = AudioBuffer(sampleRate: AudioFormat.sampleRate)
     private var targetToken: String?
@@ -44,13 +52,15 @@ final class DictationSession {
         transcriber: Transcriber,
         sink: TextSink,
         targetGuard: TargetAppGuard,
-        previewEngine: PreviewEngine? = nil
+        previewEngine: PreviewEngine? = nil,
+        correctionPipeline: CorrectionPipeline? = nil
     ) {
         self.audioSource = audioSource
         self.transcriber = transcriber
         self.sink = sink
         self.targetGuard = targetGuard
         self.previewEngine = previewEngine
+        self.correctionPipeline = correctionPipeline
 
         audioSource.onFrame = { [weak self] samples in
             self?.buffer.append(samples)
@@ -143,6 +153,15 @@ final class DictationSession {
         bindPreview(engine)
     }
 
+    /// 运行时挂载校正流水线。传 nil 表示关闭校正。
+    ///
+    /// 与 `attachPreviewEngine` 同一模式：本仓库不重建会话，运行时配置
+    /// 变更一律就地替换。只在 idle 时生效，避免在一次会话中途换掉规则。
+    func attachCorrectionPipeline(_ pipeline: CorrectionPipeline?) {
+        guard state == .idle else { return }
+        correctionPipeline = pipeline
+    }
+
     /// 用上一次失败时保留的音频重新走一遍。
     func retry() async {
         guard state == .idle, !retainedSamples.isEmpty else { return }
@@ -179,13 +198,24 @@ final class DictationSession {
             return
         }
 
+        // 校正绝不抛错：CorrectionPipeline.correct 内部已把所有失败路径
+        // 收敛为「返回原文」。这里不写 do/catch 是有意的——若将来它开始
+        // 抛错，编译器会立刻指出，而不是让错误静默吞掉用户说的话。
+        let finalText: String
+        if let correctionPipeline {
+            transition(to: .correcting)
+            finalText = await correctionPipeline.correct(trimmed)
+        } else {
+            finalText = trimmed
+        }
+
         transition(to: .injecting)
 
         let outcome: Result<Void, Error>
         do {
             // 规则三：注入前确认目标应用没变
             try targetGuard.verify(targetToken)
-            try sink.send(trimmed)
+            try sink.send(finalText)
             outcome = .success(())
         } catch {
             outcome = .failure(error)
@@ -197,7 +227,7 @@ final class DictationSession {
         transition(to: .idle)
         switch outcome {
         case .success:
-            onText?(trimmed)
+            onText?(finalText)
         case .failure(let error):
             onError?(error)
         }

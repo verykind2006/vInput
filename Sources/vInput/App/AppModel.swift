@@ -116,7 +116,9 @@ final class AppModel {
             switch state {
             case .idle: self.phase = .idle
             case .listening: self.phase = .listening
-            case .transcribing, .injecting: self.phase = .working
+            // 校正与转写、注入同归 working：Phase 是给菜单栏用的粗粒度
+            // 状态，不必区分到这一级，细节由 HUD 呈现。
+            case .transcribing, .correcting, .injecting: self.phase = .working
             }
             self.hudModel.phase = state
             self.cancelHotkey.update(for: state)
@@ -362,7 +364,7 @@ final class AppModel {
         case .listening:
             log.log("结束录音，进入转写")
             Task { await session.finish() }
-        case .transcribing, .injecting:
+        case .transcribing, .correcting, .injecting:
             log.log("toggle 忽略：正在处理上一段（\(session.state)）")
         }
     }
