@@ -6,3 +6,6 @@ remote-mic-app/
 *.xcuserstate
 dist/
 vendor/
+
+# 本机绝对路径的 SPM 镜像配置，重建方法见 docs/dev-dependencies.md
+.swiftpm/configuration/mirrors.json
