@@ -85,4 +85,41 @@ struct PipelineE2ETests {
         #expect(!first.isEmpty)
         #expect(first == second, "第一次「\(first)」第二次「\(second)」")
     }
+
+    @Test("蓝牙路径的音频能被转写管线正确消费")
+    func bluetoothPathProducesUsableText() async throws {
+        // 蓝牙音频经 IMA ADPCM 解码后是 Int16 PCM，再由
+        // BluetoothRemoteSource 归一化成 Float。这里模拟那条路径：
+        // 拿真实音频转成 Int16、走归一化、喂进与麦克风完全相同的转写路径。
+        //
+        // 验证的是「解码出来的音频能被现有管线消费」，无需外设。
+        let floats = try AudioProcessor.loadAudioAsFloatArray(
+            fromPath: "\(Self.audioRoot)/short.wav"
+        )
+        let asInt16 = floats.map { Int16(max(-32_768, min(32_767, $0 * 32_768))) }
+        let roundTripped = BluetoothRemoteSource.normalize(asInt16)
+
+        let text = try await makeTranscriber().transcribe(roundTripped)
+
+        #expect(!text.isEmpty)
+        #expect(text.range(of: "<\\|[^|]*\\|>", options: .regularExpression) == nil)
+        #expect(ChineseScript.toSimplified(text) == text)
+    }
+
+    @Test("Int16 往返不显著损失质量")
+    func int16RoundTripPreservesQuality() async throws {
+        // 若归一化的除数写错（用 32767 而非 32768），或某处溢出，
+        // 转写结果会明显劣化。这里用同一段音频的两条路径对比。
+        let floats = try AudioProcessor.loadAudioAsFloatArray(
+            fromPath: "\(Self.audioRoot)/short.wav"
+        )
+        let asInt16 = floats.map { Int16(max(-32_768, min(32_767, $0 * 32_768))) }
+        let roundTripped = BluetoothRemoteSource.normalize(asInt16)
+
+        let transcriber = makeTranscriber()
+        let direct = try await transcriber.transcribe(floats)
+        let viaInt16 = try await transcriber.transcribe(roundTripped)
+
+        #expect(direct == viaInt16, "直接路径「\(direct)」Int16 往返「\(viaInt16)」")
+    }
 }
