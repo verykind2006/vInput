@@ -7,38 +7,46 @@ import MLXLMCommon
 /// 用 actor 而非 class：模型加载与推理都不可重入，两次会话同时触发时
 /// 第二个必须排队而不是并发进入。与 `WhisperKitTranscriber` 同一考量。
 actor MLXCorrector: Corrector {
-    /// 本地模型目录。为 nil 时按 Hugging Face 标识符下载。
+    /// 模型加载走 `OneShotLoader`，而不是 `guard container == nil`。
     ///
-    /// 优先支持本地目录，与 Whisper 同一考量：内置下载器在本机网络下会
-    /// 整体超时放弃，模型一律预先拉好再指过来。
-    private let modelDirectory: URL?
-    private let modelID: String
-    private var container: ModelContainer?
+    /// 直接在本 actor 里加载有两个坑：加载会随调用方的取消一起被掐断
+    /// （3 秒超时一到就前功尽弃，模型永远等不到就绪），且两次并发调用会
+    /// 各自启动一次加载（判重的 await 之间有空隙）。两条都由闸门解决。
+    ///
+    /// 模型目录为 nil 时按 Hugging Face 标识符下载。优先支持本地目录，
+    /// 与 Whisper 同一考量：内置下载器在本机网络下会整体超时放弃，
+    /// 模型一律预先拉好再指过来。
+    private let loader: OneShotLoader<ModelContainer>
 
     init(
         modelDirectory: URL? = nil,
         modelID: String = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
     ) {
-        self.modelDirectory = modelDirectory
-        self.modelID = modelID
-    }
-
-    func prepare() async throws {
-        guard container == nil else { return }
-        do {
-            container = if let modelDirectory {
-                try await loadModelContainer(directory: modelDirectory)
-            } else {
-                try await loadModelContainer(id: modelID)
+        loader = OneShotLoader {
+            do {
+                if let modelDirectory {
+                    return try await loadModelContainer(directory: modelDirectory)
+                }
+                return try await loadModelContainer(id: modelID)
+            } catch {
+                throw CorrectorError.engineFailed(error.localizedDescription)
             }
-        } catch {
-            throw CorrectorError.engineFailed(error.localizedDescription)
         }
     }
 
+    var isReady: Bool {
+        get async { await loader.ready != nil }
+    }
+
+    func prepare() async throws {
+        _ = try await loader.value()
+    }
+
     func edits(for text: String) async throws -> [CorrectionEdit] {
-        try await prepare()
-        guard let container else { throw CorrectorError.modelNotReady }
+        // **不在这里等加载。** 加载要几十秒，而调用方带着 3 秒推理预算，
+        // 等下去只会把注入一起拖住。未就绪就直说，由流水线退回原文并
+        // 另行预热。
+        guard let container = await loader.ready else { throw CorrectorError.modelNotReady }
 
         // 逐字段赋值而非用带标签的构造器：GenerateParameters 的字段在
         // 版本间增删过，逐字段赋值不受参数顺序与标签变化影响。

@@ -283,10 +283,8 @@ final class AppModel {
 
     /// 依据偏好构造校正流水线。关闭时返回 nil，会话行为与从前完全一致。
     ///
-    /// 模型不在此处预热：这是个 2 GB 级的模型，加载耗时且占内存，而校正
-    /// 默认关闭，多数启动根本用不到它。首次校正时由 `MLXCorrector.prepare()`
-    /// 惰性加载，代价是第一次会稍慢——但有 3 秒超时兜底，超时退回原文，
-    /// 不会卡住用户。
+    /// 只在校正开着时构造，因而也只在开着时加载模型：这是个 2 GB 级的
+    /// 模型，加载耗时且占内存，而校正默认关闭，多数启动根本用不到它。
     private func makeCorrectionPipeline() -> CorrectionPipeline? {
         guard correctionPreference.isEnabled else { return nil }
         return CorrectionPipeline(
@@ -308,7 +306,18 @@ final class AppModel {
         if session.state != .idle {
             AppLogger.shared.log("校正设置本次会话不生效（当前 \(session.state)），下次录音起生效")
         }
-        session.attachCorrectionPipeline(makeCorrectionPipeline())
+        let pipeline = makeCorrectionPipeline()
+        session.attachCorrectionPipeline(pipeline)
+
+        // 开着校正就立刻在后台加载模型，和 Whisper 的预热同一个道理：
+        // 加载一次要几十秒，而注入路径上一秒都不能等——未就绪时流水线
+        // 直接退回原文。不预热的话，用户会觉得「开了校正好像没什么用」。
+        //
+        // 用 detached 而非 `Task {}`：`Task {}` 继承 MainActor，加载中的
+        // 同步段会卡住主线程上的 UI。优先级压到 utility，让它给启动时的
+        // Whisper 预热让路。
+        guard let pipeline else { return }
+        Task.detached(priority: .utility) { await pipeline.warmUp() }
     }
 
     /// 切换校正开关。改动立即就地生效（若正在录音则下次会话生效）。
