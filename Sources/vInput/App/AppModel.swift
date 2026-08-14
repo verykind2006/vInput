@@ -36,6 +36,7 @@ final class AppModel {
 
     private let bluetoothSource = BluetoothRemoteSource()
     private let hidListener = RemoteHIDListener()
+    private let keySuppressor = RemoteKeySuppressor()
     private let keepalive = VoiceSessionKeepalive()
     private var remoteCoordinator: RemoteCoordinator?
     private var bluetoothBridge: XiaomiBluetoothBridge?
@@ -105,8 +106,7 @@ final class AppModel {
             transcriber: transcriber,
             sink: RoutingTextSink(
                 typing: TypingSink(),
-                clipboard: ClipboardSink(),
-                threshold: 100
+                clipboard: ClipboardSink()
             ),
             targetGuard: TargetAppGuard()
         )
@@ -403,6 +403,9 @@ final class AppModel {
             // 模型加载中不接受录音请求，与 ⌥D 的守卫保持一致
             guard self.loadingModelName == nil else { return }
             self.audioRouter?.select(.bluetooth)
+            // RC003 的语音键同时是 HID 按键，按住期间 macOS 会持续把它
+            // 投递给前台应用（实测为 Page Up 自动重复）。录音期间吞掉。
+            self.keySuppressor.beginSuppressing()
             Task {
                 do {
                     try await session.start()
@@ -414,12 +417,14 @@ final class AppModel {
             self.keepalive.start()
         }
         coordinator.onFinishSession = { [weak self] in
+            self?.keySuppressor.endSuppressing()
             self?.keepalive.stop()
             guard let session = self?.session else { return }
             AppLogger.shared.log("遥控器语音键松开，进入转写")
             Task { await session.finish() }
         }
         coordinator.onCancelSession = { [weak self] in
+            self?.keySuppressor.endSuppressing()
             self?.keepalive.stop()
             guard let session = self?.session else { return }
             AppLogger.shared.log("遥控器返回键按下，取消会话")
@@ -444,6 +449,7 @@ final class AppModel {
             coordinator?.handleCancelPressed()
         }
         hidListener.start()
+        keySuppressor.start()
 
         let bridge = XiaomiBluetoothBridge(delegate: self)
         bluetoothBridge = bridge
@@ -452,6 +458,7 @@ final class AppModel {
 
     private func stopRemote() {
         hidListener.stop()
+        keySuppressor.stop()
         bluetoothBridge?.stop()
         bluetoothBridge = nil
         remoteCoordinator = nil
