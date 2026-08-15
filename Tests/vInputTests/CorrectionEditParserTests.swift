@@ -69,4 +69,46 @@ struct CorrectionEditParserTests {
     func noOpEditsDropped() {
         #expect(CorrectionEditParser.parse("遥控器→遥控器").isEmpty)
     }
+
+    /// 4B 模型输出带项目符号是常态。装饰一出现就整条丢弃的话，
+    /// 用户看到的是「开关校正没差别」，而日志里什么异常都没有。
+    @Test("剥离行首的列表符号")
+    func stripsListMarkers() {
+        let expected = [CorrectionEdit(original: "耀空气", replacement: "遥控器")]
+        for line in ["- 耀空气→遥控器", "* 耀空气→遥控器", "• 耀空气→遥控器",
+                     "1. 耀空气→遥控器", "2) 耀空气→遥控器"] {
+            #expect(CorrectionEditParser.parse(line) == expected, "未能解析：\(line)")
+        }
+    }
+
+    /// 提示词的示例以「输出：」开头，模型很容易照着回显。
+    @Test("剥离行首的标签前缀")
+    func stripsLabelPrefix() {
+        let expected = [CorrectionEdit(original: "耀空气", replacement: "遥控器")]
+        for line in ["输出：耀空气→遥控器", "输出: 耀空气→遥控器"] {
+            #expect(CorrectionEditParser.parse(line) == expected, "未能解析：\(line)")
+        }
+    }
+
+    @Test("剥离包裹的引号与行尾句点")
+    func stripsQuotesAndTrailingPunctuation() {
+        let expected = [CorrectionEdit(original: "耀空气", replacement: "遥控器")]
+        for line in ["「耀空气」→「遥控器」", "\"耀空气\"→\"遥控器\"",
+                     "耀空气→遥控器。", "耀空气→遥控器."] {
+            #expect(CorrectionEditParser.parse(line) == expected, "未能解析：\(line)")
+        }
+    }
+
+    /// 剥离不得伤及正文：替换文本内部的标点必须原样保留。
+    /// 这条是上面三条的安全网——过度剥离会悄悄改坏用户的文字。
+    @Test("不剥离词内部的字符")
+    func doesNotStripInteriorCharacters() {
+        #expect(
+            CorrectionEditParser.parse("三点一四→3.14")
+                == [CorrectionEdit(original: "三点一四", replacement: "3.14")]
+        )
+        #expect(
+            CorrectionEditParser.parse("句号→。") == []
+        )
+    }
 }
