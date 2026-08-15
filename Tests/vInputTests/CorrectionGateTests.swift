@@ -30,12 +30,21 @@ struct CorrectionGateTests {
             CorrectionEdit(original: "useState", replacement: "useEffect")))
     }
 
+    /// 声调不同但同音的替换必须放行——同音错字绝大多数就是声调差
+    /// （yào 耀 / yáo 遥），要求声调一致会把最该修的那一类全部拦掉。
+    ///
+    /// **例子刻意用双字词。** 原先用的「在→再」「他→她」有两个问题：
+    /// 一是它们声调本就相同，根本没测到声调；二是单字替换现在被长度
+    /// 规则一律拦下（见 minimumOriginalLength），用它们测声调等于把
+    /// 两条无关的规则缠在一起。
+    ///
+    /// 「事件/时间」「主意/注意」都是真实的中文语音识别混淆。
     @Test("声调差异不影响放行")
     func toneDifferenceAllowed() {
         #expect(CorrectionGate.allows(
-            CorrectionEdit(original: "在", replacement: "再")))
+            CorrectionEdit(original: "事件", replacement: "时间")))
         #expect(CorrectionGate.allows(
-            CorrectionEdit(original: "他", replacement: "她")))
+            CorrectionEdit(original: "主意", replacement: "注意")))
     }
 
     @Test("增删字数导致读音不同，拦下")
@@ -112,5 +121,40 @@ struct CorrectionGateTests {
         #expect(result.text == "原文不动")
         #expect(result.applied.isEmpty)
         #expect(result.rejected.isEmpty)
+    }
+
+    /// 单字替换缺少消歧所需的上下文：模型说「的→得」，我们无从知道
+    /// 句子里哪个「的」该改，而全局替换会把本来正确的字一并改坏。
+    /// 实测「我的书写得很好，他的笔也不错」会变成「我得书写得很好，他得笔也不错」。
+    ///
+    /// 取舍很明确：漏掉真正的单字错误，换取不改坏一整句。
+    @Test("单字替换一律拦下")
+    func rejectsSingleCharacterEdits() {
+        for edit in [
+            CorrectionEdit(original: "的", replacement: "得"),
+            CorrectionEdit(original: "在", replacement: "再"),
+            CorrectionEdit(original: "他", replacement: "她"),
+        ] {
+            #expect(!CorrectionGate.allows(edit), "\(edit.original)→\(edit.replacement) 应被拦下")
+        }
+    }
+
+    @Test("两字及以上仍然放行")
+    func allowsMultiCharacterEdits() {
+        #expect(CorrectionGate.allows(
+            CorrectionEdit(original: "耀空", replacement: "遥控")))
+        #expect(CorrectionGate.allows(
+            CorrectionEdit(original: "耀空气", replacement: "遥控器")))
+    }
+
+    @Test("单字替换不会污染整句")
+    func singleCharEditLeavesTextIntact() {
+        let result = CorrectionGate.apply(
+            [CorrectionEdit(original: "的", replacement: "得")],
+            to: "我的书写得很好，他的笔也不错"
+        )
+        #expect(result.text == "我的书写得很好，他的笔也不错")
+        #expect(result.applied.isEmpty)
+        #expect(result.rejected.count == 1)
     }
 }

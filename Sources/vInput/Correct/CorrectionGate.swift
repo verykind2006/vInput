@@ -9,9 +9,21 @@ import Foundation
 ///
 /// 全部是纯函数，不依赖模型，可穷举测试。
 enum CorrectionGate {
+    /// 短于此长度的原文片段不接受替换。
+    ///
+    /// 单字替换缺少消歧所需的上下文：模型说「的→得」，我们无从知道句子里
+    /// 哪个「的」该改，而 `apply` 会替换全部出现处，把本来正确的字一并改坏
+    /// （实测「我的书写得很好，他的笔也不错」→「我得书写得很好，他得笔也不错」）。
+    /// 多字片段自带上下文，全局替换才是安全的。
+    ///
+    /// 取舍是明确的：漏掉真正的单字错误，换取不改坏一整句。设计文档的原则是
+    /// 「改坏原本正确的内容，比漏改一个错字严重得多」。
+    static let minimumOriginalLength = 2
+
     /// 替换前后读音必须一致，否则不是「改错字」而是「改写」。
     static func allows(_ edit: CorrectionEdit) -> Bool {
-        Pinyin.toneless(edit.original) == Pinyin.toneless(edit.replacement)
+        guard edit.original.count >= minimumOriginalLength else { return false }
+        return Pinyin.toneless(edit.original) == Pinyin.toneless(edit.replacement)
     }
 
     /// 应用替换的结果。`applied` 与 `rejected` 供日志使用——
