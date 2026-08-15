@@ -50,8 +50,13 @@ noise_gen() {
 
 noise_gen silence   1.5 0
 noise_gen silence5  5   0
+noise_gen silence15 15  0
+noise_gen silence30 30  0
 noise_gen noise     2   0.002
 noise_gen noise10  10   0.002
+# 30 秒底噪是泄漏检测里最灵敏的一条：短片段模型多半直接吐空，
+# 而长窗口给了它「必须说点什么」的空间，prompt 的原话就在这里漏出来。
+noise_gen noise30  30   0.002
 noise_gen noise_quiet 4 0.0007
 
 cd "$ROOT"
