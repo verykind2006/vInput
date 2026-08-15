@@ -35,12 +35,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 在 bootstrap 之前注入：开启校正而没有合法模型时 AppModel 要弹这个
+        // 面板。放在这里而不是菜单视图里，是因为它与视图的生命周期无关，
+        // 而菜单视图每次打开都会重建。
+        model.chooseCorrectionModelFolder = { presentCorrectionModelFolderPanel() }
         model.bootstrap()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         model.shutdown()
     }
+}
+
+/// 弹出校正模型目录选择器，返回用户选中的目录（取消时为 nil）。
+///
+/// 提到文件作用域而不是留在菜单视图里：两个调用方（菜单里的「指定校正
+/// 模型…」，以及 `AppModel` 在开启校正却没有合法模型时的追问）需要同一个
+/// 面板，而后者与视图的生命周期无关。
+///
+/// **`activate` 不能去掉**：LSUIElement 应用默认不激活，不先 activate 的话
+/// 面板会出现在其他窗口后面且不接受键盘输入。这里是设置类操作，抢焦点无妨
+/// ——听写路径上的 HUD 才必须避免抢焦点。
+@MainActor
+private func presentCorrectionModelFolderPanel() -> URL? {
+    NSApplication.shared.activate(ignoringOtherApps: true)
+
+    let panel = NSOpenPanel()
+    panel.title = "选择校正模型目录"
+    panel.message = "选择本地 MLX 模型目录（含 config.json、tokenizer_config.json 与 .safetensors 权重文件）"
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = false
+
+    guard panel.runModal() == .OK else { return nil }
+    return panel.url
 }
 
 private struct MenuContent: View {
@@ -60,6 +88,7 @@ private struct MenuContent: View {
 
         Divider()
         modelMenu
+        correctionMenu
 
         Divider()
         Button("打开日志") {
@@ -96,6 +125,28 @@ private struct MenuContent: View {
                 .disabled(!model.canSwitchModel)
         }
         .onAppear { model.refreshAvailableModels() }
+    }
+
+    /// 校正子菜单。做成子菜单而非顶层两个按钮：开关与模型目录是同一件事的
+    /// 两个面，且与上面的「模型：…」子菜单结构对齐，顶层菜单不再变长。
+    @ViewBuilder
+    private var correctionMenu: some View {
+        Menu("校正：\(model.correctionEnabled ? "开" : "关")") {
+            Button(model.correctionEnabled ? "关闭校正" : "开启校正") {
+                model.toggleCorrection()
+            }
+
+            Divider()
+            // 让用户知道当前用的是哪个模型——校正效果好坏几乎全由它决定。
+            // 未指定时不再说「默认（首次使用时下载）」：开启校正现在必须
+            // 先有一个本地合法目录，那句话会让人以为不选也能用。
+            Text(model.correctionModelName.map { "模型：\($0)" } ?? "模型：未指定（开启校正时选择）")
+            Button("指定校正模型…") {
+                if let url = presentCorrectionModelFolderPanel() {
+                    model.selectCorrectionModel(directory: url)
+                }
+            }
+        }
     }
 
     private var modelMenuTitle: String {

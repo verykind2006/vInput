@@ -82,6 +82,8 @@ final class HUDViewModel {
         case .idle: "就绪"
         case .listening: "正在聆听"
         case .transcribing: "正在转写"
+        // 与转写分开显示：校正可能耗时数秒，共用文案会让用户以为程序卡死
+        case .correcting: "正在校正"
         case .injecting: "正在输入"
         }
         if phase == .listening, previewDegraded {

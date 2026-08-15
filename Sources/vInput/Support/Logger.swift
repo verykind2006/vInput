@@ -11,8 +11,13 @@ import Foundation
 final class AppLogger: @unchecked Sendable {
     static let shared = AppLogger()
 
-    /// 是否把转写文本写进日志。默认关闭。
-    var logsTranscripts = false
+    /// 是否把转写文本写进日志。**默认关闭**，符合 spec 的隐私要求。
+    ///
+    /// 可用 `VINPUT_LOG_TRANSCRIPTS=1` 启动应用来开启，用于排查识别与
+    /// 校正质量——不然日志里只有「注入成功 文本长度 8 字」，看不出
+    /// 校正到底改对了没有。
+    var logsTranscripts =
+        ProcessInfo.processInfo.environment["VINPUT_LOG_TRANSCRIPTS"] == "1"
 
     private let fileURL: URL
     private let queue = DispatchQueue(label: "com.vinput.logger")

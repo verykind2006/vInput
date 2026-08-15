@@ -25,7 +25,33 @@ final class AppModel {
     /// 实测可达 40–125 秒，期间必须让用户看到进度而不是以为卡死。
     private(set) var loadingModelName: String?
 
+    /// 校正是否启用，菜单据此显示「校正：开 / 关」。
+    ///
+    /// 真实存储在 UserDefaults（需跨启动保留），这里是它的可观察镜像：
+    /// @Observable 只跟踪自身的存储属性，若菜单直接读 UserDefaults，
+    /// 点完开关标题不会刷新。写入时两边一起更新，UI 只读这一份。
+    private(set) var correctionEnabled: Bool = false
+    /// 当前校正模型目录名，未指定时为 nil（此时按标识符下载）。
+    /// 同样是 UserDefaults 的可观察镜像，理由同上。
+    private(set) var correctionModelName: String?
+
     private let permissions = Permissions()
+    /// 校正偏好。开关状态与模型目录都要跨启动保留。
+    private let correctionPreference = CorrectionPreference()
+    /// 「校正能不能开」的判定。全部规则都在它那边，这里只负责把结果
+    /// 翻译成弹面板与错误提示。
+    private let correctionActivation: CorrectionActivation
+    /// 弹出校正模型目录选择器，返回用户选中的目录（取消时为 nil）。
+    ///
+    /// 由 UI 层注入：`AppModel` 不该知道 `NSOpenPanel` 的存在，而「开启校正
+    /// 时若无合法模型就弹选择器」这条流程必须能在没有 UI 的测试里驱动。
+    var chooseCorrectionModelFolder: (@MainActor () -> URL?)?
+    /// 上一次挂载校正流水线被会话拒绝（当时不在 idle）。
+    ///
+    /// 用户在录音中或转写那几秒里改设置是很自然的动作，而
+    /// `DictationSession` 只在 idle 时接受挂载。不记住这件事的话，
+    /// 那次改动就永远丢失了——而菜单已经显示成新状态，等于在骗人。
+    private var correctionApplyPending = false
     private let hotkey = HotkeyRegistrar()
     private var session: DictationSession?
     private var transcriber: SwitchableTranscriber?
@@ -59,6 +85,17 @@ final class AppModel {
     init() {
         hud = HUDPanel(model: hudModel)
         cancelHotkey = CancelHotkeyController(registrar: EscHotkeyRegistrar())
+        correctionActivation = CorrectionActivation(preference: correctionPreference)
+        // 镜像上次退出时的偏好，菜单打开即是正确状态。
+        correctionEnabled = correctionPreference.isEnabled
+        correctionModelName = correctionPreference.modelDirectory?.lastPathComponent
+    }
+
+    /// 把 UserDefaults 里的校正偏好同步到可观察镜像上。
+    /// 每个改动偏好的入口都必须调它，否则菜单标题会停在旧状态。
+    private func syncCorrectionMirrors() {
+        correctionEnabled = correctionPreference.isEnabled
+        correctionModelName = correctionPreference.modelDirectory?.lastPathComponent
     }
 
     /// 构造底层转写器。
@@ -77,6 +114,17 @@ final class AppModel {
 
     func bootstrap() {
         permissionStatus = permissions.status()
+
+        // 偏好为「开」但模型目录已失效（被移动/删除）时自动关掉。
+        // 必须在挂流水线之前做，否则这一轮启动会带着一个注定降级的校正跑。
+        let wasEnabled = correctionPreference.isEnabled
+        if wasEnabled && !correctionActivation.revalidateAtLaunch() {
+            AppLogger.shared.log(
+                "启动自检：校正模型目录已失效"
+                + "（\(correctionPreference.modelDirectory?.path ?? "未指定")），校正已自动关闭"
+            )
+        }
+        syncCorrectionMirrors()
 
         modelRoot = ModelCatalog.defaultRoot(appBundleURL: Bundle.main.bundleURL)
         availableModels = ModelCatalog.discover(in: modelRoot)
@@ -114,9 +162,14 @@ final class AppModel {
         session.onStateChange = { [weak self] state in
             guard let self else { return }
             switch state {
-            case .idle: self.phase = .idle
+            case .idle:
+                self.phase = .idle
+                // 会话结束，把此前被拒绝的挂载补上。
+                if self.correctionApplyPending { self.applyCorrectionPreference() }
             case .listening: self.phase = .listening
-            case .transcribing, .injecting: self.phase = .working
+            // 校正与转写、注入同归 working：Phase 是给菜单栏用的粗粒度
+            // 状态，不必区分到这一级，细节由 HUD 呈现。
+            case .transcribing, .correcting, .injecting: self.phase = .working
             }
             self.hudModel.phase = state
             self.cancelHotkey.update(for: state)
@@ -140,6 +193,8 @@ final class AppModel {
             self?.hudModel.preview = preview
         }
         self.session = session
+        // 会话与全部回调就绪后再挂校正，让上次启动保存的开关状态生效。
+        applyCorrectionPreference()
 
         // 分叉点收敛到路由器：无论音频来自内置麦还是蓝牙遥控器，
         // 都经由同一处流向预览处理器。这是 M2「分叉在 AudioSource 之后」
@@ -157,6 +212,11 @@ final class AppModel {
             Task { await session.cancel() }
         }
         AppLogger.shared.log("启动完成，模型=\(initial.name) 可用模型=\(availableModels.map(\.name))")
+        // 把内容日志的开关状态记下来：排查校正质量时若忘了开，
+        // 日志里只有「文本长度 8 字」，会白白浪费一轮真机测试。
+        if AppLogger.shared.logsTranscripts {
+            AppLogger.shared.log("内容日志已开启（VINPUT_LOG_TRANSCRIPTS=1），日志将包含转写全文")
+        }
 
         do {
             try hotkey.register(keyCode: hotkeyCode, modifiers: hotkeyModifiers) { [weak self] in
@@ -258,6 +318,128 @@ final class AppModel {
         }
         session.attachPreviewEngine(engine)
         AppLogger.shared.log("实时预览已就绪")
+    }
+
+    // MARK: - 校正
+
+    /// 依据偏好构造校正流水线。关闭时返回 nil，会话行为与从前完全一致。
+    ///
+    /// 只在校正开着时构造，因而也只在开着时加载模型：这是个 2 GB 级的
+    /// 模型，加载耗时且占内存，而校正默认关闭，多数启动根本用不到它。
+    private func makeCorrectionPipeline() -> CorrectionPipeline? {
+        guard correctionPreference.isEnabled else { return nil }
+        return CorrectionPipeline(
+            corrector: MLXCorrector(modelDirectory: correctionPreference.modelDirectory)
+        )
+    }
+
+    /// 把当前偏好应用到会话上。
+    ///
+    /// **不重建会话**——本仓库的运行时配置变更一律就地替换（换 Whisper
+    /// 模型走 `SwitchableTranscriber.switchTo`，挂预览引擎走
+    /// `attachPreviewEngine`）。重建会话会丢掉已绑定的回调，
+    /// 且与既有模式不一致。
+    ///
+    /// `attachCorrectionPipeline` 只在 idle 时生效。录音/转写途中改设置
+    /// 会被 DictationSession 拒绝，因此这里记下「有一次挂载没生效」，
+    /// 等会话回到 idle 时由 `onStateChange` 里的补挂逻辑再调用一次本方法。
+    private func applyCorrectionPreference() {
+        guard let session else {
+            correctionApplyPending = true
+            return
+        }
+        guard session.state == .idle else {
+            correctionApplyPending = true
+            AppLogger.shared.log("校正设置本次会话不生效（当前 \(session.state)），会话结束后补挂")
+            return
+        }
+        let pipeline = makeCorrectionPipeline()
+        session.attachCorrectionPipeline(pipeline)
+        correctionApplyPending = false
+
+        // 开着校正就立刻在后台加载模型，和 Whisper 的预热同一个道理：
+        // 加载一次要几十秒，而注入路径上一秒都不能等——未就绪时流水线
+        // 直接退回原文。不预热的话，用户会觉得「开了校正好像没什么用」。
+        //
+        // 用 detached 而非 `Task {}`：`Task {}` 继承 MainActor，加载中的
+        // 同步段会卡住主线程上的 UI。优先级压到 utility，让它给启动时的
+        // Whisper 预热让路。
+        guard let pipeline else { return }
+        Task.detached(priority: .utility) { await pipeline.warmUp() }
+    }
+
+    /// 切换校正开关。改动立即就地生效（若正在录音则下次会话生效）。
+    ///
+    /// 关闭不做任何校验；开启则必须先有一个合法的模型目录，见
+    /// `enableCorrection()`。
+    func toggleCorrection() {
+        guard !correctionEnabled else {
+            correctionActivation.disable()
+            syncCorrectionMirrors()
+            applyCorrectionPreference()
+            AppLogger.shared.log("校正已关闭")
+            return
+        }
+        enableCorrection()
+    }
+
+    /// 开启校正。**以「有一个合法的模型目录」为前提。**
+    ///
+    /// 没有合法目录就直接弹选择器，而不是先把开关打开再说：开着一个注定
+    /// 走降级路径的校正，用户每次说话都拿到未校正的原文，而菜单显示「开」，
+    /// 界面上没有任何线索——这是上手体验里最大的坑。
+    private func enableCorrection() {
+        let log = AppLogger.shared
+        var outcome = correctionActivation.enableUsingStoredModel()
+
+        if outcome == .needsModelSelection {
+            log.log("开启校正：没有可用的校正模型目录，请用户选择")
+            guard let directory = chooseCorrectionModelFolder?() else {
+                // 用户取消。保持关闭，菜单仍显示「关」。
+                log.log("开启校正被取消，校正保持关闭")
+                syncCorrectionMirrors()
+                return
+            }
+            outcome = correctionActivation.enable(with: directory)
+        }
+
+        switch outcome {
+        case .accepted(let descriptor):
+            syncCorrectionMirrors()
+            applyCorrectionPreference()
+            log.log("校正已开启，模型=\(descriptor.name)")
+        case .rejected(let missing):
+            // 不开、不保存，并说清缺了什么——只说「无效目录」的话，
+            // 用户没法判断是选错了目录还是模型没下全。
+            phase = .error("这不是校正模型目录，缺少：\(missing.joined(separator: "、"))")
+            syncCorrectionMirrors()
+            log.log("开启校正被拒：目录缺少 \(missing.joined(separator: "、"))")
+        case .needsModelSelection:
+            // 走不到：上面要么已选了目录，要么已 return。
+            break
+        }
+    }
+
+    /// 指定本地校正模型目录。
+    ///
+    /// 与 M1 的 Whisper 模型选择同一交互：4B 模型能否胜任中文常识判断
+    /// 事先无法确定，用户可自行换更大的模型试，无需等待代码改动。
+    ///
+    /// 同样要校验：这是另一条能把无效路径写进偏好的入口，放过它等于
+    /// 让校正在下次启动时静默失灵。
+    func selectCorrectionModel(directory: URL) {
+        let log = AppLogger.shared
+        switch correctionActivation.selectModel(directory: directory) {
+        case .accepted(let descriptor):
+            syncCorrectionMirrors()
+            applyCorrectionPreference()
+            log.log("校正模型已切换：\(descriptor.name)")
+        case .rejected(let missing):
+            phase = .error("这不是校正模型目录，缺少：\(missing.joined(separator: "、"))")
+            log.log("指定校正模型被拒：目录缺少 \(missing.joined(separator: "、"))")
+        case .needsModelSelection:
+            break
+        }
     }
 
     // MARK: - 运行时换模型
@@ -362,7 +544,7 @@ final class AppModel {
         case .listening:
             log.log("结束录音，进入转写")
             Task { await session.finish() }
-        case .transcribing, .injecting:
+        case .transcribing, .correcting, .injecting:
             log.log("toggle 忽略：正在处理上一段（\(session.state)）")
         }
     }
@@ -386,6 +568,11 @@ final class AppModel {
     /// 唯一不展示的是「音频过短」：按一下语音键就松开是常见误触，
     /// 为此弹一个错误状态是噪音。其余错误都要让用户知道——
     /// 尤其是注入失败与目标应用改变，那关系到用户说的话去了哪里。
+    ///
+    /// **`emptyResult` 刻意归在「要展示」这一侧**，尽管它也可能只是
+    /// 用户录了一段静音。理由是两者的代价不对称：多弹一次「没有识别到内容」
+    /// 只是噪音，而静默关掉 HUD 会让用户以为已经注入成功——那正是这一轮
+    /// 修的短句消失问题里最难被察觉的部分。
     nonisolated static func isUserFacing(_ error: Error) -> Bool {
         if let error = error as? TranscribeError, error == .audioTooShort {
             return false

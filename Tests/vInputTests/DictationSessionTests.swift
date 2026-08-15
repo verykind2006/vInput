@@ -162,6 +162,50 @@ struct DictationSessionTests {
         #expect(sink.received == ["第二次成功"])
     }
 
+    @Test("空转写结果保留音频并报错——不能静默吞掉")
+    func emptyTranscriptKeepsAudioAndReports() async throws {
+        // 此前空结果被当成成功：retainedSamples 在空判之前就被清空，
+        // 于是音频被丢、不报错、HUD 直接关闭、retry() 也救不回来。
+        // 不到 1 秒的话（「好的」「谢谢」）真机上每一句都走这条路径消失。
+        let (session, source, _, sink) = makeSession(transcript: "")
+        var reported: Error?
+        session.onError = { reported = $0 }
+
+        try await session.start()
+        source.emitSilence(seconds: 1)
+        await session.finish()
+
+        #expect(sink.received.isEmpty)
+        #expect(session.state == .idle)
+        #expect(reported as? TranscribeError == .emptyResult)
+        #expect(session.retainedSampleCount == 16_000)
+    }
+
+    @Test("空结果之后 retry 能把内容找回来")
+    func retryAfterEmptyTranscript() async throws {
+        let source = FakeAudioSource()
+        let transcriber = FakeTranscriber()
+        transcriber.result = ""
+        let sink = SpySink()
+        var guardian = TargetAppGuard()
+        guardian.frontmostBundleID = { "com.apple.Notes" }
+        let session = DictationSession(
+            audioSource: source,
+            transcriber: transcriber,
+            sink: sink,
+            targetGuard: guardian
+        )
+
+        try await session.start()
+        source.emitSilence(seconds: 1)
+        await session.finish()
+
+        transcriber.result = "第二次解出来了"
+        await session.retry()
+
+        #expect(sink.received == ["第二次解出来了"])
+    }
+
     @Test("成功一轮后不残留音频")
     func successClearsRetainedAudio() async throws {
         let (session, source, _, _) = makeSession()

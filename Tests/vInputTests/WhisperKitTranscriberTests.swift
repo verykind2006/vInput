@@ -7,12 +7,57 @@ struct WhisperKitTranscriberTests {
     @Test("过短的音频直接拒绝，不加载模型")
     func rejectsShortAudio() async {
         let transcriber = WhisperKitTranscriber()
-        // 0.1 秒 = 1600 个样本，低于 0.3 秒门槛
-        let samples = [Float](repeating: 0, count: 1_600)
+        // 0.05 秒 = 800 个样本，低于 0.15 秒门槛
+        let samples = [Float](repeating: 0, count: 800)
 
         await #expect(throws: TranscribeError.audioTooShort) {
             try await transcriber.transcribe(samples)
         }
+    }
+
+    @Test("0.26 秒的单音节词不再被门槛挡掉")
+    func acceptsSingleSyllableWord() async {
+        // say -v Tingting 的「对」是 0.260s、「嗯」0.261s，都在旧的 0.3
+        // 门槛之下。而 audioTooShort 不展示给用户，被挡等于静默消失。
+        // 实测补白后「对」能解出「对。」，这类话必须放进来。
+        let transcriber = WhisperKitTranscriber(modelFolder: "/nonexistent")
+        let samples = [Float](repeating: 0, count: 4_160)  // 0.26 秒
+
+        do {
+            _ = try await transcriber.transcribe(samples)
+        } catch let error as TranscribeError {
+            #expect(error != .audioTooShort)
+        } catch {
+            Issue.record("预期 TranscribeError，实际 \(error)")
+        }
+    }
+
+    @Test("不到 1 秒的音频被补静音到 1.1 秒")
+    func padsBelowDecodingFloor() {
+        // WhisperKit 的主解码循环是 while seek < seekClipEnd - windowPadding，
+        // windowPadding 默认 1.0 秒，不长于 1 秒的音频循环体一次都不执行。
+        // 实测「好的」0.41s、「谢谢」0.55s 全部返回空文本。
+        let halfSecond = [Float](repeating: 0.1, count: 8_000)
+        let padded = WhisperKitTranscriber.padToDecodingFloor(halfSecond)
+
+        #expect(padded.count == 17_600)
+        // 原样本必须原封不动地留在头部，补的是尾巴
+        #expect(Array(padded.prefix(8_000)) == halfSecond)
+        #expect(padded.suffix(9_600).allSatisfy { $0 == 0 })
+    }
+
+    @Test("恰好 1.00 秒也要补——悬崖是「不长于」而非「短于」")
+    func padsAtExactlyOneSecond() {
+        // 实测边界：1.00s 空，1.005s 出「谢谢。」。循环条件是严格小于，
+        // 正好 16000 个样本时 0 < 16000 - 16000 不成立。
+        let oneSecond = [Float](repeating: 0.1, count: 16_000)
+        #expect(WhisperKitTranscriber.padToDecodingFloor(oneSecond).count == 17_600)
+    }
+
+    @Test("已经够长的音频原样返回，不做任何改动")
+    func leavesLongAudioUntouched() {
+        let twoSeconds = [Float](repeating: 0.1, count: 32_000)
+        #expect(WhisperKitTranscriber.padToDecodingFloor(twoSeconds) == twoSeconds)
     }
 
     @Test("恰好达到门槛的音频会越过时长检查")
@@ -43,6 +88,98 @@ struct WhisperKitTranscriberPreviewTests {
         let engine = await transcriber.makePreviewEngine(processor: processor)
 
         #expect(engine == nil)
+    }
+}
+
+@Suite("退火套话分段过滤")
+struct FallbackFillerFilterTests {
+    private func segment(_ text: String, temperature: Float) -> TranscriptionSegment {
+        TranscriptionSegment(
+            id: 0, seek: 0, start: 0, end: 1, text: text,
+            tokens: [], tokenLogProbs: [], temperature: temperature,
+            avgLogprob: 0, compressionRatio: 1, noSpeechProb: 0
+        )
+    }
+
+    private func texts(_ segments: [TranscriptionSegment]) -> [String] {
+        WhisperKitTranscriber.segmentsDroppingFallbackFiller(segments).map(\.text)
+    }
+
+    @Test("退火解出的纯套话被丢掉")
+    func dropsFillerFromFallback() {
+        // 挂上 initial prompt 后，静音输入最常见的幻觉形态就是这一句
+        #expect(texts([segment("谢谢。", temperature: 0.6)]).isEmpty)
+        #expect(texts([segment(" 谢谢 ", temperature: 1.0)]).isEmpty)
+    }
+
+    @Test("温度 0 解出的谢谢是用户真说的，必须留下")
+    func keepsFillerDecodedGreedily() {
+        // 判据的关键一半：真实语音都在温度 0 解出，不该被这条规则波及
+        #expect(texts([segment("谢谢。", temperature: 0)]) == ["谢谢。"])
+    }
+
+    @Test("套话只是句子的一部分时不动")
+    func keepsFillerInsideSentence() {
+        let text = "谢谢你帮我看这个问题"
+        #expect(texts([segment(text, temperature: 0.8)]) == [text])
+    }
+
+    @Test("只丢套话段，正文段照留")
+    func keepsRealSegmentsAlongside() {
+        let segments = [
+            segment("今天下午三点开会", temperature: 0.6),
+            segment("谢谢", temperature: 0.6),
+        ]
+        #expect(texts(segments) == ["今天下午三点开会"])
+    }
+
+    @Test("句首的套话分段不被删——那是句子的一部分")
+    func keepsLeadingFillerSegment() {
+        // VAD 实测会把「谢谢,那我们就先这样吧,回头再说」切成多段，
+        // 句首的「谢谢」独立成段是真实会发生的形态。此前的实现对所有分段
+        // 做 filter，会把它从句子中间挖掉——那就是真的丢字。
+        let segments = [
+            segment("谢谢", temperature: 0.6),
+            segment("那我们就先这样吧", temperature: 0.6),
+            segment("回头再说", temperature: 0.6),
+        ]
+        #expect(texts(segments) == ["谢谢", "那我们就先这样吧", "回头再说"])
+    }
+
+    @Test("夹在中间的套话分段同样不被删")
+    func keepsMiddleFillerSegment() {
+        let segments = [
+            segment("今天下午三点开会", temperature: 0.6),
+            segment("谢谢", temperature: 0.6),
+            segment("记得带上电脑", temperature: 0.6),
+        ]
+        #expect(texts(segments) == ["今天下午三点开会", "谢谢", "记得带上电脑"])
+    }
+
+    @Test("结尾连续多段套话一并剥掉")
+    func dropsMultipleTrailingFillers() {
+        let segments = [
+            segment("今天下午三点开会", temperature: 0),
+            segment("谢谢", temperature: 0.6),
+            segment("谢谢大家", temperature: 0.8),
+        ]
+        #expect(texts(segments) == ["今天下午三点开会"])
+    }
+
+    @Test("剥到温度 0 的套话就停手")
+    func stopsAtGreedyFiller() {
+        // 温度 0 解出的「谢谢」是用户真说的，它挡住后面的剥离
+        let segments = [
+            segment("正文", temperature: 0),
+            segment("谢谢", temperature: 0),
+            segment("谢谢大家", temperature: 0.8),
+        ]
+        #expect(texts(segments) == ["正文", "谢谢"])
+    }
+
+    @Test("空分段安全")
+    func emptyIsSafe() {
+        #expect(WhisperKitTranscriber.segmentsDroppingFallbackFiller([]).isEmpty)
     }
 }
 

@@ -6,3 +6,15 @@ remote-mic-app/
 *.xcuserstate
 dist/
 vendor/
+
+# 本机绝对路径的 SPM 镜像配置，重建方法见 docs/dev-dependencies.md
+.swiftpm/configuration/mirrors.json
+
+# 端到端体检的本机开关，见 Tests/vInputTests/CorrectionE2ETests.swift
+Testing/.e2e-enabled
+
+# xcodebuild 的 DerivedData
+.xcbuild/
+
+# 校正模型权重（2.1 GB），不进版本库
+Models/
