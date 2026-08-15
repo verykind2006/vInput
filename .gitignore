@@ -22,3 +22,8 @@ Models/
 # 基准集录音：二进制且是用户的声音，不进版本库。
 # 位于 OneDrive 同步目录内，有云端备份。重录方法见 M5 计划。
 Bench/audio/
+
+# 对照运行的临时配置与报告输出
+Bench/.run-config.json
+Bench/report.txt
+Bench/reports/
