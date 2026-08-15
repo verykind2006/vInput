@@ -124,4 +124,26 @@ struct CorrectionEditParserTests {
         }
     }
 
+    /// `\d+[.)]` 不区分列表编号与小数点。列表编号后面总有空白，
+    /// 小数点后面紧跟数字——用这个区分，别让剥离逻辑吃掉正文。
+    @Test("不把小数点当列表编号")
+    func doesNotMistakeDecimalForListMarker() {
+        #expect(
+            CorrectionEditParser.parse("1.5→一点五")
+                == [CorrectionEdit(original: "1.5", replacement: "一点五")]
+        )
+        #expect(
+            CorrectionEditParser.parse("2)3→二三")
+                == [CorrectionEdit(original: "2)3", replacement: "二三")]
+        )
+    }
+
+    /// 上一条测试收紧了规则，这条确认没有误伤：真正的列表编号
+    /// （编号后带空格）仍然照常剥离。
+    @Test("带空白的列表编号仍被剥离")
+    func stripsNumberedListMarkers() {
+        let expected = [CorrectionEdit(original: "耀空气", replacement: "遥控器")]
+        #expect(CorrectionEditParser.parse("1. 耀空气→遥控器") == expected)
+        #expect(CorrectionEditParser.parse("2) 耀空气→遥控器") == expected)
+    }
 }
