@@ -82,6 +82,89 @@ final class AppModel {
     private let hotkeyCode = UInt32(kVK_ANSI_D)
     private let hotkeyModifiers = UInt32(optionKey)
 
+    // MARK: - 基准集录制（开发期工具）
+
+    /// 基准集录制是否可用。**开发期工具，默认隐藏。**
+    ///
+    /// 用 `VINPUT_BENCH=1` 启动才显示入口。它会把音频写到磁盘，而原始设计
+    /// 写明「音频不落盘」——藏起来是为了让这个例外不会被误当成常态功能。
+    nonisolated static var benchEnabled: Bool {
+        ProcessInfo.processInfo.environment["VINPUT_BENCH"] == "1"
+    }
+
+    private(set) var benchSession: BenchRecordingSession?
+    private var benchSamples: [Float] = []
+    /// 正在录当前这条。菜单要显示它：点一下菜单就关了，没有这个状态的话
+    /// 用户看不出录音到底起没起来，只能靠日志。
+    private(set) var benchIsRecording = false
+
+    /// 录制专用的音频源。
+    ///
+    /// **不复用听写那一路。** `AppModel` 里的 `SystemMicSource` 是
+    /// `bootstrap()` 的局部变量、由 `AudioSourceRouter` 持有，`onFrame`
+    /// 归它管——录制期间抢过来会破坏听写。另起一个实例，两者互不知情。
+    ///
+    /// 代价是同一支麦克风有两个 `AVAudioEngine`。它们不会同时用（两条
+    /// guard 双向挡住：录制时不许听写、听写时不许录制），但这个约束靠
+    /// 代码而非类型保证。
+    ///
+    /// 用到才建：这是开发期工具，正常分发下永远走不到这里，不该让每次
+    /// 启动都白白多一个 `AVAudioEngine`。（不能用 lazy——@Observable 宏
+    /// 与 lazy 的存储语义冲突，见上面 `hud` 那条注释。）
+    private var benchMicSource: SystemMicSource?
+
+    /// 打开录制界面。清单读不到就只记日志——开发期工具不该让应用崩掉。
+    func startBenchRecording() {
+        guard Self.benchEnabled else { return }
+        do {
+            benchSession = BenchRecordingSession(manifest: try BenchManifest.loadFromRepository())
+            AppLogger.shared.log("基准集录制已开始")
+        } catch {
+            AppLogger.shared.log("基准集清单读取失败：\(error)")
+        }
+    }
+
+    /// 开始/结束录当前这条。
+    func toggleBenchRecording() {
+        guard let bench = benchSession, let entry = bench.current else { return }
+
+        // 听写进行中不许录基准集：同一支麦克风、两个引擎，同时开会打架。
+        // session 尚未初始化（bootstrap 之前）时视为空闲。
+        guard (session?.state ?? .idle) == .idle else {
+            AppLogger.shared.log("听写进行中，基准集录制已忽略")
+            return
+        }
+
+        if benchIsRecording {
+            benchMicSource?.stop()
+            benchIsRecording = false
+            do {
+                try BenchRecorder.writeWAV(
+                    samples: benchSamples, to: BenchManifest.audioURL(for: entry)
+                )
+                AppLogger.shared.log("基准集已录：\(entry.id) 共 \(benchSamples.count) 样本")
+            } catch {
+                AppLogger.shared.log("基准集写出失败 \(entry.id)：\(error)")
+            }
+            benchSamples = []
+            return
+        }
+
+        benchSamples = []
+        let mic = benchMicSource ?? SystemMicSource()
+        benchMicSource = mic
+        mic.onFrame = { [weak self] samples in
+            self?.benchSamples.append(contentsOf: samples)
+        }
+        do {
+            try mic.start()
+            benchIsRecording = true
+            AppLogger.shared.log("基准集开始录：\(entry.id)")
+        } catch {
+            AppLogger.shared.log("基准集录音启动失败：\(error)")
+        }
+    }
+
     init() {
         hud = HUDPanel(model: hudModel)
         cancelHotkey = CancelHotkeyController(registrar: EscHotkeyRegistrar())
@@ -216,6 +299,11 @@ final class AppModel {
         // 日志里只有「文本长度 8 字」，会白白浪费一轮真机测试。
         if AppLogger.shared.logsTranscripts {
             AppLogger.shared.log("内容日志已开启（VINPUT_LOG_TRANSCRIPTS=1），日志将包含转写全文")
+        }
+        // 同理把基准集入口的开关记下来：菜单项藏没藏住只能靠肉眼看，
+        // 而日志里有这一行就能事后确认这次启动到底读到了什么。
+        if Self.benchEnabled {
+            AppLogger.shared.log("基准集录制入口已启用（VINPUT_BENCH=1），录音会写入 Bench/audio")
         }
 
         do {
@@ -517,6 +605,14 @@ final class AppModel {
         // 模型正在编译/加载时不接受录音请求。
         guard loadingModelName == nil else {
             log.log("toggle 被拒：正在加载模型 \(loadingModelName!)")
+            return
+        }
+        // 基准集录制中不接受听写：两者用的是同一支麦克风的两个
+        // AVAudioEngine，同时开会打架。反向的 guard 在
+        // toggleBenchRecording 里，这两条必须成对存在——只挡一个方向的话，
+        // 用户先开录制再按 ⌥D 照样能撞上。开发期功能，正常分发下恒为 false。
+        guard !benchIsRecording else {
+            log.log("toggle 被拒：基准集录制进行中")
             return
         }
 

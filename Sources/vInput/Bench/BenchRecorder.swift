@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import Observation
 import WhisperKit
 
 enum BenchRecorderError: Error, Equatable {
@@ -54,5 +55,76 @@ enum BenchRecorder {
     /// 读回样本。用 WhisperKit 的读取器，与生产转写走的是同一条路径。
     static func readWAV(from url: URL) throws -> [Float] {
         try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path)
+    }
+}
+
+/// 录制会话的进度状态。
+///
+/// 抽成独立类型而非塞进 `AppModel`：录制是开发期功能，不该让产品代码
+/// 的状态机变复杂；而且这样才能不碰麦克风就把导航逻辑测掉。
+@MainActor
+@Observable
+final class BenchRecordingSession {
+    private let manifest: BenchManifest
+    private(set) var index = 0
+
+    init(manifest: BenchManifest) {
+        self.manifest = manifest
+    }
+
+    var current: BenchEntry? {
+        manifest.entries.indices.contains(index) ? manifest.entries[index] : nil
+    }
+
+    var progressText: String { "\(index + 1) / \(manifest.entries.count)" }
+
+    /// 该条是否已经录过。录制界面据此提示用户哪些还没录。
+    ///
+    /// 读的是文件系统而非存储属性，@Observable 跟踪不到它——录完一条后
+    /// 菜单不会当场刷新。这里可以接受：点按钮会关掉菜单，下次打开时
+    /// 整个菜单重建，这个计算属性会重新求值。
+    var currentIsRecorded: Bool {
+        guard let current else { return false }
+        return FileManager.default.fileExists(
+            atPath: BenchManifest.audioURL(for: current).path
+        )
+    }
+
+    func advance() {
+        index = min(index + 1, manifest.entries.count - 1)
+    }
+
+    /// 回到上一条。**必须有**：一次性录完二十几段不允许出错是不现实的。
+    func retreat() {
+        index = max(index - 1, 0)
+    }
+
+    func jump(toID id: String) {
+        guard let target = manifest.entries.firstIndex(where: { $0.id == id }) else { return }
+        index = target
+    }
+
+    /// 把标准文本按每行若干字切开，供菜单逐行显示。
+    ///
+    /// **不能截断。** 用户要照着这段文字读，少一半就录不成——而基准集里
+    /// punct 类普遍 50 字以上，最长一条 64 字。菜单项又不会自动换行，
+    /// 整段放一行会把菜单撑到近千点宽，只好在这里手工分行。
+    static func wrap(_ text: String, perLine: Int = 20) -> [String] {
+        guard perLine > 0, !text.isEmpty else { return [] }
+        var lines: [String] = []
+        var rest = Substring(text)
+        while !rest.isEmpty {
+            let end = rest.index(rest.startIndex, offsetBy: perLine, limitedBy: rest.endIndex)
+                ?? rest.endIndex
+            lines.append(String(rest[rest.startIndex..<end]))
+            rest = rest[end...]
+        }
+        return lines
+    }
+
+    /// 当前条目的标准文本，已分好行。
+    var currentLines: [String] {
+        guard let current else { return [] }
+        return Self.wrap(current.text)
     }
 }
