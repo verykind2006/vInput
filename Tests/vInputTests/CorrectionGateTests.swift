@@ -157,4 +157,27 @@ struct CorrectionGateTests {
         #expect(result.applied.isEmpty)
         #expect(result.rejected.count == 1)
     }
+
+    /// 长度阈值的本意是「要有足够上下文消歧」。用字符数衡量对拉丁文
+    /// 毫无意义：AI 是 2 个字符，却只是一个词、约一个音节。
+    /// 实测后果：「我们用 AI 做的这个功能」→「我们用 爱 做的这个功能」，
+    /// 与设计文档「英文标识符一律保持原样」正面冲突。
+    @Test("短拉丁词不得被替换成汉字")
+    func rejectsShortLatinToHanEdits() {
+        for edit in [
+            CorrectionEdit(original: "AI", replacement: "爱"),
+            CorrectionEdit(original: "he", replacement: "和"),
+            CorrectionEdit(original: "long", replacement: "龙"),
+        ] {
+            #expect(!CorrectionGate.allows(edit), "\(edit.original)→\(edit.replacement) 应被拦下")
+        }
+    }
+
+    @Test("正常的中文多字替换仍放行")
+    func stillAllowsNormalChineseEdits() {
+        #expect(CorrectionGate.allows(
+            CorrectionEdit(original: "耀空气", replacement: "遥控器")))
+        #expect(CorrectionGate.allows(
+            CorrectionEdit(original: "事件", replacement: "时间")))
+    }
 }
