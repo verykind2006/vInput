@@ -107,6 +107,15 @@ struct CorrectionE2ETests {
             "今天天气不错，我们出去走走。",
             "感觉这个长句子的识别效果很一般",
             "好的 我又跑了一遍你检查一下日志看看具体是什么情况",
+            // 转写层的 initial prompt 就是为了让这几个专名以正确写法出现
+            // （Claude Code / GitHub Actions / AWS，1/3 → 3/3）。而闸门放宽
+            // 拉丁空格后，多词拉丁串的大小写与词边界同时失去了闸门保护——
+            // `Claude Code → Clau de Code`、`→ GITHUB ACTIONS` 都会被放行。
+            // 单个拉丁词还有长度规则兜底，多词串只剩提示词那一行。
+            //
+            // 没有这条负例，天平上就只有「多改拉丁」那一边有测试
+            // （正例 splitsGluedEnglishTerms 要求模型改写拉丁串）。
+            "我们用 Claude Code 写代码,然后用 GitHub Actions 做持续集成,最后部署到 AWS。",
         ]
     )
     func leavesCorrectSentenceUnchanged(_ input: String) async throws {

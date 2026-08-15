@@ -180,13 +180,39 @@ actor WhisperKitTranscriberShim {
         pipe = try await WhisperKit(WhisperKitConfig(modelFolder: folder))
     }
 
+    /// 引导标点与技术专名的 prompt token，与生产同源。
+    ///
+    /// **这段必须与 `WhisperKitTranscriber` 保持一致。** bench 存在的意义
+    /// 是拿它做模型/参数对照（M5 要用它比 large-v3 与 turbo），一旦两边的
+    /// `DecodingOptions` 不同，对照出来的差异就分不清是模型造成的还是参数
+    /// 造成的——结论直接作废。
+    ///
+    /// 曾经就差了两项（`skipSpecialTokens` 与 `promptTokens`），而注释还写着
+    /// 「保持与生产代码相同的 DecodingOptions」。
+    private var promptTokens: [Int]?
+
+    /// 与 `WhisperKitTranscriber.punctuationPrompt` 同源，改一处要改两处。
+    /// 这是复刻工具的固有代价：bench 是独立的可执行目标，import 不到 vInput。
+    static let punctuationPrompt =
+        "对,这个我知道,那我们就先这样吧,回头再说。用 Claude Code 和 GitHub Actions,最后部署到 AWS。"
+
     func transcribe(_ samples: [Float]) async throws -> String {
         try await prepare()
         guard let pipe else { return "" }
+
+        if promptTokens == nil, let tokenizer = pipe.tokenizer {
+            promptTokens = tokenizer.encode(text: Self.punctuationPrompt)
+                .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+        }
+
         let results = try await pipe.transcribe(
             audioArray: samples,
             decodeOptions: DecodingOptions(
-                language: "zh", suppressBlank: true, chunkingStrategy: .vad
+                language: "zh",
+                skipSpecialTokens: true,
+                promptTokens: promptTokens,
+                suppressBlank: true,
+                chunkingStrategy: .vad
             )
         )
         return results.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines)
