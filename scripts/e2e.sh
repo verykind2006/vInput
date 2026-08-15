@@ -11,7 +11,7 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 cd "$ROOT"
 
-MODEL="$HOME/Library/Application Support/vInput/models/qwen3-4b-instruct-2507-4bit"
+MODEL="$ROOT/Models/qwen3-4b-instruct-2507-4bit"
 if [[ ! -d "$MODEL" ]]; then
   print -u2 "校正模型不在默认位置：$MODEL"
   print -u2 "端到端需要真实模型，先下载再跑。"

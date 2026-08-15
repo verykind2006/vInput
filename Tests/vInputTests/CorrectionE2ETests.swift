@@ -168,23 +168,30 @@ enum E2EGate {
     /// 不该跟着提交跑到别人机器上。
     static let markerPath = "Testing/.e2e-enabled"
 
-    /// 默认模型位置。刻意不放 vendor/：仓库在 OneDrive 同步目录下，
-    /// 2 GB 权重没必要占云端配额（与 spm-mirrors 同一考量）。
-    static let defaultModelDirectory = FileManager.default
-        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("vInput/models/qwen3-4b-instruct-2507-4bit", isDirectory: true)
+    /// 默认模型位置：仓库内的 `Models/`。
+    ///
+    /// 与标记文件一样用 `#filePath` 回溯仓库根，不依赖进程的当前工作目录
+    /// ——`swift test` 与 `xcodebuild test` 下的 cwd 并不相同。
+    static var defaultModelDirectory: URL {
+        repositoryRoot
+            .appendingPathComponent("Models/qwen3-4b-instruct-2507-4bit", isDirectory: true)
+    }
+
+    /// 仓库根目录。
+    static var repositoryRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // vInputTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // 仓库根
+    }
 
     /// 从测试文件位置回溯仓库根，再拼标记文件路径。
     ///
     /// 用 `#filePath` 而非当前工作目录：测试进程的 cwd 在 `swift test`
     /// 与 `xcodebuild test` 下并不相同。
     static var isEnabled: Bool {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()   // vInputTests
-            .deletingLastPathComponent()   // Tests
-            .deletingLastPathComponent()   // 仓库根
-        return FileManager.default.fileExists(
-            atPath: root.appendingPathComponent(markerPath).path
+        FileManager.default.fileExists(
+            atPath: repositoryRoot.appendingPathComponent(markerPath).path
         )
     }
 

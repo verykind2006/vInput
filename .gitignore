@@ -15,3 +15,6 @@ Testing/.e2e-enabled
 
 # xcodebuild 的 DerivedData
 .xcbuild/
+
+# 校正模型权重（2.1 GB），不进版本库
+Models/
