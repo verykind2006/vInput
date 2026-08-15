@@ -31,7 +31,23 @@ enum CorrectionPrompt {
         \(noChangeMarker)
         """
 
+    /// 完整的用户提示：规则 + 待校正文本。
+    ///
+    /// **规则必须并进用户消息，不能走 `ChatSession(instructions:)`。**
+    /// mlx-swift-examples 2.29.1 的 `respond(to:)` 与 `streamResponse(to:)`
+    /// 都是 `generator.messages = [.user(...)]`——赋值而非追加，把 init 里
+    /// 设进去的系统消息整个冲掉（`Streamlined.swift:43` vs `:196/:237`）。
+    /// 结果是 `instructions:` 静默失效。
+    ///
+    /// 真机实测过后果：模型收到的只有「输入：…\n回答：」，于是开始聊天——
+    /// 「小米耀空气可能是指小米推出的某款智能设备……」，一条替换都没有。
+    /// 这个缺陷不会以任何错误的形式暴露，只表现为「校正好像没用」。
     static func user(for text: String) -> String {
-        "输入：\(text)\n回答："
+        """
+        \(instructions)
+
+        输入：\(text)
+        回答：
+        """
     }
 }

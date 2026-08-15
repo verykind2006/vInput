@@ -63,11 +63,10 @@ actor MLXCorrector: Corrector {
         // **每次新建 ChatSession。** 它内部持有对话历史，复用会让上一句
         // 转写污染下一句的校正。M2 曾因复用 AudioStreamTranscriber 导致
         // 第二次会话显示上次的文字，这是同一类错误。
-        let session = ChatSession(
-            container,
-            instructions: CorrectionPrompt.instructions,
-            generateParameters: parameters
-        )
+        // 不传 instructions：上游会在每次 respond/streamResponse 时用
+        // 赋值覆盖掉 messages，系统消息静默丢失（见 CorrectionPrompt.user）。
+        // 规则已并进用户提示。
+        let session = ChatSession(container, generateParameters: parameters)
 
         // 用流式而非 `respond(to:)`：后者走同步的 generate 循环，全程不检查
         // 取消（`Evaluate.swift:597-646`），我们的超时对它毫无作用。流式版本

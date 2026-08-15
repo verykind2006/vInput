@@ -3,23 +3,38 @@ import Testing
 
 @testable import vInput
 
-/// 校正端到端体检。需要真实模型，默认跳过。开启方式：
+/// 校正端到端体检。需要真实模型，默认跳过。
+///
+/// **必须用 `xcodebuild` 跑，不能用 `swift build` / `swift test`。**
+/// SwiftPM 命令行无法编译 mlx-swift 的 Metal 着色器（见其 README 与
+/// `docs/dev-dependencies.md`），MLX 会在运行时报
+/// `Failed to load the default metallib` 而整个测试进程中止。
 ///
 /// ```bash
-/// VINPUT_E2E=1 VINPUT_CORRECTION_MODEL=/path/to/model ./scripts/test.sh
+/// touch Testing/.e2e-enabled
+/// xcodebuild test -scheme vInput -destination "platform=OS X" \
+///     -only-testing:vInputTests/CorrectionE2ETests
 /// ```
 ///
-/// 与 `PipelineE2ETests` 同一门控方式：真实模型加载耗时且占内存，
-/// 不该拖慢每次改动都要跑的单元测试。
+/// **门控用标记文件而非环境变量。** `xcodebuild test` 不把父进程的环境
+/// 变量传给测试运行器（`TEST_RUNNER_` 前缀对 SwiftPM 包也无效），实测
+/// 结果是整个套件被静默跳过、而 xcodebuild 照样报 `TEST SUCCEEDED`、
+/// 退出码 0——一个几乎无法察觉的假绿灯。标记文件不经过任何进程间传递，
+/// 两种构建方式下行为一致。
 ///
 /// 存在的理由是 M4 本身的理由——真机案例：说「小米遥控器」，Whisper
 /// 输出「小米耀空气」。单元测试用假 Corrector 只能验证管线的接线是否正确
 /// （超时、闸门、失败退回原文），验证不了模型本身是否真的能修对、
 /// 会不会误伤本就正确的句子。这两件事只能拿真模型测。
-@Suite(
-    "校正端到端",
-    .enabled(if: ProcessInfo.processInfo.environment["VINPUT_E2E"] == "1")
-)
+/// **必须串行。** Swift Testing 默认并行跑用例，而多条用例同时向同一个
+/// MLX 模型发起推理会让 Metal 崩掉：
+/// `-[_MTLCommandBuffer commit]: failed assertion 'commit an already
+/// committed command buffer'`。`ModelContainer.perform` 只保证模型访问
+/// 串行，保证不了 Metal 命令缓冲区层面的并发安全。
+///
+/// 崩溃后 xcodebuild 会重跑一次、跑 0 条用例、报 "passed"——只有退出码
+/// 65 能看出不对，是个很容易骗过人的假绿灯。
+@Suite("校正端到端", .enabled(if: E2EGate.isEnabled), .serialized)
 struct CorrectionE2ETests {
     /// 用 `static let` 而不是每条用例各自 new 一个：三条用例共享同一个
     /// corrector 实例，`MLXCorrector` 内部靠 `OneShotLoader` 判重，
@@ -29,10 +44,8 @@ struct CorrectionE2ETests {
     /// 环境变量缺失时置 nil，交给 `makePipeline()` 里的 `#require`
     /// 给出清晰提示，而不是在这里让整个 suite 崩掉。
     private static let corrector: MLXCorrector? = {
-        guard let path = ProcessInfo.processInfo.environment["VINPUT_CORRECTION_MODEL"] else {
-            return nil
-        }
-        return MLXCorrector(modelDirectory: URL(fileURLWithPath: path))
+        guard let directory = E2EGate.modelDirectory else { return nil }
+        return MLXCorrector(modelDirectory: directory)
     }()
 
     /// 先等模型真正就绪，再返回可用的管线。
@@ -43,7 +56,7 @@ struct CorrectionE2ETests {
     private func makePipeline() async throws -> CorrectionPipeline {
         let corrector = try #require(
             Self.corrector,
-            "需设置 VINPUT_CORRECTION_MODEL 指向本地模型目录"
+            "模型不在默认位置，见 E2EGate.defaultModelDirectory"
         )
         try await corrector.prepare()
 
@@ -109,7 +122,7 @@ struct CorrectionE2ETests {
     func atLeastOneEditApplied() async throws {
         let corrector = try #require(
             Self.corrector,
-            "需设置 VINPUT_CORRECTION_MODEL 指向本地模型目录"
+            "模型不在默认位置，见 E2EGate.defaultModelDirectory"
         )
         try await corrector.prepare()
 
@@ -122,5 +135,45 @@ struct CorrectionE2ETests {
             !outcome.applied.isEmpty,
             "全部建议都被闸门拦下。建议=\(edits) 拦下=\(outcome.rejected)"
         )
+    }
+}
+
+/// 端到端体检的开关与模型位置。
+///
+/// 刻意不走环境变量：`xcodebuild test` 不把父进程环境传给测试运行器，
+/// 实测会让整个套件被静默跳过而仍报 `TEST SUCCEEDED`。标记文件不经过
+/// 任何进程间传递，`swift test` 与 `xcodebuild test` 下行为一致。
+enum E2EGate {
+    /// 仓库根目录下的标记文件。已在 .gitignore 中排除——它是本机开关，
+    /// 不该跟着提交跑到别人机器上。
+    static let markerPath = "Testing/.e2e-enabled"
+
+    /// 默认模型位置。刻意不放 vendor/：仓库在 OneDrive 同步目录下，
+    /// 2 GB 权重没必要占云端配额（与 spm-mirrors 同一考量）。
+    static let defaultModelDirectory = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("vInput/models/qwen3-4b-instruct-2507-4bit", isDirectory: true)
+
+    /// 从测试文件位置回溯仓库根，再拼标记文件路径。
+    ///
+    /// 用 `#filePath` 而非当前工作目录：测试进程的 cwd 在 `swift test`
+    /// 与 `xcodebuild test` 下并不相同。
+    static var isEnabled: Bool {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // vInputTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // 仓库根
+        return FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(markerPath).path
+        )
+    }
+
+    /// 模型目录。不存在时返回 nil，由用例的 `#require` 给出清晰提示。
+    static var modelDirectory: URL? {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(
+            atPath: defaultModelDirectory.path, isDirectory: &isDirectory
+        ), isDirectory.boolValue else { return nil }
+        return defaultModelDirectory
     }
 }
