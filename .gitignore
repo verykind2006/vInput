@@ -12,3 +12,6 @@ vendor/
 
 # 端到端体检的本机开关，见 Tests/vInputTests/CorrectionE2ETests.swift
 Testing/.e2e-enabled
+
+# xcodebuild 的 DerivedData
+.xcbuild/
