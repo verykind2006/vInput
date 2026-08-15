@@ -106,7 +106,6 @@ struct CorrectionE2ETests {
             "我们重新来测试一下小米遥控器很好用",
             "今天天气不错，我们出去走走。",
             "感觉这个长句子的识别效果很一般",
-            "对于这种中英文夹杂包括例如我们说Claude CodeOpen AILLM这种识别度如何",
             "好的 我又跑了一遍你检查一下日志看看具体是什么情况",
         ]
     )
@@ -114,6 +113,29 @@ struct CorrectionE2ETests {
         let pipeline = try await makePipeline()
         let result = await pipeline.correct(input)
         #expect(result == input, "实际输出：\(result)")
+    }
+
+    /// Whisper 把连着说的几个英文名词粘成一坨，校正应当拆回去。
+    ///
+    /// **这条曾被我错标成负例。** 真机日志里模型对它只输出空操作，
+    /// 我据此把它归进「本来正确、一个字都不能动」那一组——把「模型做不到」
+    /// 误当成了「不该做」。实际上用户说的是「Claude Code、Open AI、LLM」
+    /// 三个东西，是 Whisper 粘在了一起，拆开才是对的。
+    ///
+    /// 教训：负例集合里混进一个其实该改的句子，会把一次正确的修复
+    /// 报成回归，进而诱导人去放宽真正正确的规则。
+    ///
+    /// 标点不在 M4 范围内（那是 M5 的场景润色），所以只断言词边界被拆对，
+    /// 不要求出现顿号。
+    @Test("粘在一起的英文名词被拆回去")
+    func splitsGluedEnglishTerms() async throws {
+        let input = "对于这种中英文夹杂包括例如我们说Claude CodeOpen AILLM这种识别度如何"
+        let pipeline = try await makePipeline()
+        let result = await pipeline.correct(input)
+
+        #expect(result.contains("Claude Code"), "实际输出：\(result)")
+        #expect(result.contains("Open AI"), "实际输出：\(result)")
+        #expect(result.contains("LLM"), "实际输出：\(result)")
     }
 
     /// 真机上说的是「长句子」「句子」，Whisper 写成了「长矩子」「矩子」。
