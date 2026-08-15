@@ -22,7 +22,19 @@ struct CorrectionPipeline: Sendable {
     /// 一次会话内乃至连续多次会话之间，流水线实例都是稳定的。
     private let inFlight = InFlightGate()
 
-    init(corrector: Corrector, timeout: Duration = .seconds(3)) {
+    /// - Parameter timeout: 单次推理的时间上限。**只约束推理，不约束模型加载。**
+    ///
+    /// 8 秒是真机实测定的，不是拍的。用 Qwen3-4B-4bit 说六段话（12–70 字），
+    /// 校正耗时 1.88 / 1.88 / 1.88 / 2.05 / 2.12 / 2.30 / 2.33 / 4.71 秒——
+    /// 典型值贴着 2 秒，但方差很大：偶发的 4.71 秒会打穿更小的预算。
+    ///
+    /// 原先是 3 秒，真机上大面积超时（九次会话六次 timedOut），而端到端测试
+    /// 全绿——因为测试里没有 Whisper large-v3-turbo 同时驻留抢 GPU。这是
+    /// 「测试环境与真实环境不一致」的典型，不是代码有 bug。
+    ///
+    /// 8 秒之上不宜再放：超时期间用户对着光标干等，而降级的代价只是拿到
+    /// 未校正的原文。换更大的模型（菜单里明摆着邀请）需要重新实测这个值。
+    init(corrector: Corrector, timeout: Duration = .seconds(8)) {
         self.corrector = corrector
         self.timeout = timeout
     }
@@ -72,6 +84,7 @@ struct CorrectionPipeline: Sendable {
             return text
         }
 
+        let started = ContinuousClock.now
         let edits: [CorrectionEdit]
         do {
             // **只有推理进这个超时窗口，加载不进。** 3 秒对一次推理是合理
@@ -79,27 +92,33 @@ struct CorrectionPipeline: Sendable {
             // 加载每次都被超时掐断（或反过来把注入拖住几十秒），校正从不生效。
             edits = try await editsWithTimeout(for: text)
         } catch {
-            AppLogger.shared.log("校正跳过：\(error)")
+            // 记录耗时：只写「timedOut」看不出实际要多久，也就无从判断
+            // 预算该调到多少、还是该缩短提示词。
+            AppLogger.shared.log("校正跳过：\(error) 耗时 \(ContinuousClock.now - started)")
+            return text
+        }
+        let elapsed = ContinuousClock.now - started
+
+        guard !edits.isEmpty else {
+            AppLogger.shared.log("校正 耗时 \(elapsed) 无替换")
             return text
         }
 
-        guard !edits.isEmpty else { return text }
-
         let outcome = CorrectionGate.apply(edits, to: text)
-        logOutcome(outcome)
+        logOutcome(outcome, elapsed: elapsed)
         return outcome.text
     }
 
     /// 记录采纳与拦下的替换，供判断闸门松紧。
     ///
     /// 只记替换对，不记全文——日志默认不含转写内容（见设计文档「隐私」）。
-    private func logOutcome(_ outcome: CorrectionGate.Outcome) {
+    private func logOutcome(_ outcome: CorrectionGate.Outcome, elapsed: Duration) {
         guard !outcome.applied.isEmpty || !outcome.rejected.isEmpty else { return }
         let describe: ([CorrectionEdit]) -> String = { edits in
             edits.map { "\($0.original)→\($0.replacement)" }.joined(separator: " ")
         }
         AppLogger.shared.log(
-            "校正 采纳=[\(describe(outcome.applied))] 拦下=[\(describe(outcome.rejected))]"
+            "校正 耗时 \(elapsed) 采纳=[\(describe(outcome.applied))] 拦下=[\(describe(outcome.rejected))]"
         )
     }
 
