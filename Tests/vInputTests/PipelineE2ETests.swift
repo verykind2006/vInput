@@ -72,6 +72,29 @@ struct PipelineE2ETests {
         #expect(!text.isEmpty)
     }
 
+    @Test("长句必须带标点")
+    func longSentenceIsPunctuated() async throws {
+        // 真机反馈「长句几乎不带标点」：70 字的一句话一个标点都没有。
+        // long.wav 是 24 秒 103 字，不挂 initial prompt 时基线稳定输出
+        // 零标点，挂上后稳定 7 个。门槛取 3，留足波动余量。
+        let text = try await transcribe("long")
+        let count = text.filter { "，。！？；：,.!?;:".contains($0) }.count
+        #expect(count >= 3, "长句只有 \(count) 个标点：\(text)")
+    }
+
+    @Test("输出不含字节级解码残片", arguments: ["chat", "short", "tech", "long"])
+    func noByteLevelJunk(sample: String) async throws {
+        // 用全角标点写 initial prompt 会踩字节级 BPE：全角「，」是
+        // EF BC 8C，采样只对前两字节就解码成 Ｂ(EF BC A2)、４(EF BC 94)
+        // 或 U+FFFD。这条守着「prompt 一律用半角标点」这个结论——
+        // 日后有人改 punctuationPrompt 时会先在这里翻车。
+        let text = try await transcribe(sample)
+        let junk = text.unicodeScalars.filter {
+            $0 == "\u{FFFD}" || ("\u{FF10}"..."\u{FF5A}").contains($0)
+        }
+        #expect(junk.isEmpty, "含乱码 \(String(String.UnicodeScalarView(junk)))：\(text)")
+    }
+
     @Test("同一转写器连续两次结果一致")
     func repeatedTranscriptionIsStable() async throws {
         // 流式预览曾因跨会话复用实例而残留状态，这里确认最终转写路径没有

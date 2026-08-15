@@ -92,6 +92,14 @@ struct TranscriptCleanerTests {
         #expect(TranscriptCleaner.clean("谢谢观看") == "")
     }
 
+    @Test("点赞与订阅之间带空格的频道尾巴也要删干净")
+    func removesSubscribeCreditWithSpaces() {
+        // 模型实际吐出来的形态带空格，此前模式写死「点赞订阅」相连，
+        // 于是整条规则从未生效。bench 的静音音频上稳定复现。
+        #expect(TranscriptCleaner.clean("请不吝点赞 订阅 转发 打赏支持明镜与点点栏目") == "")
+        #expect(TranscriptCleaner.clean("正文。请不吝点赞订阅转发") == "正文。")
+    }
+
     @Test("普通文本完全不受影响")
     func plainTextUnchanged() {
         let text = "我们来测试一下这个功能这个功能跑了一下午基本的功能框架就已经出来了"

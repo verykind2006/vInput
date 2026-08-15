@@ -46,6 +46,54 @@ struct WhisperKitTranscriberPreviewTests {
     }
 }
 
+@Suite("退火套话分段过滤")
+struct FallbackFillerFilterTests {
+    private func segment(_ text: String, temperature: Float) -> TranscriptionSegment {
+        TranscriptionSegment(
+            id: 0, seek: 0, start: 0, end: 1, text: text,
+            tokens: [], tokenLogProbs: [], temperature: temperature,
+            avgLogprob: 0, compressionRatio: 1, noSpeechProb: 0
+        )
+    }
+
+    private func texts(_ segments: [TranscriptionSegment]) -> [String] {
+        WhisperKitTranscriber.segmentsDroppingFallbackFiller(segments).map(\.text)
+    }
+
+    @Test("退火解出的纯套话被丢掉")
+    func dropsFillerFromFallback() {
+        // 挂上 initial prompt 后，静音输入最常见的幻觉形态就是这一句
+        #expect(texts([segment("谢谢。", temperature: 0.6)]).isEmpty)
+        #expect(texts([segment(" 谢谢 ", temperature: 1.0)]).isEmpty)
+    }
+
+    @Test("温度 0 解出的谢谢是用户真说的，必须留下")
+    func keepsFillerDecodedGreedily() {
+        // 判据的关键一半：真实语音都在温度 0 解出，不该被这条规则波及
+        #expect(texts([segment("谢谢。", temperature: 0)]) == ["谢谢。"])
+    }
+
+    @Test("套话只是句子的一部分时不动")
+    func keepsFillerInsideSentence() {
+        let text = "谢谢你帮我看这个问题"
+        #expect(texts([segment(text, temperature: 0.8)]) == [text])
+    }
+
+    @Test("只丢套话段，正文段照留")
+    func keepsRealSegmentsAlongside() {
+        let segments = [
+            segment("今天下午三点开会", temperature: 0.6),
+            segment("谢谢", temperature: 0.6),
+        ]
+        #expect(texts(segments) == ["今天下午三点开会"])
+    }
+
+    @Test("空分段安全")
+    func emptyIsSafe() {
+        #expect(WhisperKitTranscriber.segmentsDroppingFallbackFiller([]).isEmpty)
+    }
+}
+
 @Suite("结尾无语音分段过滤")
 struct TrailingNonSpeechFilterTests {
     private func segment(_ text: String, noSpeech: Float, id: Int = 0) -> TranscriptionSegment {

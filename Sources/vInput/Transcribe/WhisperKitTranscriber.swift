@@ -21,6 +21,8 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
     /// 面向繁体用户时可关闭。
     private let normalizeToSimplified: Bool
     private var pipe: WhisperKit?
+    /// 引导标点用的 prompt token，模型加载后编码一次并缓存。
+    private var promptTokens: [Int]?
 
     init(
         modelName: String = "base",
@@ -61,10 +63,49 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
             } else {
                 WhisperKitConfig(model: modelName, downloadBase: downloadBase)
             }
-            pipe = try await WhisperKit(config)
+            let loaded = try await WhisperKit(config)
+            pipe = loaded
+            promptTokens = loaded.tokenizer.map { Self.encodePrompt(Self.punctuationPrompt, with: $0) }
         } catch {
             throw TranscribeError.engineFailed(error.localizedDescription)
         }
+    }
+
+    /// 引导长句输出标点用的示例文本（Whisper 的 initial prompt 机制）。
+    ///
+    /// 模型会沿用这段前缀的风格，包括标点密度。真机反馈「长句几乎不带标点」，
+    /// 实测（large-v3-turbo + 本仓库 bench 音频）确实如此：24 秒的 long.wav
+    /// 基线输出 103 字零标点，挂上这段 prompt 后稳定给出 7 个标点。
+    ///
+    /// 选这段文字的三条理由，每条都是实测踩出来的：
+    ///
+    /// 1. **用半角逗号，不用全角。** 全角「，」是 UTF-8 三字节
+    ///    （EF BC 8C），字节级 BPE 会把它拆成多个 token；一旦采样只对了
+    ///    前两个字节，就解码出 `Ｂ`（EF BC A2）、`４`（EF BC 94）、`�`
+    ///    这类同前缀乱码——用全角逗号的候选 prompt 在 long.wav 上稳定复现，
+    ///    换成半角后 90 次转写零乱码。Whisper 中文本来就输出半角逗号，
+    ///    prompt 跟着用半角反而更贴近它自己的习惯。
+    /// 2. **短。** 50 字以上的候选（哪怕内容中性）会把解码推进温度退火，
+    ///    输出重复串与乱码。
+    /// 3. **词汇日常且不指向任何具体事物。** prompt 的用词会被模型抄进结果
+    ///    ——含「明天再发给你」的候选就在静音输入上吐出过「明天再发」。
+    ///    这段话里没有可抄的名词。
+    static let punctuationPrompt = "对,这个我知道,那我们就先这样吧,回头再说。时间上没问题,你放心。"
+
+    /// 把 prompt 文本编成 token，并剔除特殊标记。
+    ///
+    /// `WhisperTokenizer` 协议只暴露 `encode(text:)`，**没有** swift-transformers
+    /// 那个带 `addSpecialTokens` 的重载（底层的 `TokenizerWrapper` 不是 public）。
+    /// 而 `encode(text:)` 默认会包上 `<|startoftranscript|>`、`<|endoftext|>`，
+    /// 混进条件前缀会打乱解码器的 prefill 结构，必须自己滤掉。
+    ///
+    /// WhisperKit 的 `TextDecoder` 里也有一道同样的过滤，这里不依赖它：
+    /// 上游改了我们不该跟着炸。
+    nonisolated static func encodePrompt(
+        _ text: String, with tokenizer: any WhisperTokenizer
+    ) -> [Int] {
+        tokenizer.encode(text: text)
+            .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
     }
 
     /// 判定一段是幻觉所用的「无语音概率」下限。
@@ -93,6 +134,36 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// 退火解码时才会冒出来的纯套话。整段只有这么一句才算数。
+    static let fallbackFillers: Set<String> = [
+        "谢谢", "谢谢你", "谢谢大家", "谢谢观看", "感谢观看", "谢谢收看",
+    ]
+
+    /// 丢弃「靠温度退火才解出来的、整段只有一句客套话」的分段。
+    ///
+    /// **这一条是为 initial prompt 配套加的。** 实测：静音/底噪输入下，
+    /// 不挂 prompt 时 35 次里 2 次吐出幻觉，挂上 prompt 后升到 11 次，
+    /// 且形态高度一致——全是「谢谢。」。prompt 提高了模型「必须说点什么」
+    /// 的倾向，这是它的固有代价，得在事后补一刀。
+    ///
+    /// 判据用两个条件相与，而不是简单地把「谢谢」加进短语表：
+    ///
+    /// - **温度大于 0** 意味着贪心解码没通过 logProb / 压缩率阈值、走了退火。
+    ///   实测里所有静音幻觉都带退火，而所有真实语音都在温度 0 解出。
+    /// - **整段去掉标点后恰好等于某句套话**，句中出现一律不管。
+    ///
+    /// 单独任一条都太松：用户真说一句「谢谢」应当照常输出，那句会在温度 0
+    /// 解出，不满足第一条，不会被吞。
+    nonisolated static func segmentsDroppingFallbackFiller(
+        _ segments: [TranscriptionSegment]
+    ) -> [TranscriptionSegment] {
+        segments.filter { segment in
+            guard segment.temperature > 0 else { return true }
+            let bare = segment.text.filter { !"，。！？；：、,.!?;: \t\n\u{3000}".contains($0) }
+            return !fallbackFillers.contains(TranscriptCleaner.stripSpecialTokens(bare))
+        }
+    }
+
     func transcribe(_ samples: [Float]) async throws -> String {
         let duration = Double(samples.count) / AudioFormat.sampleRate
         guard duration >= Self.minimumDuration else {
@@ -109,6 +180,9 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
                 // 这类标记。TranscriptionResult.text 是处理过的，但我们
                 // 为了做分段级过滤直接读 segments，必须自己关掉。
                 skipSpecialTokens: true,
+                // 条件前缀。见 punctuationPrompt——这是让长句带上标点的
+                // 唯一手段，Whisper 本身没有「加标点」的开关。
+                promptTokens: promptTokens,
                 // WhisperKit 默认 false。开启后抑制空白 token，
                 // 减少静音段凭空生成内容。
                 suppressBlank: true,
@@ -124,7 +198,7 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
             // 模型自己给出了每段「其实没人说话」的概率，用它比维护
             // 一张幻觉短语表可靠得多——短语表打不完，且每加一个词
             // 就多一分误删真话的风险。
-            let segments = results.flatMap(\.segments)
+            let segments = Self.segmentsDroppingFallbackFiller(results.flatMap(\.segments))
             let raw = Self.textDroppingTrailingNonSpeech(segments)
 
             // 分段过滤只能拿掉「整段都是幻觉」的情形。若幻觉与真实语音
@@ -156,6 +230,12 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
             // <|zh|>、<|0.00|> 这类原始标记。最终注入读的是
             // TranscriptionResult.text（已处理过）所以看不出来，而预览直接
             // 读 segments[].text——真机反馈「一堆尖角符」就是这个。
+            //
+            // **预览刻意不挂 punctuationPrompt。** 三条理由：
+            // 预览是边说边刷的中间结果，最终注入的是全量转写的输出，
+            // 这里的标点无人受用；prompt 会给每个解码窗口多压几十个 token，
+            // 直接吃预览的延迟预算；而预览面对的正是「很短、常常还没开口」
+            // 的音频片段，实测该条件下挂 prompt 最容易触发温度退火与幻觉。
             decodingOptions: DecodingOptions(
                 language: language,
                 skipSpecialTokens: true,
