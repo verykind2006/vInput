@@ -251,13 +251,35 @@ enum E2EGate {
     /// 不该跟着提交跑到别人机器上。
     static let markerPath = "Testing/.e2e-enabled"
 
-    /// 默认模型位置：仓库内的 `Models/`。
+    /// 默认模型目录名。标记文件为空时用它。
+    static let defaultModelName = "qwen3-4b-instruct-2507-4bit"
+
+    /// 要测的模型目录，位于仓库内的 `Models/` 下。
+    ///
+    /// **模型名写在标记文件里**，这样换模型做对照不必改代码也不必重新编译：
+    ///
+    /// ```bash
+    /// echo qwen2.5-7b-instruct-4bit > Testing/.e2e-enabled
+    /// ./scripts/e2e.sh
+    /// ```
+    ///
+    /// 为什么不用环境变量：`xcodebuild test` 不把父进程环境传给测试运行器
+    /// （`TEST_RUNNER_` 前缀对 SwiftPM 包同样无效），而 xcodebuild 又是唯一
+    /// 能编译 Metal 着色器的方式——两者构成死锁。标记文件不经过任何进程间
+    /// 传递，两种构建方式下行为一致。
     ///
     /// 与标记文件一样用 `#filePath` 回溯仓库根，不依赖进程的当前工作目录
     /// ——`swift test` 与 `xcodebuild test` 下的 cwd 并不相同。
     static var defaultModelDirectory: URL {
-        repositoryRoot
-            .appendingPathComponent("Models/qwen3-4b-instruct-2507-4bit", isDirectory: true)
+        let name = markerContents.isEmpty ? defaultModelName : markerContents
+        return repositoryRoot.appendingPathComponent("Models/\(name)", isDirectory: true)
+    }
+
+    /// 标记文件的内容，去掉首尾空白。文件不存在或为空时返回空串。
+    static var markerContents: String {
+        let path = repositoryRoot.appendingPathComponent(markerPath).path
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return "" }
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// 仓库根目录。

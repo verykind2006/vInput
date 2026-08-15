@@ -11,7 +11,11 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 cd "$ROOT"
 
-MODEL="$ROOT/Models/qwen3-4b-instruct-2507-4bit"
+# 模型名可由第一个参数指定，缺省用 4B。名字写进标记文件，测试从那里读
+# ——xcodebuild test 传不进环境变量（见 CorrectionE2ETests 的 E2EGate）。
+MODEL_NAME="${1:-qwen3-4b-instruct-2507-4bit}"
+[[ "$MODEL_NAME" == -* ]] && MODEL_NAME="qwen3-4b-instruct-2507-4bit" || shift 2>/dev/null || true
+MODEL="$ROOT/Models/$MODEL_NAME"
 if [[ ! -d "$MODEL" ]]; then
   print -u2 "校正模型不在默认位置：$MODEL"
   print -u2 "端到端需要真实模型，先下载再跑。"
@@ -21,7 +25,7 @@ fi
 # 标记文件是门控开关。用它而非环境变量：xcodebuild test 不把父进程环境
 # 传给测试运行器，实测会让整个套件被静默跳过而仍报 TEST SUCCEEDED。
 MARKER="$ROOT/Testing/.e2e-enabled"
-touch "$MARKER"
+print "$MODEL_NAME" > "$MARKER"
 trap 'rm -f "$MARKER"' EXIT
 
 xcodebuild test \
