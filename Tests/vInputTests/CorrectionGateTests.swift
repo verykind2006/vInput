@@ -173,6 +173,82 @@ struct CorrectionGateTests {
         }
     }
 
+    // MARK: - 被拆开的英文标识符
+
+    /// 主场景是给 AI 写 prompt，用户口述英文标识符，Whisper 惯于把它们
+    /// 拆开并首字母大写。模型给的建议是对的，闸门却因为差一个空格而拒绝。
+    /// 归一化「夹在两个拉丁字母之间的空白」之后这类替换才过得去。
+    @Test("拆开的英文标识符拼回去，放行")
+    func allowsRejoinedIdentifiers() {
+        #expect(CorrectionGate.allows(
+            CorrectionEdit(original: "Use Effect", replacement: "useEffect")))
+        #expect(CorrectionGate.allows(
+            CorrectionEdit(original: "get User Name", replacement: "getUserName")))
+    }
+
+    /// 放宽一步也不许碰汉字：这条是防误伤的回归钉。
+    ///
+    /// 归一化刻意做在**原始字符串**上——那时汉字之间根本没有空白可删。
+    /// 若错做在拼音之后，`xi an` 会被压成 `xian`，「西安」与「先」就混为
+    /// 一谈了，而它们是两个不同的词。
+    @Test("汉字之间的判定不得放宽")
+    func doesNotLoosenHanComparison() {
+        #expect(!CorrectionGate.allows(
+            CorrectionEdit(original: "西安", replacement: "先")))
+        #expect(!CorrectionGate.allows(
+            CorrectionEdit(original: "小米", replacement: "米粒")))
+    }
+
+    /// 中英混排：空格一侧是汉字时不动它，前半段读音变了照样拦下。
+    @Test("中英混排只合并拉丁段")
+    func mergesOnlyLatinRuns() {
+        #expect(CorrectionGate.allows(
+            CorrectionEdit(original: "改成 Use Effect", replacement: "改成 useEffect")))
+        #expect(!CorrectionGate.allows(
+            CorrectionEdit(original: "改成 Use Effect", replacement: "变成 useEffect")))
+    }
+
+    /// **反方向的实际行为，如实记录。**
+    ///
+    /// 闸门在拉丁段上只保证「字母序列一致」：大小写本来就被
+    /// `Pinyin.toneless` 抹平，词边界现在也被抹平了。所以拆分方向、
+    /// 大小写乱改都不是靠读音比对挡住的：
+    ///
+    /// - `useEffect→Use Effect` 拦得下，但拦下它的是**长度规则**——
+    ///   单个拉丁词只有 1 段，够不着 `minimumOriginalLength`。
+    /// - 原文一旦本身就被拆成两段以上，长度规则就不再兜底，
+    ///   `Use Effect→USEEFFECT` 这种纯大小写乱改会被放行。
+    ///
+    /// 那一格只剩提示词兜着（「不许改大小写，useEffect 就该一直是
+    /// useEffect」）。真机上出过事故：某一版提示词让模型把本来正确的
+    /// `useEffect` 改成 `useeffect`。这是已知取舍，不是遗漏。
+    @Test("反方向：拦下它的是长度规则，不是读音")
+    func reverseDirectionIsNotGuardedByReading() {
+        #expect(!CorrectionGate.allows(
+            CorrectionEdit(original: "useEffect", replacement: "Use Effect")))
+        #expect(!CorrectionGate.allows(
+            CorrectionEdit(original: "useEffect", replacement: "useeffect")))
+
+        // 原文自带空格时长度规则不再兜底，纯大小写乱改就过得去了。
+        #expect(CorrectionGate.allows(
+            CorrectionEdit(original: "Use Effect", replacement: "USEEFFECT")))
+    }
+
+    /// **拆分方向也被放行了，如实记录。** 这是真机上兑现过的代价：
+    /// 端到端那句「一个字都不能动」的样本，模型建议
+    /// `…Claude CodeOpen AILLM→…Claude Code Open AI LLM`，
+    /// 归一化之后两边都是同一串字母，闸门看不出区别。
+    ///
+    /// 合并方向（`Use Effect→useEffect`）是我们要的，拆分方向是顺带来的，
+    /// 同一条规则区分不了两者。挡它的同样只有提示词那条「不许加空格删空格」。
+    @Test("往拉丁段里插空格同样会被放行")
+    func splittingLatinRunIsAlsoAllowed() {
+        #expect(CorrectionGate.allows(CorrectionEdit(
+            original: "我们说Claude CodeOpen AILLM",
+            replacement: "我们说Claude Code Open AI LLM"
+        )))
+    }
+
     @Test("正常的中文多字替换仍放行")
     func stillAllowsNormalChineseEdits() {
         #expect(CorrectionGate.allows(

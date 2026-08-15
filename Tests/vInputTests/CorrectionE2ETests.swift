@@ -137,20 +137,21 @@ struct CorrectionE2ETests {
 
     /// 真机上说的是 useEffect，Whisper 写成了「Use Effect」。
     ///
-    /// **已知未达成，而且卡在闸门不在提示词。** 模型给的建议正是
-    /// `Use Effect→useEffect`（新提示词下稳定复现），但
-    /// `Pinyin.toneless` 把拉丁字母原样穿过后按空格分段：
-    /// `use effect` ≠ `useeffect`，闸门判定为不同音而拒绝。
-    /// 只要「删掉一个空格」这件事在闸门眼里就是改读音，这条永远过不了。
-    /// 要解，得动闸门（比对前把拉丁段的空格归一化），那属于另一个任务——
-    /// 而且要先想清楚会不会顺带放行「北京 → 背景」之外的什么东西。
+    /// 这条曾长期是 `withKnownIssue`：模型给的建议本就是
+    /// `Use Effect→useEffect`，卡在闸门——`Pinyin.toneless` 把拉丁字母
+    /// 原样穿过后按空格分段，`use effect` ≠ `useeffect`，判为不同音。
+    /// 闸门改成「比对前先删掉夹在两个拉丁字母之间的空白」之后这条才通得过，
+    /// 见 `CorrectionGate.joiningLatinWords`（那里写清了代价）。
+    ///
+    /// **它同时守着提示词。** 提示词里有一条「英文一律照抄，不许加空格
+    /// 删空格、不许拆开或合并」——那是为挡住「把正确的 useEffect 改成
+    /// useeffect」补的。这条用例证明模型仍然会给出拼回去的建议；若哪天
+    /// 这条红了而单元测试全绿，问题多半在提示词把这类建议也一并禁掉了。
     @Test("拆开的英文标识符拼回去")
     func rejoinsSplitIdentifier() async throws {
         let pipeline = try await makePipeline()
         let result = await pipeline.correct("把这个变量改成Use Effect")
-        withKnownIssue("闸门按空格分段，use effect ≠ useeffect，见本用例注释") {
-            #expect(result.contains("useEffect"), "实际输出：\(result)")
-        }
+        #expect(result.contains("useEffect"), "实际输出：\(result)")
     }
 
     /// 直接对照：同一句话，经过校正与不经过校正，结果必须不同。
