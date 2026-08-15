@@ -58,6 +58,9 @@ actor MLXCorrector: Corrector {
         // （`ChatSession.stream()` 内部是非结构化 Task，没有 onTermination），
         // 超时后它仍会跑完，而 `ModelContainer.perform` 串行会让它挡住下一次
         // 推理。让推理本身就短，比指望取消更可靠。
+        //
+        // 它只限住单次推理的长度，限不住队列长度——那由 `InFlightGate` 管：
+        // 上一次推理没落地时，流水线直接跳过本次校正，不往队列里塞。
         parameters.maxTokens = 96
 
         // **每次新建 ChatSession。** 它内部持有对话历史，复用会让上一句
@@ -75,6 +78,11 @@ actor MLXCorrector: Corrector {
         //
         // 注意生产方仍会跑完：`ChatSession.stream()` 内部是非结构化 Task，
         // 取消消费方不会中断它。我们要的只是「注入路径上不干等」。
+        //
+        // 也正因为如此，流水线超时后**不再取消**这次推理（见
+        // `CorrectionPipeline.editsWithTimeout`）：下面这个 `checkCancellation`
+        // 只能让消费侧提前退出，省不下 GPU，却会让「推理已落地」的信号提前
+        // 发出。留着它是为了整棵任务树被取消（如退出 App）时能收干净。
         var output = ""
         do {
             for try await chunk in session.streamResponse(to: CorrectionPrompt.user(for: text)) {

@@ -236,6 +236,202 @@ struct CorrectionPipelineTests {
             "超时应在预算内返回，实际耗时 \(elapsed)——说明等到了工作自然结束"
         )
     }
+
+    // MARK: - 被放弃的推理不得堆积
+    //
+    // 这一组守着 QA 探针实测出来的缺陷：超时只是「不等它」，那次推理仍会
+    // 跑完，而 `ModelContainer.perform` 串行——每超时一次就往队列里塞一个
+    // 必然被丢弃的推理，队列单调增长，校正从此永不可能成功。
+    // 修复前的实测（超时 300ms、单次推理 1s、连续 5 次）：
+    // 已启动 1→2→3→4→5，6 秒后 5 次推理全部白烧。
+
+    @Test("上一次推理还在跑时，本次直接返回原文")
+    func skipsWhileInferenceInFlight() async {
+        let corrector = SerialBusyCorrector(inferenceSeconds: 1.0)
+        let pipeline = CorrectionPipeline(corrector: corrector, timeout: .milliseconds(200))
+
+        // 第一次：超时放弃，但推理还占着串行队列。
+        #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+
+        let start = ContinuousClock.now
+        let result = await pipeline.correct("小米耀空气")
+        let elapsed = ContinuousClock.now - start
+
+        #expect(result == "小米耀空气")
+        #expect(
+            elapsed < .milliseconds(50),
+            "第二次应立刻跳过而不是排队等推理，实际耗时 \(elapsed)"
+        )
+        let started = await corrector.counter.started
+        #expect(started == 1, "跳过就不该再发起推理，实际发起了 \(started) 次")
+    }
+
+    @Test("连续超时不会让被放弃的推理堆积")
+    func abandonedInferencesDoNotPileUp() async {
+        let corrector = SerialBusyCorrector(inferenceSeconds: 1.0)
+        let pipeline = CorrectionPipeline(corrector: corrector, timeout: .milliseconds(200))
+
+        for _ in 0..<5 {
+            #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+        }
+        let started = await corrector.counter.started
+        #expect(started == 1, "5 次调用只该白烧一次推理，实际 \(started) 次")
+    }
+
+    /// 跳过必须是暂时的：推理落地后，下一句得能正常校正，否则等于永久关掉校正。
+    @Test("在途推理落地后恢复正常校正")
+    func recoversAfterInferenceLands() async throws {
+        // 第一次推理慢到必然超时，之后的快到能进预算——否则第三次只是又
+        // 超时一遍，测不出「闸门开回来了」。
+        let corrector = SerialBusyCorrector(inferenceSeconds: 0.5, laterInferenceSeconds: 0.02)
+        let pipeline = CorrectionPipeline(corrector: corrector, timeout: .milliseconds(100))
+
+        #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+        #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+
+        // 等那次被放弃的推理跑完，闸门应自己开回来。
+        try await Task.sleep(for: .milliseconds(900))
+        #expect(await corrector.counter.finished == 1)
+
+        #expect(await pipeline.correct("小米耀空气") == "小米遥控器")
+        #expect(await corrector.counter.started == 2)
+    }
+
+    /// 加闸门最容易误伤的就是最常见的那条路：一句接一句地说，每句都该校正。
+    @Test("串行调用不受闸门影响")
+    func serialCallsAreUnaffected() async {
+        let corrector = SerialBusyCorrector(inferenceSeconds: 0.05)
+        let pipeline = CorrectionPipeline(corrector: corrector, timeout: .seconds(3))
+
+        #expect(await pipeline.correct("小米耀空气") == "小米遥控器")
+        #expect(await pipeline.correct("小米耀空气") == "小米遥控器")
+        #expect(await corrector.counter.started == 2)
+    }
+
+    /// 最刁的一种：消费侧响应取消、生产侧不响应——真实 `MLXCorrector` 正是如此。
+    ///
+    /// 若超时后顺手把推理任务取消掉，`edits(for:)` 会提前抛错返回，闸门以为
+    /// 「落地了」而提前开——可 GPU 上那次生成还在跑，还占着 `ModelContainer`
+    /// 的串行队列，堆积照旧。这条测试守着「刻意不取消」这个决定。
+    @Test("消费侧提前退出不会让闸门提前开")
+    func gateWaitsForProducerNotConsumer() async throws {
+        let corrector = CancelAwareCorrector(inferenceSeconds: 1.0)
+        let pipeline = CorrectionPipeline(corrector: corrector, timeout: .milliseconds(200))
+
+        #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+        // 隔一会儿再问第二次：若流水线取消了推理任务，消费侧要几毫秒才
+        // 察觉并退出，紧挨着问会侥幸通过。这里等到它一定退干净，
+        // 而生产方（1 秒）还牢牢占着队列。
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+        let started = await corrector.counter.started
+        #expect(started == 1, "生产方还占着队列就放行了第二次推理，实际发起 \(started) 次")
+    }
+}
+
+/// 推理串行且不响应取消的假校正器——与真实 `MLXCorrector` 同构。
+///
+/// 串行来自 `ModelContainer.perform`，不响应取消来自 MLX 的同步推理循环
+/// （`Evaluate.swift:597-646`）。用 `Thread.sleep` 而非 `Task.sleep`：
+/// 后者可取消，模拟的是另一种东西。
+private final class SerialBusyCorrector: Corrector, @unchecked Sendable {
+    let counter = InferenceCounter()
+
+    private let queue = DispatchQueue(label: "test.serial-corrector")
+    private let inferenceSeconds: Double
+    /// 第二次起的推理耗时。默认与首次相同。
+    private let laterInferenceSeconds: Double
+
+    init(inferenceSeconds: Double, laterInferenceSeconds: Double? = nil) {
+        self.inferenceSeconds = inferenceSeconds
+        self.laterInferenceSeconds = laterInferenceSeconds ?? inferenceSeconds
+    }
+
+    func prepare() async throws {}
+
+    func edits(for text: String) async throws -> [CorrectionEdit] {
+        let index = await counter.noteStart()
+        let seconds = index == 1 ? inferenceSeconds : laterInferenceSeconds
+        let counter = self.counter
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            queue.async {
+                Thread.sleep(forTimeInterval: seconds)
+                Task { await counter.noteFinish() }
+                continuation.resume()
+            }
+        }
+        return [CorrectionEdit(original: "耀空气", replacement: "遥控器")]
+    }
+}
+
+/// 消费侧响应取消、生产侧不响应的假校正器。
+///
+/// 对应真实情形：`edits(for:)` 里的 `try Task.checkCancellation()` 一被取消
+/// 就抛错返回，可 `ChatSession.stream()` 内部那个非结构化 Task 照样把
+/// `ModelContainer` 的串行队列占到跑完。
+private final class CancelAwareCorrector: Corrector, @unchecked Sendable {
+    let counter = InferenceCounter()
+
+    private let queue = DispatchQueue(label: "test.cancel-aware-corrector")
+    private let inferenceSeconds: Double
+
+    init(inferenceSeconds: Double) {
+        self.inferenceSeconds = inferenceSeconds
+    }
+
+    func prepare() async throws {}
+
+    func edits(for text: String) async throws -> [CorrectionEdit] {
+        await counter.noteStart()
+        let done = DoneFlag()
+        let seconds = inferenceSeconds
+        let counter = self.counter
+        queue.async {
+            // 生产方：取消与它无关，占满队列跑完为止。
+            Thread.sleep(forTimeInterval: seconds)
+            Task { await counter.noteFinish() }
+            done.set()
+        }
+        // 消费方：一被取消就撂挑子。
+        while !done.value {
+            try Task.checkCancellation()
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return [CorrectionEdit(original: "耀空气", replacement: "遥控器")]
+    }
+}
+
+/// 记录推理被发起、完成了多少次。
+private actor InferenceCounter {
+    private(set) var started = 0
+    private(set) var finished = 0
+
+    /// 返回这是第几次推理，供替身按次改变行为。
+    @discardableResult
+    func noteStart() -> Int {
+        started += 1
+        return started
+    }
+
+    func noteFinish() { finished += 1 }
+}
+
+/// 跨线程读写的完成标志。
+private final class DoneFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+
+    var value: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return flag
+    }
+
+    func set() {
+        lock.lock()
+        flag = true
+        lock.unlock()
+    }
 }
 
 /// 推理不响应取消的假校正器。

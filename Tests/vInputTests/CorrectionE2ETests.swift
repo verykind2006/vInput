@@ -113,6 +113,26 @@ struct CorrectionE2ETests {
         )
     }
 
+    /// 同一条管线连说两句，两句都要被校正。
+    ///
+    /// 守着「在途闸门」（`InFlightGate`）在真实模型上确实会开回来：闸门在
+    /// 推理任务结束时开，而真实的 `MLXCorrector` 是读完 `ChatSession` 的
+    /// 流才返回——假替身模仿得再像，也不如拿真流跑一遍。若闸门开不回来，
+    /// 第二句会被直接跳过、原样返回，等于校正只对每台机器的第一句生效。
+    ///
+    /// 上面几条都各自新建管线（各自一个新闸门），漏得掉这个问题。
+    @Test("同一条管线连续两次校正都生效")
+    func consecutiveCorrectionsOnSamePipeline() async throws {
+        let pipeline = try await makePipeline()
+        let input = "小米耀空气很好用"
+
+        let first = await pipeline.correct(input)
+        #expect(first != input, "第一次就没校正。实际输出：\(first)")
+
+        let second = await pipeline.correct(input)
+        #expect(second != input, "第二次被跳过了——闸门没开回来。实际输出：\(second)")
+    }
+
     /// 确有替换被闸门放行并应用了。
     ///
     /// 与上一条互补：上一条证明「文本变了」，这一条证明「是校正层改的」，
