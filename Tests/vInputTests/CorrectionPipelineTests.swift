@@ -210,4 +210,52 @@ struct CorrectionPipelineTests {
         #expect(await corrector.isReady)
         #expect(await pipeline.correct("小米耀空气") == "小米遥控器")
     }
+
+    /// 超时必须真的中断等待，而不是等工作自然结束。
+    ///
+    /// 这条测试存在的理由：原实现用 TaskGroup，而 TaskGroup 在重抛错误前
+    /// 会等所有子任务收尾。若传进去的工作不响应取消，超时就形同虚设——
+    /// `correct` 会一直等到工作跑完。真机上这意味着用户说完话后盯着
+    /// 「正在校正」干等十几秒，以为程序卡死。
+    ///
+    /// 假对象必须用**不响应取消**的忙等，不能用 `Task.sleep`——后者可取消，
+    /// 测不出这个问题。
+    @Test("工作不响应取消时，超时仍在预算内返回")
+    func timeoutReturnsEvenIfWorkIgnoresCancellation() async {
+        let pipeline = CorrectionPipeline(
+            corrector: UncancellableCorrector(inferenceSeconds: 2.0),
+            timeout: .milliseconds(200)
+        )
+        let start = ContinuousClock.now
+        let result = await pipeline.correct("小米耀空气")
+        let elapsed = ContinuousClock.now - start
+
+        #expect(result == "小米耀空气")
+        #expect(
+            elapsed < .milliseconds(800),
+            "超时应在预算内返回，实际耗时 \(elapsed)——说明等到了工作自然结束"
+        )
+    }
+}
+
+/// 推理不响应取消的假校正器。
+///
+/// 用忙等而非 `Task.sleep`：`Task.sleep` 响应取消，而真实的 MLX 同步推理
+/// 循环不响应。要测「超时是否真的能中断等待」，替身必须模仿后者。
+private final class UncancellableCorrector: Corrector, @unchecked Sendable {
+    private let inferenceSeconds: Double
+
+    init(inferenceSeconds: Double) {
+        self.inferenceSeconds = inferenceSeconds
+    }
+
+    func prepare() async throws {}
+
+    func edits(for text: String) async throws -> [CorrectionEdit] {
+        let deadline = Date().addingTimeInterval(inferenceSeconds)
+        while Date() < deadline {
+            // 刻意不检查 Task.isCancelled——模仿真实 MLX 同步推理循环
+        }
+        return [CorrectionEdit(original: "耀空气", replacement: "遥控器")]
+    }
 }

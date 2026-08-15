@@ -86,28 +86,57 @@ struct CorrectionPipeline: Sendable {
 
     /// 给一段异步工作加超时。超时后抛 `CorrectorError.timedOut`。
     ///
-    /// 用 `TaskGroup` 而非 `Task.detached` + 定时器：组内任一子任务返回后
-    /// `cancelAll()` 会取消另一个，推理任务不会在后台继续烧 CPU。
+    /// **传进来的工作不必响应取消。** 这是本实现与结构化并发的关键区别：
+    /// `withThrowingTaskGroup` 与 `async let` 都会在作用域结束前等待全部子任务，
+    /// 因此只要工作不响应取消，超时就形同虚设。真实的 MLX 同步推理循环恰恰
+    /// 不响应取消（`Evaluate.swift:597-646` 全程无取消检查，读过源码确认）。
     ///
-    /// **传进来的工作必须是响应取消的。** 任务组在重新抛出超时错误前会
-    /// 等所有子任务收尾，塞一段不理会取消的工作进来（例如模型加载），
-    /// 超时就形同虚设，`correct` 会一直等到它跑完。MLX 的推理循环逐 token
-    /// 检查 `Task.isCancelled`，符合要求；加载不符合，所以留在窗口之外。
+    /// 改成两个非结构化 `Task` 竞速：谁先送达结果谁作数，落后者被取消且
+    /// **不等它**。代价是超时后那次推理仍会在后台跑完（生产方不受我们的取消
+    /// 影响），白烧一段 GPU；但注入路径上一秒都不多等，这是更重要的一端。
     private func withTimeout<T: Sendable>(
         _ duration: Duration,
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await operation() }
-            group.addTask {
-                try await Task.sleep(for: duration)
-                throw CorrectorError.timedOut
-            }
-            defer { group.cancelAll() }
-            guard let first = try await group.next() else {
-                throw CorrectorError.timedOut
-            }
-            return first
+        let box = ResultBox<T>()
+
+        let work = Task {
+            do { await box.deliver(.success(try await operation())) }
+            catch { await box.deliver(.failure(error)) }
+        }
+        let timer = Task {
+            try? await Task.sleep(for: duration)
+            await box.deliver(.failure(CorrectorError.timedOut))
+        }
+
+        defer {
+            work.cancel()
+            timer.cancel()
+        }
+
+        return try await box.first().get()
+    }
+}
+
+/// 只保留第一个送达的结果，之后的一律丢弃。
+///
+/// 存在的理由：超时与推理是两个非结构化任务的竞速，谁先到谁作数，
+/// 而调用方**不等**落后者——这正是 TaskGroup 做不到的事。
+private actor ResultBox<T: Sendable> {
+    private var settled: Result<T, Error>?
+    private var waiters: [CheckedContinuation<Result<T, Error>, Never>] = []
+
+    func deliver(_ result: Result<T, Error>) {
+        guard settled == nil else { return }
+        settled = result
+        for waiter in waiters { waiter.resume(returning: result) }
+        waiters.removeAll()
+    }
+
+    func first() async -> Result<T, Error> {
+        if let settled { return settled }
+        return await withCheckedContinuation { continuation in
+            waiters.append(continuation)
         }
     }
 }

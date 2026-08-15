@@ -53,9 +53,12 @@ actor MLXCorrector: Corrector {
         var parameters = GenerateParameters()
         // 校正要的是确定性，不是创造力。同一句话每次都该得到同样的结果。
         parameters.temperature = 0
-        // 替换清单本就极短。设上限是为了让「模型开始滔滔不绝」这种失败
-        // 快速结束，而不是拖到 3 秒超时才被打断。
-        parameters.maxTokens = 256
+        // 替换清单本就极短——一句话里错三四个词已经很多了。
+        // 256 是最初拍脑袋写的；压到 96 是因为生产方不受我们的取消影响
+        // （`ChatSession.stream()` 内部是非结构化 Task，没有 onTermination），
+        // 超时后它仍会跑完，而 `ModelContainer.perform` 串行会让它挡住下一次
+        // 推理。让推理本身就短，比指望取消更可靠。
+        parameters.maxTokens = 96
 
         // **每次新建 ChatSession。** 它内部持有对话历史，复用会让上一句
         // 转写污染下一句的校正。M2 曾因复用 AudioStreamTranscriber 导致
@@ -66,9 +69,21 @@ actor MLXCorrector: Corrector {
             generateParameters: parameters
         )
 
-        let output: String
+        // 用流式而非 `respond(to:)`：后者走同步的 generate 循环，全程不检查
+        // 取消（`Evaluate.swift:597-646`），我们的超时对它毫无作用。流式版本
+        // 走的重载在 `Evaluate.swift:809` 有 `if Task.isCancelled { break }`，
+        // 取消能让本循环立刻退出。
+        //
+        // 注意生产方仍会跑完：`ChatSession.stream()` 内部是非结构化 Task，
+        // 取消消费方不会中断它。我们要的只是「注入路径上不干等」。
+        var output = ""
         do {
-            output = try await session.respond(to: CorrectionPrompt.user(for: text))
+            for try await chunk in session.streamResponse(to: CorrectionPrompt.user(for: text)) {
+                try Task.checkCancellation()
+                output += chunk
+            }
+        } catch is CancellationError {
+            throw CorrectorError.timedOut
         } catch {
             throw CorrectorError.engineFailed(error.localizedDescription)
         }
