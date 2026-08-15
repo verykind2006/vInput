@@ -38,6 +38,12 @@ final class AppModel {
     private let permissions = Permissions()
     /// 校正偏好。开关状态与模型目录都要跨启动保留。
     private let correctionPreference = CorrectionPreference()
+    /// 上一次挂载校正流水线被会话拒绝（当时不在 idle）。
+    ///
+    /// 用户在录音中或转写那几秒里改设置是很自然的动作，而
+    /// `DictationSession` 只在 idle 时接受挂载。不记住这件事的话，
+    /// 那次改动就永远丢失了——而菜单已经显示成新状态，等于在骗人。
+    private var correctionApplyPending = false
     private let hotkey = HotkeyRegistrar()
     private var session: DictationSession?
     private var transcriber: SwitchableTranscriber?
@@ -129,7 +135,10 @@ final class AppModel {
         session.onStateChange = { [weak self] state in
             guard let self else { return }
             switch state {
-            case .idle: self.phase = .idle
+            case .idle:
+                self.phase = .idle
+                // 会话结束，把此前被拒绝的挂载补上。
+                if self.correctionApplyPending { self.applyCorrectionPreference() }
             case .listening: self.phase = .listening
             // 校正与转写、注入同归 working：Phase 是给菜单栏用的粗粒度
             // 状态，不必区分到这一级，细节由 HUD 呈现。
@@ -300,14 +309,21 @@ final class AppModel {
     /// 且与既有模式不一致。
     ///
     /// `attachCorrectionPipeline` 只在 idle 时生效。录音/转写途中改设置
-    /// 会被静默丢弃，所以这里补一条日志，免得出现「点了没反应也没线索」。
+    /// 会被 DictationSession 拒绝，因此这里记下「有一次挂载没生效」，
+    /// 等会话回到 idle 时由 `onStateChange` 里的补挂逻辑再调用一次本方法。
     private func applyCorrectionPreference() {
-        guard let session else { return }
-        if session.state != .idle {
-            AppLogger.shared.log("校正设置本次会话不生效（当前 \(session.state)），下次录音起生效")
+        guard let session else {
+            correctionApplyPending = true
+            return
+        }
+        guard session.state == .idle else {
+            correctionApplyPending = true
+            AppLogger.shared.log("校正设置本次会话不生效（当前 \(session.state)），会话结束后补挂")
+            return
         }
         let pipeline = makeCorrectionPipeline()
         session.attachCorrectionPipeline(pipeline)
+        correctionApplyPending = false
 
         // 开着校正就立刻在后台加载模型，和 Whisper 的预热同一个道理：
         // 加载一次要几十秒，而注入路径上一秒都不能等——未就绪时流水线
