@@ -38,6 +38,14 @@ final class AppModel {
     private let permissions = Permissions()
     /// 校正偏好。开关状态与模型目录都要跨启动保留。
     private let correctionPreference = CorrectionPreference()
+    /// 「校正能不能开」的判定。全部规则都在它那边，这里只负责把结果
+    /// 翻译成弹面板与错误提示。
+    private let correctionActivation: CorrectionActivation
+    /// 弹出校正模型目录选择器，返回用户选中的目录（取消时为 nil）。
+    ///
+    /// 由 UI 层注入：`AppModel` 不该知道 `NSOpenPanel` 的存在，而「开启校正
+    /// 时若无合法模型就弹选择器」这条流程必须能在没有 UI 的测试里驱动。
+    var chooseCorrectionModelFolder: (@MainActor () -> URL?)?
     /// 上一次挂载校正流水线被会话拒绝（当时不在 idle）。
     ///
     /// 用户在录音中或转写那几秒里改设置是很自然的动作，而
@@ -77,7 +85,15 @@ final class AppModel {
     init() {
         hud = HUDPanel(model: hudModel)
         cancelHotkey = CancelHotkeyController(registrar: EscHotkeyRegistrar())
+        correctionActivation = CorrectionActivation(preference: correctionPreference)
         // 镜像上次退出时的偏好，菜单打开即是正确状态。
+        correctionEnabled = correctionPreference.isEnabled
+        correctionModelName = correctionPreference.modelDirectory?.lastPathComponent
+    }
+
+    /// 把 UserDefaults 里的校正偏好同步到可观察镜像上。
+    /// 每个改动偏好的入口都必须调它，否则菜单标题会停在旧状态。
+    private func syncCorrectionMirrors() {
         correctionEnabled = correctionPreference.isEnabled
         correctionModelName = correctionPreference.modelDirectory?.lastPathComponent
     }
@@ -98,6 +114,17 @@ final class AppModel {
 
     func bootstrap() {
         permissionStatus = permissions.status()
+
+        // 偏好为「开」但模型目录已失效（被移动/删除）时自动关掉。
+        // 必须在挂流水线之前做，否则这一轮启动会带着一个注定降级的校正跑。
+        let wasEnabled = correctionPreference.isEnabled
+        if wasEnabled && !correctionActivation.revalidateAtLaunch() {
+            AppLogger.shared.log(
+                "启动自检：校正模型目录已失效"
+                + "（\(correctionPreference.modelDirectory?.path ?? "未指定")），校正已自动关闭"
+            )
+        }
+        syncCorrectionMirrors()
 
         modelRoot = ModelCatalog.defaultRoot(appBundleURL: Bundle.main.bundleURL)
         availableModels = ModelCatalog.discover(in: modelRoot)
@@ -337,22 +364,77 @@ final class AppModel {
     }
 
     /// 切换校正开关。改动立即就地生效（若正在录音则下次会话生效）。
+    ///
+    /// 关闭不做任何校验；开启则必须先有一个合法的模型目录，见
+    /// `enableCorrection()`。
     func toggleCorrection() {
-        correctionPreference.isEnabled.toggle()
-        correctionEnabled = correctionPreference.isEnabled
-        applyCorrectionPreference()
-        AppLogger.shared.log("校正已\(correctionEnabled ? "开启" : "关闭")")
+        guard !correctionEnabled else {
+            correctionActivation.disable()
+            syncCorrectionMirrors()
+            applyCorrectionPreference()
+            AppLogger.shared.log("校正已关闭")
+            return
+        }
+        enableCorrection()
+    }
+
+    /// 开启校正。**以「有一个合法的模型目录」为前提。**
+    ///
+    /// 没有合法目录就直接弹选择器，而不是先把开关打开再说：开着一个注定
+    /// 走降级路径的校正，用户每次说话都拿到未校正的原文，而菜单显示「开」，
+    /// 界面上没有任何线索——这是上手体验里最大的坑。
+    private func enableCorrection() {
+        let log = AppLogger.shared
+        var outcome = correctionActivation.enableUsingStoredModel()
+
+        if outcome == .needsModelSelection {
+            log.log("开启校正：没有可用的校正模型目录，请用户选择")
+            guard let directory = chooseCorrectionModelFolder?() else {
+                // 用户取消。保持关闭，菜单仍显示「关」。
+                log.log("开启校正被取消，校正保持关闭")
+                syncCorrectionMirrors()
+                return
+            }
+            outcome = correctionActivation.enable(with: directory)
+        }
+
+        switch outcome {
+        case .accepted(let descriptor):
+            syncCorrectionMirrors()
+            applyCorrectionPreference()
+            log.log("校正已开启，模型=\(descriptor.name)")
+        case .rejected(let missing):
+            // 不开、不保存，并说清缺了什么——只说「无效目录」的话，
+            // 用户没法判断是选错了目录还是模型没下全。
+            phase = .error("这不是校正模型目录，缺少：\(missing.joined(separator: "、"))")
+            syncCorrectionMirrors()
+            log.log("开启校正被拒：目录缺少 \(missing.joined(separator: "、"))")
+        case .needsModelSelection:
+            // 走不到：上面要么已选了目录，要么已 return。
+            break
+        }
     }
 
     /// 指定本地校正模型目录。
     ///
     /// 与 M1 的 Whisper 模型选择同一交互：4B 模型能否胜任中文常识判断
     /// 事先无法确定，用户可自行换更大的模型试，无需等待代码改动。
+    ///
+    /// 同样要校验：这是另一条能把无效路径写进偏好的入口，放过它等于
+    /// 让校正在下次启动时静默失灵。
     func selectCorrectionModel(directory: URL) {
-        correctionPreference.modelDirectory = directory
-        correctionModelName = directory.lastPathComponent
-        applyCorrectionPreference()
-        AppLogger.shared.log("校正模型已切换：\(directory.lastPathComponent)")
+        let log = AppLogger.shared
+        switch correctionActivation.selectModel(directory: directory) {
+        case .accepted(let descriptor):
+            syncCorrectionMirrors()
+            applyCorrectionPreference()
+            log.log("校正模型已切换：\(descriptor.name)")
+        case .rejected(let missing):
+            phase = .error("这不是校正模型目录，缺少：\(missing.joined(separator: "、"))")
+            log.log("指定校正模型被拒：目录缺少 \(missing.joined(separator: "、"))")
+        case .needsModelSelection:
+            break
+        }
     }
 
     // MARK: - 运行时换模型
