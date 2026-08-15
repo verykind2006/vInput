@@ -95,6 +95,24 @@ actor MLXCorrector: Corrector {
             throw CorrectorError.engineFailed(error.localizedDescription)
         }
 
-        return CorrectionEditParser.parse(output)
+        let edits = CorrectionEditParser.parse(output)
+
+        // 空清单有两种截然不同的成因，而它们在日志里长得一模一样：
+        // 模型认为无需修改（正常），或模型输出了东西但解析不出来（故障）。
+        // 不区分的话，「校正好像没用」就无从判断是好是坏。
+        //
+        // 只记分类与长度，不记内容——内容需 VINPUT_LOG_TRANSCRIPTS=1。
+        if edits.isEmpty {
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed == CorrectionPrompt.noChangeMarker {
+                AppLogger.shared.log("校正：模型认为无需修改")
+            } else if AppLogger.shared.logsTranscripts {
+                AppLogger.shared.log("校正：输出解析不出替换，原始输出=\(trimmed)")
+            } else {
+                AppLogger.shared.log("校正：输出解析不出替换（长度 \(trimmed.count)）")
+            }
+        }
+
+        return edits
     }
 }
