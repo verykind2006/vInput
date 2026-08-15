@@ -19,6 +19,21 @@ enum HIDReportParser {
     /// 本项目已有的 Carbon 全局热键接不住，必须自行监听 HID。
     static let backButtonUsage: UInt16 = 0xF1
 
+    /// RC003 实测出的完整按键表（2026-08-15，靠 `RemoteHIDListener` 的
+    /// usage 日志逐个按出来的）。上游那 1541 行按键映射没有移植，
+    /// 这张表是本项目自己测的，将来要映射新按键直接查这里。
+    ///
+    /// | usage | 按键 | 系统行为 |
+    /// |---|---|---|
+    /// | `0x28` | 确认键（中间圆键） | **macOS 已当标准回车投递，无需映射** |
+    /// | `0x3E` | 语音键 | F5。macOS 会投递给前台应用，录音期间需要
+    ///                     `RemoteKeySuppressor` 吞掉，否则输入框被杂键淹没 |
+    /// | `0x4F` / `0x50` / `0x51` / `0x52` | 右 / 左 / 下 / 上 | 标准方向键 |
+    /// | `0xF1` | 返回键 | 非标准，系统不投递，本项目用它做取消 |
+    ///
+    /// 曾计划把确认键映射成回车，实测发现系统本来就投递了——**没有为一个
+    /// 不存在的问题写代码**。
+
     static func usages(reportID: UInt32, data: Data) -> Set<UInt16>? {
         guard reportID == 1 else { return nil }
 

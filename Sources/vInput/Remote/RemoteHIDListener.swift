@@ -84,6 +84,15 @@ final class RemoteHIDListener {
         let previous = pressedUsages
         pressedUsages = current
 
+        // 记录每个刚按下的 usage。上游只移植了返回键，其余按键的 usage
+        // 本项目并不知道——要映射新按键（例如把确认键当回车），得先靠
+        // 这条日志实测出它的编号，没有别的办法拿到。
+        for usage in current.subtracting(previous).sorted() {
+            AppLogger.shared.log(
+                "遥控器按键 usage=0x\(String(usage, radix: 16, uppercase: true))"
+            )
+        }
+
         if Self.didPress(usage: HIDReportParser.backButtonUsage, previous: previous, current: current) {
             onCancelPressed?()
         }
