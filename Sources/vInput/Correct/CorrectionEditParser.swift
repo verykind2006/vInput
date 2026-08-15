@@ -17,8 +17,12 @@ enum CorrectionEditParser {
     /// 4B 模型输出带项目符号是常态，而提示词里的示例又容易被回显。
     /// 与其要求模型格式精确，不如把这些装饰剥掉——宽容的代价是多认
     /// 几种写法，严格的代价是整次校正静默作废。
+    ///
+    /// **标签同时认「回答」与「输出」。** 提示词现在以「回答：」收尾，
+    /// 模型最可能回显的就是它；但提示词改过一次（早先是「输出：」），
+    /// 模型也可能受训练数据影响回显另一种——两个都留着，不删旧的。
     private static let leadingDecorations = try! NSRegularExpression(
-        pattern: #"^\s*(?:[-*•·]|\d+[.)]|输出\s*[:：])\s*"#
+        pattern: #"^\s*(?:[-*•·]|\d+[.)]|(?:输出|回答)\s*[:：])\s*"#
     )
 
     static func parse(_ output: String) -> [CorrectionEdit] {

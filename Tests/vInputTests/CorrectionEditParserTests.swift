@@ -111,4 +111,17 @@ struct CorrectionEditParserTests {
             CorrectionEditParser.parse("句号→。") == []
         )
     }
+
+    /// 提示词以「回答：」结尾，模型回显这个词的概率最高。
+    /// 早先提示词用的是「输出：」，两种都要认——模型也可能受训练数据
+    /// 影响输出另一种。
+    @Test("剥离回答标签前缀")
+    func stripsAnswerLabelPrefix() {
+        let expected = [CorrectionEdit(original: "耀空气", replacement: "遥控器")]
+        for line in ["回答：耀空气→遥控器", "回答: 耀空气→遥控器",
+                     "输出：耀空气→遥控器"] {
+            #expect(CorrectionEditParser.parse(line) == expected, "未能解析：\(line)")
+        }
+    }
+
 }
