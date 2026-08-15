@@ -190,13 +190,26 @@ final class DictationSession {
             return
         }
 
-        retainedSamples = []
-
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
+            // 规则二：空结果是失败，不是成功。
+            //
+            // 此前这里在空判**之前**就把 retainedSamples 清空了，于是
+            // 「转写返回空串」这条路径静默吞掉音频：不报错、不记日志、
+            // HUD 直接关闭、retry() 也救不回来。真机上不到 1 秒的话
+            // （「好的」「谢谢」）每一句都走这条路径消失。
+            //
+            // 转写层的补白已经修掉了那个成因（见
+            // WhisperKitTranscriber.decodingFloorDuration），这里是兜底：
+            // 哪怕补白之后仍然解不出，用户也看得见、音频也还在。
+            retainedSamples = samples
+            AppLogger.shared.log("转写结果为空，保留 \(samples.count) 个样本供重试")
             transition(to: .idle)
+            onError?(TranscribeError.emptyResult)
             return
         }
+
+        retainedSamples = []
 
         // 校正绝不抛错：CorrectionPipeline.correct 内部已把所有失败路径
         // 收敛为「返回原文」。这里不写 do/catch 是有意的——若将来它开始

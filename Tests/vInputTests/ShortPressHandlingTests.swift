@@ -8,6 +8,14 @@ struct UserFacingErrorTests {
         #expect(!AppModel.isUserFacing(TranscribeError.audioTooShort))
     }
 
+    @Test("空转写结果要展示——用户得知道自己说的话没落地")
+    func emptyResultIsShown() {
+        // 与「音频过短」不同：那是按一下就松的误触，用户知道自己没说话；
+        // 而空结果意味着录了至少 0.3 秒还是一个字都没解出来，
+        // 静默关掉 HUD 会让用户以为注入成功了。
+        #expect(AppModel.isUserFacing(TranscribeError.emptyResult))
+    }
+
     @Test("转写引擎失败要展示")
     func engineFailureIsShown() {
         #expect(AppModel.isUserFacing(TranscribeError.engineFailed("boom")))

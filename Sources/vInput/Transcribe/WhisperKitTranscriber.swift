@@ -6,8 +6,76 @@ import WhisperKit
 /// 用 actor 而非 class，是因为模型加载与推理都不可重入：
 /// 两个会话同时触发时，第二个必须排队而不是并发进入 Core ML。
 actor WhisperKitTranscriber: Transcriber, PreviewCapable {
-    /// 低于此时长的音频不送去转写，避免 Whisper 对极短片段产生幻觉文本。
-    static let minimumDuration: TimeInterval = 0.3
+    /// 低于此时长的音频不送去转写。
+    ///
+    /// **这个门槛不是「能不能解出内容」的分界线，别把它当安全线看。**
+    /// 真正的悬崖在 1.00 秒，见 `decodingFloorDuration`。
+    ///
+    /// 原值是 0.3，注释写的理由是「避免 Whisper 对极短片段产生幻觉文本」。
+    /// 加了补白之后这个理由不再成立，实测两头都验了（large-v3-turbo，
+    /// 一律先补白到 1.1 秒再送进去）：
+    ///
+    /// - **0.3 秒以下确实有真话。** 单音节词本来就短：`say -v Tingting`
+    ///   的「对」0.260s → 「对。」、「好」0.344s → 「好。」——0.26 秒那句
+    ///   完全解得出来，却被旧门槛挡在外面。而 `audioTooShort` 是
+    ///   `AppModel.isUserFacing` 里唯一不展示的错误，于是它**也是静默消失**，
+    ///   与本轮修的那个问题同一性质，只是更短。
+    /// - **挡下来的也不是幻觉源。** 0.10 / 0.20 / 0.30 秒的纯静音与底噪
+    ///   各跑 3 次，补白后 18 次全部输出空串，一次幻觉都没有。静音幻觉需要
+    ///   更长的窗口（bench 的 1.5 秒静音才开始吐「谢谢大家。」），
+    ///   而补白只补到 1.1 秒。
+    ///
+    /// 所以门槛降到 0.15：它现在的职责只剩「挡掉连一个音节都装不下的误触」，
+    /// 省一次没有意义的模型调用，而不是防幻觉——防幻觉由
+    /// `segmentsDroppingFallbackFiller` 和 `TranscriptCleaner` 负责。
+    static let minimumDuration: TimeInterval = 0.15
+
+    /// WhisperKit 主解码循环真正的下限。
+    ///
+    /// 其循环条件是 `while seek < seekClipEnd - windowPadding`，而
+    /// `windowPadding = windowClipTime(默认 1.0s) × 16000`
+    /// （`vendor/WhisperKit/Sources/WhisperKit/Core/TranscribeTask.swift:113-116`）。
+    /// 音频不长于 1 秒时循环体**一次都不执行**，返回 0 个分段、空文本——
+    /// 不报错、不记日志，用户说的话彻底消失。
+    ///
+    /// 实测（large-v3-turbo，`say -v Tingting`，样本见 `scripts/bench.sh`
+    /// 的 `short_*` 组）：
+    ///
+    /// ```
+    /// 好的 0.41s→空  收到 0.57s→空  谢谢 0.55s→空
+    /// 知道了 0.56s→空  不客气 0.70s→空  明天见 0.79s→空
+    /// 好的就这样 1.04s→「好的就这样。」
+    /// 边界（同一段「谢谢」尾部补静音）：
+    /// 0.90s→空  0.99s→空  1.00s→空  1.005s→「谢谢。」  1.10s→「谢谢。」
+    /// ```
+    ///
+    /// 「好的」「谢谢」「收到」正是这个应用最高频的输入，不能不管。
+    static let decodingFloorDuration: TimeInterval = 1.0
+
+    /// 短音频补静音后的目标时长。
+    ///
+    /// 取 1.1 而不是刚好越过 1.00 的最小值，是给上游留余量：
+    /// `windowClipTime` 是 WhisperKit 的默认参数，它调一次我们就又踩空。
+    ///
+    /// 实测补到 1.1 秒后，上面那六段全部在**温度 0** 解出正确文本
+    /// （「好的。」「收到。」「谢谢。」「知道了。」「不客气。」「明天见。」，
+    /// avgLogprob −0.16…−0.27），没有触发温度退火，也没有引入套话幻觉。
+    static let paddedDuration: TimeInterval = 1.1
+
+    /// 把过短的音频尾部补静音到 `paddedDuration`。
+    ///
+    /// 补在尾部而不是首部：解码窗口本来就从 0 开始，尾部补静音等价于
+    /// 「说完之后又静了一会儿」，是模型日常见到的形态。实测该形态不触发退火。
+    ///
+    /// 补白确实会让「几乎没说话」的片段变成一段静音，而静音是套话幻觉的
+    /// 温床。实测这一条没有兑现：0.10–0.30 秒的静音与底噪补白后 18 次
+    /// 全部输出空串（见 `minimumDuration`）。真出现时由
+    /// `segmentsDroppingFallbackFiller` 兜底。
+    nonisolated static func padToDecodingFloor(_ samples: [Float]) -> [Float] {
+        let target = Int(paddedDuration * AudioFormat.sampleRate)
+        guard samples.count < target else { return samples }
+        return samples + [Float](repeating: 0, count: target - samples.count)
+    }
 
     private let modelName: String
     /// 本地模型目录。设置后优先于 `modelName`，跳过网络下载。
@@ -152,6 +220,13 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
     ///
     /// **只从结尾往前剥，不动中间。** 句子中间某段被判为无语音多半是模型
     /// 判断失误，删掉就是真的丢字了——那正是规则二要防的事。
+    ///
+    /// **实测警告：这一条在 large-v3-turbo 上从来不会触发。** bench 的
+    /// 9 段静音/底噪各跑 4 次，产出的幻觉分段 18 条，`noSpeechProb`
+    /// **全部是 0.0000**（温度 0.4–0.8）。也就是说该模型在无语音输入上
+    /// 照样自信地报「这里有人说话」，这把尺子量不出东西来。真正在干活的是
+    /// `segmentsDroppingFallbackFiller`。保留本函数是因为它只删结尾、
+    /// 代价为零，且换回 large-v3 等其他模型时仍可能有效。
     nonisolated static func textDroppingTrailingNonSpeech(
         _ segments: [TranscriptionSegment]
     ) -> String {
@@ -170,28 +245,84 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
         "谢谢", "谢谢你", "谢谢大家", "谢谢观看", "感谢观看", "谢谢收看",
     ]
 
-    /// 丢弃「靠温度退火才解出来的、整段只有一句客套话」的分段。
+    /// 单个分段是否是「靠温度退火才解出来的纯客套话」。
+    ///
+    /// 判据是两个条件相与：
+    ///
+    /// - **温度大于 0** 意味着贪心解码没通过 logProb / 压缩率阈值、走了退火。
+    /// - **整段去掉标点后恰好等于某句套话**，句中出现一律不管。
+    ///
+    /// **这个判据会误伤，而且不是理论风险——已实测。** 此处原先写着
+    /// 「所有真实语音都在温度 0 解出」，该前提是错的：把
+    /// `say -v Tingting "谢谢大家"` 压到 volume=0.06 再混 a=0.05 白噪
+    /// （模拟远场/嘈杂），转写会解出
+    ///
+    /// ```
+    /// temperature=0.4, noSpeechProb=0.0000, avgLogprob=-0.4625, 「谢谢大家。」
+    /// ```
+    ///
+    /// ——文字完全正确，模型自己也认定这里有人说话，却满足上面两条，
+    /// 被整段删掉。**嘈杂环境下用户真说一句「谢谢」是会被吞的。**
+    ///
+    /// 仍然保留这个判据，是因为暂时找不到更好的信号：
+    /// **收紧到「与 `noSpeechProb >= 0.6` 相与」是行不通的**——
+    /// bench 的 9 段静音/底噪各跑 4 次，18 条幻觉分段的 `noSpeechProb`
+    /// 全部是 0.0000，与上面那条真实语音一模一样，两者用这个量分不开。
+    ///
+    /// 既然分不开，就只能限制这一刀能砍到的范围（见
+    /// `segmentsDroppingFallbackFiller`）并把每次开刀都记进日志。
+    nonisolated static func isFallbackFiller(_ segment: TranscriptionSegment) -> Bool {
+        guard segment.temperature > 0 else { return false }
+        let bare = segment.text.filter { !"，。！？；：、,.!?;: \t\n\u{3000}".contains($0) }
+        return fallbackFillers.contains(TranscriptCleaner.stripSpecialTokens(bare))
+    }
+
+    /// 从结尾往前剥掉「靠温度退火才解出来的、整段只有一句客套话」的分段。
     ///
     /// **这一条是为 initial prompt 配套加的。** 实测：静音/底噪输入下，
     /// 不挂 prompt 时 35 次里 2 次吐出幻觉，挂上 prompt 后升到 11 次，
     /// 且形态高度一致——全是「谢谢。」。prompt 提高了模型「必须说点什么」
     /// 的倾向，这是它的固有代价，得在事后补一刀。
     ///
-    /// 判据用两个条件相与，而不是简单地把「谢谢」加进短语表：
+    /// **只从结尾往前剥，不动中间**——与 `textDroppingTrailingNonSpeech`
+    /// 同一条原则。此处原先是对所有分段做 filter，那是错的：VAD 会把
+    /// 「谢谢,那我们就先这样吧,回头再说」这类话切成多段，句首的「谢谢」
+    /// 独立成段是真实会发生的形态，一旦它落在温度大于 0 的解码里就会被
+    /// 从句子中间挖掉。幻觉从来只长在结尾（那是静音所在），限制到结尾
+    /// 不损失拦截力，却把「挖掉句中一句真话」这类事故整类消掉。
     ///
-    /// - **温度大于 0** 意味着贪心解码没通过 logProb / 压缩率阈值、走了退火。
-    ///   实测里所有静音幻觉都带退火，而所有真实语音都在温度 0 解出。
-    /// - **整段去掉标点后恰好等于某句套话**，句中出现一律不管。
-    ///
-    /// 单独任一条都太松：用户真说一句「谢谢」应当照常输出，那句会在温度 0
-    /// 解出，不满足第一条，不会被吞。
+    /// 「整段转写只有这一句」是本函数的特例——唯一的分段既是结尾也是开头，
+    /// 照样会被剥掉，静音输入的兜底不受影响。
     nonisolated static func segmentsDroppingFallbackFiller(
         _ segments: [TranscriptionSegment]
     ) -> [TranscriptionSegment] {
-        segments.filter { segment in
-            guard segment.temperature > 0 else { return true }
-            let bare = segment.text.filter { !"，。！？；：、,.!?;: \t\n\u{3000}".contains($0) }
-            return !fallbackFillers.contains(TranscriptCleaner.stripSpecialTokens(bare))
+        var kept = segments[...]
+        while let last = kept.last, isFallbackFiller(last) {
+            kept = kept.dropLast()
+        }
+        return Array(kept)
+    }
+
+    /// 把被剥掉的分段记进日志。
+    ///
+    /// **这一刀删的是用户的原话，不记就等于没发生过。** 校正层的取舍还能从
+    /// 「采纳=[…] 拦下=[…]」的日志判断松紧，而转写层此前一个字都不记——
+    /// 上面 `isFallbackFiller` 那条已证实会误伤的判据，真机上砍错一次也
+    /// 无从发现。判据暂时改不动，那至少要留下痕迹。
+    ///
+    /// 内容走 `logTranscript`，因此默认只记「几个字」，`VINPUT_LOG_TRANSCRIPTS=1`
+    /// 时才记原文——与 spec 的隐私要求一致。温度与 noSpeechProb 不是用户
+    /// 内容，无条件记录：判断误删与否靠的就是它们。
+    nonisolated static func logDroppedSegments(
+        _ dropped: some Collection<TranscriptionSegment>
+    ) {
+        for segment in dropped {
+            AppLogger.shared.log(
+                "转写层剥掉结尾套话分段：temperature=\(segment.temperature) "
+                + "noSpeechProb=\(String(format: "%.4f", segment.noSpeechProb)) "
+                + "avgLogprob=\(String(format: "%.4f", segment.avgLogprob))"
+            )
+            AppLogger.shared.logTranscript(segment.text, context: "  剥掉的原文")
         }
     }
 
@@ -203,6 +334,17 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
 
         try await prepare()
         guard let pipe else { throw TranscribeError.modelNotReady }
+
+        // 不长于 1 秒的音频在 WhisperKit 里连解码循环都进不去，见
+        // decodingFloorDuration。补白必须在这里做，不能挪到调用方——
+        // 这是上游解码器的性质，谁调用都一样。
+        let audio = Self.padToDecodingFloor(samples)
+        if audio.count != samples.count {
+            AppLogger.shared.log(
+                "短音频补静音：\(String(format: "%.2f", duration))s → "
+                + "\(String(format: "%.2f", Self.paddedDuration))s"
+            )
+        }
 
         do {
             let options = DecodingOptions(
@@ -222,14 +364,16 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
                 chunkingStrategy: .vad
             )
             let results = try await pipe.transcribe(
-                audioArray: samples,
+                audioArray: audio,
                 decodeOptions: options
             )
             // 按分段过滤，而不是把所有文本拼起来再猜词。
             // 模型自己给出了每段「其实没人说话」的概率，用它比维护
             // 一张幻觉短语表可靠得多——短语表打不完，且每加一个词
             // 就多一分误删真话的风险。
-            let segments = Self.segmentsDroppingFallbackFiller(results.flatMap(\.segments))
+            let decoded = results.flatMap(\.segments)
+            let segments = Self.segmentsDroppingFallbackFiller(decoded)
+            Self.logDroppedSegments(decoded.dropFirst(segments.count))
             let raw = Self.textDroppingTrailingNonSpeech(segments)
 
             // 分段过滤只能拿掉「整段都是幻觉」的情形。若幻觉与真实语音

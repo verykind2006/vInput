@@ -568,6 +568,11 @@ final class AppModel {
     /// 唯一不展示的是「音频过短」：按一下语音键就松开是常见误触，
     /// 为此弹一个错误状态是噪音。其余错误都要让用户知道——
     /// 尤其是注入失败与目标应用改变，那关系到用户说的话去了哪里。
+    ///
+    /// **`emptyResult` 刻意归在「要展示」这一侧**，尽管它也可能只是
+    /// 用户录了一段静音。理由是两者的代价不对称：多弹一次「没有识别到内容」
+    /// 只是噪音，而静默关掉 HUD 会让用户以为已经注入成功——那正是这一轮
+    /// 修的短句消失问题里最难被察觉的部分。
     nonisolated static func isUserFacing(_ error: Error) -> Bool {
         if let error = error as? TranscribeError, error == .audioTooShort {
             return false
