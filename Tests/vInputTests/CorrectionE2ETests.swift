@@ -79,4 +79,48 @@ struct CorrectionE2ETests {
         let result = await pipeline.correct(input)
         #expect(result == input, "实际输出：\(result)")
     }
+
+    /// 直接对照：同一句话，经过校正与不经过校正，结果必须不同。
+    ///
+    /// 这条是 M4 验收标准「同一句话开关校正能看出差别」的直接翻译。
+    /// 上面几条在「校正压根没跑」时也会通过——「不翻译英文术语」与
+    /// 「正确的句子不被改动」，管线原样返回时同样成立。只有这一条
+    /// 能证伪「校正实际上从未生效」。
+    @Test("开与关的结果必须不同")
+    func correctionMakesADifference() async throws {
+        let pipeline = try await makePipeline()
+        let input = "小米耀空气很好用"
+        let corrected = await pipeline.correct(input)
+
+        // 关闭校正时管线直接返回原文，因此原文本身就代表「关」那条
+        // 路径的结果，不需要另外跑一条不经校正的路径。
+        #expect(
+            corrected != input,
+            "开关校正结果相同，说明校正实际未生效。实际输出：\(corrected)"
+        )
+    }
+
+    /// 确有替换被闸门放行并应用了。
+    ///
+    /// 与上一条互补：上一条证明「文本变了」，这一条证明「是校正层改的」，
+    /// 排除文本因其他原因发生变化的可能。失败信息里带上模型给出的建议与
+    /// 被闸门拦下的部分，方便直接判断是模型没给建议、还是闸门太严。
+    @Test("确有替换被采纳")
+    func atLeastOneEditApplied() async throws {
+        let corrector = try #require(
+            Self.corrector,
+            "需设置 VINPUT_CORRECTION_MODEL 指向本地模型目录"
+        )
+        try await corrector.prepare()
+
+        let input = "小米耀空气很好用"
+        let edits = try await corrector.edits(for: input)
+        #expect(!edits.isEmpty, "模型未给出任何替换建议")
+
+        let outcome = CorrectionGate.apply(edits, to: input)
+        #expect(
+            !outcome.applied.isEmpty,
+            "全部建议都被闸门拦下。建议=\(edits) 拦下=\(outcome.rejected)"
+        )
+    }
 }
