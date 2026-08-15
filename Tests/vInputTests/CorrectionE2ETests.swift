@@ -71,6 +71,10 @@ struct CorrectionE2ETests {
     func fixesKnownMishearing() async throws {
         let pipeline = try await makePipeline()
         // 这就是 M4 存在的理由：真机上 Whisper 把「遥控器」听成「耀空气」。
+        //
+        // **这条测的是「示例照着抄」，不是泛化能力**——同一句话就写在提示词的
+        // 示例一里。摸底问过模型「耀空气的同音常用词是什么」，脱开示例它答不上来。
+        // 泛化能力由「同音误听『矩子』改回『句子』」那条守，它现在是红的。
         let result = await pipeline.correct("小米耀空气很好用")
         #expect(result.contains("遥控器"), "实际输出：\(result)")
     }
@@ -84,13 +88,69 @@ struct CorrectionE2ETests {
         #expect(result.contains("useEffect"), "实际输出：\(result)")
     }
 
-    @Test("正确的句子不被改动")
-    func leavesCorrectSentenceUnchanged() async throws {
+    /// 本来就正确的真机句子，一个字都不能动。
+    ///
+    /// 全部取自 2026-08-15 的真机日志——那次 7 句里有 5 句本就正确，而模型
+    /// 给出了「小米→米粒」（把对的当成错的）、「情况→状况」（改措辞）、
+    /// 「长句子→长句子」（空操作）这类建议。当时靠拼音闸门兜住了，但闸门
+    /// 兜不住同音的乱改（实测过一版提示词把正确的「小米遥控器」改成
+    /// 「小米耀空气」，同音、闸门放行），所以这一组必须全过。
+    ///
+    /// 比「能改对」更重要：改坏原本正确的内容，比漏改一个错字严重得多。
+    ///
+    /// **前四句是留出来的**——提示词里没有它们。第五句「什么情况」那句
+    /// 提示词里有同样的例子，它证明不了泛化能力，留着只是守住「别退步」。
+    @Test(
+        "本来正确的句子一个字都不能动",
+        arguments: [
+            "我们重新来测试一下小米遥控器很好用",
+            "今天天气不错，我们出去走走。",
+            "感觉这个长句子的识别效果很一般",
+            "对于这种中英文夹杂包括例如我们说Claude CodeOpen AILLM这种识别度如何",
+            "好的 我又跑了一遍你检查一下日志看看具体是什么情况",
+        ]
+    )
+    func leavesCorrectSentenceUnchanged(_ input: String) async throws {
         let pipeline = try await makePipeline()
-        // 比「能改对」更重要：改坏原本正确的内容，比漏改一个错字严重得多。
-        let input = "今天天气不错，我们出去走走吧"
         let result = await pipeline.correct(input)
         #expect(result == input, "实际输出：\(result)")
+    }
+
+    /// 真机上说的是「长句子」「句子」，Whisper 写成了「长矩子」「矩子」。
+    /// 去声调后 `ju zi` 完全相同，正是校正层该修的那一类。
+    ///
+    /// **已知未达成。** Qwen3-4B 想不到「句子」：实测它一律顺着字形猜
+    /// 「矩形」「长方形」「长视频」，全部被拼音闸门拦下。缩短上下文到
+    /// 「这个矩子太长了」也一样。直接问它「『句子』和『矩子』读音相同吗」，
+    /// 它答「并不相同」——它把声调算进了同音，而我们要的恰恰是不计声调。
+    /// 换句话说这是模型的联想能力问题，不是提示词能救的，留着当改进目标：
+    /// 哪天换了更大的模型，这条会先亮起来。
+    @Test("同音误听「矩子」改回「句子」")
+    func fixesMisheardHomophone() async throws {
+        let pipeline = try await makePipeline()
+        let input = "最后再来看一下长矩子的输出如果有一段长达20秒到30秒的矩子识别的能力"
+        let result = await pipeline.correct(input)
+        withKnownIssue("Qwen3-4B 联想不到「句子」，见本用例注释") {
+            #expect(result.contains("句子"), "实际输出：\(result)")
+        }
+    }
+
+    /// 真机上说的是 useEffect，Whisper 写成了「Use Effect」。
+    ///
+    /// **已知未达成，而且卡在闸门不在提示词。** 模型给的建议正是
+    /// `Use Effect→useEffect`（新提示词下稳定复现），但
+    /// `Pinyin.toneless` 把拉丁字母原样穿过后按空格分段：
+    /// `use effect` ≠ `useeffect`，闸门判定为不同音而拒绝。
+    /// 只要「删掉一个空格」这件事在闸门眼里就是改读音，这条永远过不了。
+    /// 要解，得动闸门（比对前把拉丁段的空格归一化），那属于另一个任务——
+    /// 而且要先想清楚会不会顺带放行「北京 → 背景」之外的什么东西。
+    @Test("拆开的英文标识符拼回去")
+    func rejoinsSplitIdentifier() async throws {
+        let pipeline = try await makePipeline()
+        let result = await pipeline.correct("把这个变量改成Use Effect")
+        withKnownIssue("闸门按空格分段，use effect ≠ useeffect，见本用例注释") {
+            #expect(result.contains("useEffect"), "实际输出：\(result)")
+        }
     }
 
     /// 直接对照：同一句话，经过校正与不经过校正，结果必须不同。
