@@ -212,6 +212,11 @@ final class AppModel {
             Task { await session.cancel() }
         }
         AppLogger.shared.log("启动完成，模型=\(initial.name) 可用模型=\(availableModels.map(\.name))")
+        // 把内容日志的开关状态记下来：排查校正质量时若忘了开，
+        // 日志里只有「文本长度 8 字」，会白白浪费一轮真机测试。
+        if AppLogger.shared.logsTranscripts {
+            AppLogger.shared.log("内容日志已开启（VINPUT_LOG_TRANSCRIPTS=1），日志将包含转写全文")
+        }
 
         do {
             try hotkey.register(keyCode: hotkeyCode, modifiers: hotkeyModifiers) { [weak self] in
