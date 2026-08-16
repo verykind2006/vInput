@@ -157,29 +157,14 @@ private struct MenuContent: View {
 
     /// 基准集录制。**开发期工具**，只在 `VINPUT_BENCH=1` 时出现在菜单里，
     /// 理由见 `AppModel.benchEnabled`。
+    ///
+    /// 菜单里只留一个入口，全部录制界面搬到独立窗口
+    /// （`BenchRecordingWindowController`）：菜单里的 `Text` 在 macOS 上是
+    /// 不可交互的说明文字，字号与颜色都改不动，用户照着它读了 23 条之后
+    /// 反馈「字太小、灰字看不清」。
     @ViewBuilder
     private var benchMenu: some View {
-        if let session = model.benchSession, session.current != nil {
-            Text("基准集 \(session.progressText)\(session.currentIsRecorded ? "（已录）" : "")")
-            // 标准文本逐行完整显示。计划原稿写的是 prefix(30) + "…"，但
-            // 基准集里 punct 类普遍 50 字以上、最长 64 字，截断后用户根本
-            // 读不全——而读不全就录不出对得上参考答案的音频。分行逻辑在
-            // BenchRecordingSession.wrap，那边有测试。
-            ForEach(Array(session.currentLines.enumerated()), id: \.offset) { _, line in
-                Text(line)
-            }
-            Button(model.benchIsRecording ? "● 录音中，点此结束" : "开始本条录音") {
-                model.toggleBenchRecording()
-            }
-            // 录音途中不许换条：写盘时取的是「当前条」，中途翻页会把这段
-            // 音频存到另一条的名下，而且不会有任何报错。
-            Button("上一条") { session.retreat() }
-                .disabled(model.benchIsRecording)
-            Button("下一条") { session.advance() }
-                .disabled(model.benchIsRecording)
-        } else {
-            Button("开始录制基准集") { model.startBenchRecording() }
-        }
+        Button("开始录制基准集") { model.startBenchRecording() }
     }
 
     private var modelMenuTitle: String {

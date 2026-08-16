@@ -113,15 +113,42 @@ final class AppModel {
     /// 与 lazy 的存储语义冲突，见上面 `hud` 那条注释。）
     private var benchMicSource: SystemMicSource?
 
-    /// 打开录制界面。清单读不到就只记日志——开发期工具不该让应用崩掉。
+    /// 录制窗口。构造它不会建窗，真正的 NSWindow 要到 show 时才出现。
+    private let benchWindow = BenchRecordingWindowController()
+
+    /// 打开录制窗口。清单读不到就只记日志——开发期工具不该让应用崩掉。
+    ///
+    /// 每次新开都从第一条起（新建会话）。窗口已经开着时只把它带到前台，
+    /// 不重建会话：否则用户录到第 15 条时手滑点一下菜单就被弹回第 1 条。
     func startBenchRecording() {
         guard Self.benchEnabled else { return }
+
+        if benchWindow.isOpen {
+            benchWindow.show(BenchRecordingView(model: self))
+            return
+        }
+
         do {
             benchSession = BenchRecordingSession(manifest: try BenchManifest.loadFromRepository())
             AppLogger.shared.log("基准集录制已开始")
         } catch {
             AppLogger.shared.log("基准集清单读取失败：\(error)")
+            return
         }
+
+        benchWindow.onClose = { [weak self] in self?.benchWindowDidClose() }
+        benchWindow.show(BenchRecordingView(model: self))
+    }
+
+    /// 录制窗口被关掉。
+    ///
+    /// 还在录就必须停下来：麦克风会一直开着，而界面已经不见了——那段音频
+    /// 最终会写到用户看不见的那一条名下。这里走 `toggleBenchRecording()`
+    /// 正常收尾，已经录进去的部分照常写成当前这条的 WAV，不白录。
+    private func benchWindowDidClose() {
+        guard benchIsRecording else { return }
+        AppLogger.shared.log("录制窗口关闭时仍在录音，已停止并写出当前这条")
+        toggleBenchRecording()
     }
 
     /// 开始/结束录当前这条。

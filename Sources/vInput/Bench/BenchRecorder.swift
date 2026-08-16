@@ -80,9 +80,10 @@ final class BenchRecordingSession {
 
     /// 该条是否已经录过。录制界面据此提示用户哪些还没录。
     ///
-    /// 读的是文件系统而非存储属性，@Observable 跟踪不到它——录完一条后
-    /// 菜单不会当场刷新。这里可以接受：点按钮会关掉菜单，下次打开时
-    /// 整个菜单重建，这个计算属性会重新求值。
+    /// 读的是文件系统而非存储属性，@Observable 跟踪不到它——它自己变化时
+    /// 不会触发重画。这里可以接受：录制窗口的视图同时读了
+    /// `AppModel.benchIsRecording`，录完那一刻状态翻转会重画整个 body，
+    /// 这个计算属性随之重新求值。
     var currentIsRecorded: Bool {
         guard let current else { return false }
         return FileManager.default.fileExists(
@@ -102,29 +103,5 @@ final class BenchRecordingSession {
     func jump(toID id: String) {
         guard let target = manifest.entries.firstIndex(where: { $0.id == id }) else { return }
         index = target
-    }
-
-    /// 把标准文本按每行若干字切开，供菜单逐行显示。
-    ///
-    /// **不能截断。** 用户要照着这段文字读，少一半就录不成——而基准集里
-    /// punct 类普遍 50 字以上，最长一条 64 字。菜单项又不会自动换行，
-    /// 整段放一行会把菜单撑到近千点宽，只好在这里手工分行。
-    static func wrap(_ text: String, perLine: Int = 20) -> [String] {
-        guard perLine > 0, !text.isEmpty else { return [] }
-        var lines: [String] = []
-        var rest = Substring(text)
-        while !rest.isEmpty {
-            let end = rest.index(rest.startIndex, offsetBy: perLine, limitedBy: rest.endIndex)
-                ?? rest.endIndex
-            lines.append(String(rest[rest.startIndex..<end]))
-            rest = rest[end...]
-        }
-        return lines
-    }
-
-    /// 当前条目的标准文本，已分好行。
-    var currentLines: [String] {
-        guard let current else { return [] }
-        return Self.wrap(current.text)
     }
 }
