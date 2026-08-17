@@ -90,6 +90,12 @@ private struct MenuContent: View {
         modelMenu
         correctionMenu
 
+        // 基准集录制。开发期工具，VINPUT_BENCH=1 才显示。
+        if AppModel.benchEnabled {
+            Divider()
+            benchMenu
+        }
+
         Divider()
         Button("打开日志") {
             NSWorkspace.shared.selectFile(
@@ -147,6 +153,18 @@ private struct MenuContent: View {
                 }
             }
         }
+    }
+
+    /// 基准集录制。**开发期工具**，只在 `VINPUT_BENCH=1` 时出现在菜单里，
+    /// 理由见 `AppModel.benchEnabled`。
+    ///
+    /// 菜单里只留一个入口，全部录制界面搬到独立窗口
+    /// （`BenchRecordingWindowController`）：菜单里的 `Text` 在 macOS 上是
+    /// 不可交互的说明文字，字号与颜色都改不动，用户照着它读了 23 条之后
+    /// 反馈「字太小、灰字看不清」。
+    @ViewBuilder
+    private var benchMenu: some View {
+        Button("开始录制基准集") { model.startBenchRecording() }
     }
 
     private var modelMenuTitle: String {
