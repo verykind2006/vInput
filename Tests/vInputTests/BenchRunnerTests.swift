@@ -6,7 +6,7 @@ import Testing
 /// 基准集对照运行器。默认跳过，由标记文件启用：
 ///
 /// ```bash
-/// ./scripts/bench-run.sh                                     # 用默认模型
+/// ./scripts/bench-run.sh                                     # 用应用的默认模型
 /// ./scripts/bench-run.sh openai_whisper-large-v3-v20240930_turbo
 /// ```
 ///
@@ -24,11 +24,23 @@ struct BenchRunnerTests {
         let manifest = try BenchManifest.loadFromRepository()
         let config = try BenchRunGate.config()
 
+        // **不接受「不指定模型」。** modelFolder 为 nil 时
+        // WhisperKitTranscriber 会落到 modelName 的默认值 "base"，WhisperKit
+        // 联网下载一个产品从不使用的模型跑完全集（应用默认是 turbo，见
+        // ModelPreference），而报告头此前只写「模型：默认」——照 M5 计划执行
+        // 不带参数的 ./scripts/bench-run.sh 的人拿到的就是这份报告
+        // （2026-08-17 独立验收 F1）。脚本已改为总是解析出具体模型，这里再堵
+        // 一道：手写标记文件也不能绕过。
+        let modelFolder = try #require(
+            config.modelFolder,
+            "标记文件里 modelFolder 是 null——用 ./scripts/bench-run.sh 启动，它会解析出应用的默认模型"
+        )
+
         // 直接用生产的 WhisperKitTranscriber，不复刻任何解码参数。
         // Sources/vInputBench/Bench.swift 的 shim 曾与生产差了两个参数
         // （skipSpecialTokens、promptTokens）而注释写着「保持相同」——
         // 用一条与生产不同的管线去选模型会得到错的结论。
-        let transcriber = WhisperKitTranscriber(modelFolder: config.modelFolder)
+        let transcriber = WhisperKitTranscriber(modelFolder: modelFolder)
         try await transcriber.prepare()
 
         var lines: [String] = []
@@ -104,7 +116,9 @@ struct BenchRunnerTests {
         // 逐条耗时刻意不写进报告——它每次都不一样，会让 diff 的每一行都变，
         // 反而看不出质量差异。要看速度看这里的总耗时。
         report += "时间：\(BenchRunGate.timestampForDisplay(startedAt))\n"
-        report += "模型：\(config.modelFolder.map(BenchRunGate.modelShortName) ?? "默认")\n"
+        // 模型名必须是具体的目录名。写「默认」是不可追溯的——那正是 F1 能
+        // 藏住「跑的其实是 base」的原因。
+        report += "模型：\(BenchRunGate.modelShortName(modelFolder))\n"
         report += "代码：\(BenchRunGate.codeVersion())\n"
         // 不含模型加载，只算转写：选模型时关心的是每次听写要等多久，
         // 而模型在应用里是常驻的，加载只发生一次。

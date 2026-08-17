@@ -35,12 +35,23 @@ noise_gen silence30 30   0
 noise_gen noise02    2   0.002
 noise_gen noise30   30   0.002
 
-MODEL_FOLDER="null"
+MODEL_NAME=""
 if [[ $# -gt 0 && "$1" != -* ]]; then
-  MODEL_FOLDER="\"$ROOT/vendor/models/$1\""
-  [[ -d "$ROOT/vendor/models/$1" ]] || { print -u2 "模型目录不存在：$1"; exit 1; }
+  MODEL_NAME="$1"
   shift
 fi
+
+# 与 bench-run.sh 同一条规则：不带参数时取应用会用的默认模型，而不是写
+# null。写 null 会让 `WhisperKitTranscriber(modelFolder: nil)` 落到 `"base"`
+# 并联网下载它——扫九个候选就是九遍 base，结论与产品无关（独立验收 F1）。
+if [[ -z "$MODEL_NAME" ]]; then
+  MODEL_NAME="$("$ROOT/scripts/default-model.sh")"
+  print "未指定模型，用应用的默认模型：$MODEL_NAME"
+fi
+[[ -d "$ROOT/vendor/models/$MODEL_NAME" ]] || {
+  print -u2 "模型目录不存在：$ROOT/vendor/models/$MODEL_NAME"; exit 1
+}
+MODEL_FOLDER="\"$ROOT/vendor/models/$MODEL_NAME\""
 
 python3 - "$MODEL_FOLDER" "$NOISE" <<'PY' > Bench/.prompt-sweep.json
 import json, sys

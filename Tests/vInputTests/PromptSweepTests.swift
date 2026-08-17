@@ -19,8 +19,16 @@ struct PromptSweepTests {
         let config = try PromptSweepGate.config()
         let noiseFiles = PromptSweepGate.noiseFiles(in: config.noiseDir)
 
+        // 与 BenchRunnerTests 同一道门槛：modelFolder 为 nil 会让转写器落到
+        // "base" 并联网下载它，扫九个候选就是九遍 base，结论与产品无关
+        // （2026-08-17 独立验收 F1）。报告头也只写具体目录名，不写「默认」。
+        let modelFolder = try #require(
+            config.modelFolder,
+            "标记文件里 modelFolder 是 null——用 ./scripts/prompt-sweep.sh 启动"
+        )
+
         var report = "# prompt 候选对照\n"
-        report += "模型：\(config.modelFolder.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "默认")\n"
+        report += "模型：\(BenchRunGate.modelShortName(modelFolder))\n"
         report += "泄漏样本：\(noiseFiles.map(\.lastPathComponent).joined(separator: " ")) 各 \(config.leakRepeats) 次\n\n"
 
         for candidate in config.candidates {
@@ -28,7 +36,7 @@ struct PromptSweepTests {
             // 换 prompt 就得换实例。模型因此要重复加载，几秒的代价换
             // 「一次跑完全部候选、指标写进同一份报告」是值得的。
             let transcriber = WhisperKitTranscriber(
-                modelFolder: config.modelFolder, prompt: candidate.prompt
+                modelFolder: modelFolder, prompt: candidate.prompt
             )
             try await transcriber.prepare()
 
