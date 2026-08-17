@@ -28,5 +28,8 @@ Bench/.run-config.json
 Bench/report.txt
 Bench/reports/
 
-# prompt 扫描的中间产物
+# prompt 扫描的中间产物。`.prompt-sweep.json` 是门控标记（同 `.run-config.json`），
+# 跑完由 trap 删掉，但扫一轮要十几分钟——这期间它是未跟踪文件，
+# 一个 `git add -A` 就带进版本库了。
 Bench/prompt-sweep*.txt
+Bench/.prompt-sweep.json
