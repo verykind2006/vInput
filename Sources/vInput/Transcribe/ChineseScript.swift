@@ -20,4 +20,41 @@ enum ChineseScript {
         CFStringTransform(mutable as CFMutableString, nil, "Hant-Hans" as CFString, false)
         return mutable as String
     }
+
+    /// 这个字符是否处在「中文语境」里。
+    ///
+    /// 用途是判断一个半角标点该不该转全角（`TranscriptCleaner`）以及该不该
+    /// 被算作退化（`BenchMetrics`）。两处必须用同一把尺子，否则会出现
+    /// 「转换器改了、度量看不见」或者反过来的情形——而 M6 ⑤ 的教训正是
+    /// 度量与实际输出对不上就等于没有度量。
+    ///
+    /// **判据是字符本身，不是整段文本的语言。** 整段判定在中英混排上必然
+    /// 出错：`他说 "Hello, world" 然后走了` 整段是中文，可那个逗号是英文
+    /// 短语内部的。逐字符看邻居才分得开。
+    ///
+    /// 收进来的区段：
+    /// - 汉字（含扩展 A/B 与兼容区）
+    /// - CJK 符号与标点 `U+3000–U+303F`：、。「」《》…
+    /// - 全角形式 `U+FF00–U+FFEF`：，？！：；（）以及全角字母数字
+    ///
+    /// **刻意不收 `U+2018–U+201D` 那几个弯引号**：英文同样在用它们，
+    /// 收进来会把 `he said “Hello, world”` 里的逗号判成中文语境。
+    static func isChineseContext(_ character: Character?) -> Bool {
+        guard let scalar = character?.unicodeScalars.first else { return false }
+        return switch scalar.value {
+        case 0x3000...0x303F, 0x3400...0x4DBF, 0x4E00...0x9FFF,
+             0xF900...0xFAFF, 0xFF00...0xFFEF, 0x20000...0x2FA1F:
+            true
+        default:
+            false
+        }
+    }
+
+    /// 半角标点 → 全角标点。
+    ///
+    /// 只收中文里确有对应写法的这几个。`"` `'` 不在其中——中文的引号是
+    /// 「」或“”，一对一映射说不清左右，猜错比不改更糟。
+    static let fullWidthPunctuation: [Character: Character] = [
+        ",": "，", ".": "。", "?": "？", "!": "！", ":": "：", ";": "；",
+    ]
 }

@@ -55,6 +55,46 @@ enum BenchMetrics {
         text.filter { $0.isPunctuation || $0.isSymbol }.count
     }
 
+    /// 中文语境里被写成半角的标点个数。越小越好，标准文本上应当是 0。
+    ///
+    /// **补这一格是因为前面两格合起来正好把这件事屏蔽掉了。** 基准集 23 条
+    /// 标准文本里 20 个逗号全是全角，转写输出全是半角，而
+    /// `characterErrorRate` **刻意排除标点**（「一次标点改善会掩盖一次真实
+    /// 的漏字」），`punctuationCount` 只数个数不分全半角——两个数都纹丝
+    /// 不动。这个不匹配从第一天就在基准集里，直到 2026-08-17 用户自己看
+    /// 输出才发现。
+    ///
+    /// 不补这一格，M6 ⑤ 修完之后它会再次无声退化，而这已经是同一个盲区
+    /// 的第三次了。
+    ///
+    /// 判据与 `TranscriptCleaner.normalizeCommas` 共用
+    /// `ChineseScript.isChineseContext`——两把尺子不一样的话，「转换器改了
+    /// 但度量看不见」会照样发生。因此千分位 `1,200,000` 与 `3.14` 里的半角
+    /// 标点不计入：那些本来就该是半角。
+    ///
+    /// **数的范围比转换器宽**：转换器本轮只改逗号，这里连问号、句号一起
+    /// 数。度量该看见全部，改不改是另一个决定。
+    static func halfWidthPunctuationInChinese(_ text: String) -> Int {
+        let characters = Array(text)
+        var count = 0
+
+        for (index, character) in characters.enumerated() {
+            guard ChineseScript.fullWidthPunctuation[character] != nil else { continue }
+
+            var previous = index - 1
+            while previous >= 0, characters[previous].isWhitespace { previous -= 1 }
+            var next = index + 1
+            while next < characters.count, characters[next].isWhitespace { next += 1 }
+
+            let before = previous >= 0 ? characters[previous] : nil
+            let after = next < characters.count ? characters[next] : nil
+            if ChineseScript.isChineseContext(before) || ChineseScript.isChineseContext(after) {
+                count += 1
+            }
+        }
+        return count
+    }
+
     /// 从标准文本里抽出技术词：连续的拉丁字母序列（可含空格连接的多词）。
     ///
     /// 抽而不是手工列表：标准文本改了，词表自动跟着改，不会漏。
