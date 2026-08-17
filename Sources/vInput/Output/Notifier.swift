@@ -43,7 +43,20 @@ protocol Notifier {
 /// 否则连「在测试里 new 一个」都做不到，出问题时也无从二分。
 @MainActor
 final class SystemNotifier: Notifier {
+    /// 进程有没有真实的 app bundle。
+    ///
+    /// 没有的话 `UNUserNotificationCenter.current()` 会直接终止进程——
+    /// **不是抛错，是 crash**。生产上永远是 `dist/vInput.app`
+    /// （`scripts/build-app.sh`），走不到这里；留这道 guard 是因为它的代价
+    /// 是一行，而漏掉它的代价是「有人直接跑二进制，应用一启动就没了，
+    /// 日志里什么都没有」。查不出来的崩溃比降级贵得多。
+    private var hasBundle: Bool { Bundle.main.bundleIdentifier != nil }
+
     func authorizationStatus() async -> NotificationAuthorization {
+        guard hasBundle else {
+            AppLogger.shared.log("没有 app bundle，通知不可用（是不是直接跑了二进制？）")
+            return .denied
+        }
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         return switch settings.authorizationStatus {
         case .notDetermined: .notDetermined
@@ -55,6 +68,7 @@ final class SystemNotifier: Notifier {
     }
 
     func requestAuthorization() async -> NotificationAuthorization {
+        guard hasBundle else { return .denied }
         do {
             // 不要 .sound：这条通知的意义是「你刚才说的话在剪贴板里」，
             // 用户此刻正在别的应用里打字，响一声只是打扰。
