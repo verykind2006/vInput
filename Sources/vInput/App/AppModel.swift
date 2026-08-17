@@ -24,6 +24,12 @@ final class AppModel {
     /// 正在加载模型。首次使用某模型时 Core ML 要编译到神经引擎，
     /// 实测可达 40–125 秒，期间必须让用户看到进度而不是以为卡死。
     private(set) var loadingModelName: String?
+    /// 上一次转写失败后音频还留着，菜单栏的「重试上次转写」据此点亮。
+    ///
+    /// 真实判据在 `DictationSession.canRetry`，这里是它的可观察镜像：
+    /// @Observable 只跟踪自身的存储属性，菜单直接读 session 的话点完不会
+    /// 刷新（与 `correctionEnabled` 同一个坑，见那里的注释）。
+    private(set) var canRetry: Bool = false
 
     /// 校正是否启用，菜单据此显示「校正：开 / 关」。
     ///
@@ -305,6 +311,10 @@ final class AppModel {
             }
             self.hudModel.phase = state
             self.cancelHotkey.update(for: state)
+            // 每次状态变化都同步，而不是只在回到 idle 时同步：新会话一
+            // 开始 `retainedSamples` 就被清掉，菜单项必须立刻跟着灰掉，
+            // 否则录音途中点它是「点得动但什么都不发生」。
+            self.canRetry = self.session?.canRetry ?? false
 
             if state == .listening {
                 self.beginHUD()
@@ -733,6 +743,20 @@ final class AppModel {
         case .transcribing, .correcting, .injecting:
             log.log("toggle 忽略：正在处理上一段（\(session.state)）")
         }
+    }
+
+    /// 用上一次转写失败时保留的音频再走一遍（M6 ②）。
+    ///
+    /// **入口放菜单栏**，理由是状态一直可见、不占用新的全局快捷键（与现有
+    /// ⌥D 及其他应用有冲突风险）、也不依赖通知权限——放通知按钮里的话，
+    /// 通知被划掉入口就没了。
+    func retryLastTranscription() {
+        guard let session, session.canRetry else {
+            AppLogger.shared.log("重试被拒：当前没有可重试的音频")
+            return
+        }
+        AppLogger.shared.log("用户从菜单栏发起重试，保留样本 \(session.retainedSampleCount) 个")
+        Task { await session.retry() }
     }
 
     private func handleMissingPermission() {

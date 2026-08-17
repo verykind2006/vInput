@@ -50,6 +50,14 @@ final class DictationSession {
     /// 供测试断言保留的样本数。
     var retainedSampleCount: Int { retainedSamples.count }
 
+    /// 现在有没有东西可以重试。菜单栏据此决定重试项是可点还是灰的。
+    ///
+    /// **必须与 `retry()` 的前置条件是同一份表达式。** 两处各写一份的话，
+    /// 迟早出现「菜单项可点但什么都不发生」或者「有东西可重试却是灰的」
+    /// ——后者等于这个入口不存在，而它本来就是为了修「入口不存在」
+    /// （`Transcriber.swift:17`：全仓只有测试在调 retry()）。
+    var canRetry: Bool { state == .idle && !retainedSamples.isEmpty }
+
     init(
         audioSource: AudioSource,
         transcriber: Transcriber,
@@ -169,7 +177,7 @@ final class DictationSession {
 
     /// 用上一次失败时保留的音频重新走一遍。
     func retry() async {
-        guard state == .idle, !retainedSamples.isEmpty else { return }
+        guard canRetry else { return }
         let samples = retainedSamples
         await process(samples)
     }

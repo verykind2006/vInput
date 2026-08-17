@@ -85,6 +85,13 @@ private struct MenuContent: View {
 
         Divider()
         Button("开始 / 结束听写  ⌥D") { model.toggle() }
+        // 转写失败时音频保留着，此前却点不到（Transcriber.swift:17：全仓
+        // 只有测试在调 retry()）。禁用而不是隐藏：菜单项时有时无的话，
+        // 用户根本不会知道存在这么个东西，也就等不到需要它的那一刻。
+        Button(model.canRetry ? "重试上次转写" : "重试上次转写（没有可重试的）") {
+            model.retryLastTranscription()
+        }
+        .disabled(!model.canRetry)
 
         Divider()
         modelMenu
