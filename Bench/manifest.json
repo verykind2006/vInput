@@ -1,53 +1,134 @@
 {
   "entries": [
-    { "id": "tech-01", "category": "technical",
-      "text": "这个组件的代码里有个问题，我们需要在 useEffect 里补上依赖数组。" },
-    { "id": "tech-02", "category": "technical",
-      "text": "我们用 Claude Code 写代码，然后用 GitHub Actions 做持续集成，最后部署到 AWS 上面。" },
-    { "id": "tech-03", "category": "technical",
-      "text": "把这个函数的返回类型改成 Promise，然后在 catch 里补上错误处理。" },
-    { "id": "tech-04", "category": "technical",
-      "text": "先跑一下 npm install，再看看 package.json 里的依赖版本对不对。" },
-    { "id": "tech-05", "category": "technical",
-      "text": "这个 API 返回的 token 过期了，需要重新调一次 refresh 接口。" },
-    { "id": "tech-06", "category": "technical",
-      "text": "把 getUserName 这个方法抽到单独的文件里，顺便加上单元测试。" },
-
-    { "id": "punct-01", "category": "punctuation",
-      "text": "我想说的是这套方案整体上是可行的但是有几个细节还需要再确认一下比如说时间安排和人员分工这两块我觉得还可以再优化优化。" },
-    { "id": "punct-02", "category": "punctuation",
-      "text": "今天开会讨论了三个议题第一个是数据库的性能优化第二个是新功能的上线计划第三个是关于用户反馈的处理流程我们逐个过一遍。" },
-    { "id": "punct-03", "category": "punctuation",
-      "text": "这个项目从立项到现在已经三个月了中间经历过两次方向调整目前看下来整体进度还算正常但是测试环节的时间被压缩得比较厉害需要提前准备。" },
-    { "id": "punct-04", "category": "punctuation",
-      "text": "我先把手头这件事情做完然后下午的时候再来看你说的那个问题如果时间来得及的话我们可以顺便把文档也一起更新了。" },
-    { "id": "punct-05", "category": "punctuation",
-      "text": "关于下个季度的规划我的想法是先把现有功能稳定下来再考虑新增因为最近反馈上来的问题里有一半都是老功能的边缘情况。" },
-
-    { "id": "homo-01", "category": "homophone",
-      "text": "我今天要写代码，先把这个长句子的解析逻辑理清楚。" },
-    { "id": "homo-02", "category": "homophone",
-      "text": "新功能的上线计划已经定了，下周三开始灰度。" },
-    { "id": "homo-03", "category": "homophone",
-      "text": "这个句子的意思应该是这样的，我期待你的意见和建议。" },
-    { "id": "homo-04", "category": "homophone",
-      "text": "数据库的连接池配置得不太合理，权限也需要重新梳理一遍。" },
-    { "id": "homo-05", "category": "homophone",
-      "text": "会议室见面之后我们再确认一下具体的时间安排。" },
-    { "id": "homo-06", "category": "homophone",
-      "text": "他的报道写得很客观，事件的时间线也梳理得很清楚。" },
-
-    { "id": "collo-01", "category": "colloquial",
-      "text": "行那我明天上午再看看这个事儿吧你先忙。" },
-    { "id": "collo-02", "category": "colloquial",
-      "text": "好的我知道了，那就先这样，回头再说。" },
-    { "id": "collo-03", "category": "colloquial",
-      "text": "这个嘛我觉得吧，可能还得再想想，不太好说。" },
-    { "id": "collo-04", "category": "colloquial",
-      "text": "明天下午三点我们在会议室见面，我会把资料准备好带过去。" },
-    { "id": "collo-05", "category": "colloquial",
-      "text": "今天天气不错，我们出去走走吧。" },
-    { "id": "collo-06", "category": "colloquial",
-      "text": "谢谢，麻烦你了，那我先过去了。" }
+    {
+      "id": "tech-01",
+      "category": "technical",
+      "text": "这个组件的代码里有个问题，我们需要在 useEffect 里补上依赖数组。"
+    },
+    {
+      "id": "tech-02",
+      "category": "technical",
+      "text": "我们用 Claude Code 写代码，然后用 GitHub Actions 做持续集成，最后部署到 AWS 上面。"
+    },
+    {
+      "id": "tech-03",
+      "category": "technical",
+      "text": "把这个函数的返回类型改成 Promise，然后在 catch 里补上错误处理。"
+    },
+    {
+      "id": "tech-04",
+      "category": "technical",
+      "text": "先跑一下 npm install，再看看 package.json 里的依赖版本对不对。"
+    },
+    {
+      "id": "tech-05",
+      "category": "technical",
+      "text": "这个 API 返回的 token 过期了，需要重新调一次 refresh 接口。"
+    },
+    {
+      "id": "tech-06",
+      "category": "technical",
+      "text": "把 getUserName 这个方法抽到单独的文件里，顺便加上单元测试。"
+    },
+    {
+      "id": "punct-01",
+      "category": "punctuation",
+      "text": "我想说的是这套方案整体上是可行的但是有几个细节还需要再确认一下比如说时间安排和人员分工这两块我觉得还可以再优化优化。"
+    },
+    {
+      "id": "punct-02",
+      "category": "punctuation",
+      "text": "今天开会讨论了三个议题第一个是数据库的性能优化第二个是新功能的上线计划第三个是关于用户反馈的处理流程我们逐个过一遍。"
+    },
+    {
+      "id": "punct-03",
+      "category": "punctuation",
+      "text": "这个项目从立项到现在已经三个月了中间经历过两次方向调整目前看下来整体进度还算正常但是测试环节的时间被压缩得比较厉害需要提前准备。"
+    },
+    {
+      "id": "punct-04",
+      "category": "punctuation",
+      "text": "我先把手头这件事情做完然后下午的时候再来看你说的那个问题如果时间来得及的话我们可以顺便把文档也一起更新了。"
+    },
+    {
+      "id": "punct-05",
+      "category": "punctuation",
+      "text": "关于下个季度的规划我的想法是先把现有功能稳定下来再考虑新增因为最近反馈上来的问题里有一半都是老功能的边缘情况。"
+    },
+    {
+      "id": "homo-01",
+      "category": "homophone",
+      "text": "我今天要写代码，先把这个长句子的解析逻辑理清楚。"
+    },
+    {
+      "id": "homo-02",
+      "category": "homophone",
+      "text": "新功能的上线计划已经定了，下周三开始灰度。"
+    },
+    {
+      "id": "homo-03",
+      "category": "homophone",
+      "text": "这个句子的意思应该是这样的，我期待你的意见和建议。"
+    },
+    {
+      "id": "homo-04",
+      "category": "homophone",
+      "text": "数据库的连接池配置得不太合理，权限也需要重新梳理一遍。"
+    },
+    {
+      "id": "homo-05",
+      "category": "homophone",
+      "text": "会议室见面之后我们再确认一下具体的时间安排。"
+    },
+    {
+      "id": "homo-06",
+      "category": "homophone",
+      "text": "他的报道写得很客观，事件的时间线也梳理得很清楚。"
+    },
+    {
+      "id": "collo-01",
+      "category": "colloquial",
+      "text": "行那我明天上午再看看这个事儿吧你先忙。"
+    },
+    {
+      "id": "collo-02",
+      "category": "colloquial",
+      "text": "好的我知道了，那就先这样，回头再说。"
+    },
+    {
+      "id": "collo-03",
+      "category": "colloquial",
+      "text": "这个嘛我觉得吧，可能还得再想想，不太好说。"
+    },
+    {
+      "id": "collo-04",
+      "category": "colloquial",
+      "text": "明天下午三点我们在会议室见面，我会把资料准备好带过去。"
+    },
+    {
+      "id": "collo-05",
+      "category": "colloquial",
+      "text": "今天天气不错，我们出去走走吧。"
+    },
+    {
+      "id": "collo-06",
+      "category": "colloquial",
+      "text": "谢谢，麻烦你了，那我先过去了。"
+    },
+    {
+      "id": "tech-hold-01",
+      "category": "technical",
+      "text": "这个服务部署在 Azure 上，用 Terraform 管配置，日志推到 Datadog 里看。"
+    },
+    {
+      "id": "tech-hold-02",
+      "category": "technical",
+      "text": "你把 useMemo 换成 useCallback，然后在 Zustand 的 store 里加个 selector。"
+    },
+    {
+      "id": "tech-hold-03",
+      "category": "technical",
+      "text": "先跑 pnpm build，失败的话看 Vite 的 rollup 阶段，多半是 tsconfig 的 paths 没配对。"
+    }
   ]
 }
