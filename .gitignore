@@ -33,3 +33,7 @@ Bench/reports/
 # 一个 `git add -A` 就带进版本库了。
 Bench/prompt-sweep*.txt
 Bench/.prompt-sweep.json
+
+# 长音频截断对照的门控标记与报告（同上，跑一轮好几分钟，期间是未跟踪文件）
+Bench/.long-audio.json
+Bench/long-audio.txt
