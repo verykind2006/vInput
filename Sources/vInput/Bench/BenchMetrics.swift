@@ -67,32 +67,18 @@ enum BenchMetrics {
     /// 不补这一格，M6 ⑤ 修完之后它会再次无声退化，而这已经是同一个盲区
     /// 的第三次了。
     ///
-    /// 判据与 `TranscriptCleaner.normalizeCommas` 共用
-    /// `ChineseScript.isChineseContext`——两把尺子不一样的话，「转换器改了
-    /// 但度量看不见」会照样发生。因此千分位 `1,200,000` 与 `3.14` 里的半角
-    /// 标点不计入：那些本来就该是半角。
+    /// 判据与 `TranscriptCleaner.normalizePunctuation` **共用同一个函数**
+    /// `ChineseScript.fullWidthConversions`，不是各写一遍同一条规则——
+    /// 两把尺子不一样的话，「转换器改了但度量看不见」会照样发生，
+    /// 反过来「度量把转换器刻意不改的东西记成退化」也一样致命：指标从此
+    /// 恒不为零，没人会再看它。因此千分位 `1,200,000`、`3.14` 与代码里的
+    /// `foo(a, b)` 都不计入：那些本来就该是半角。
     ///
-    /// **数的范围比转换器宽**：转换器本轮只改逗号，这里连问号、句号一起
-    /// 数。度量该看见全部，改不改是另一个决定。
+    /// **数的范围比转换器宽一个句号**：转换器不改句号（`我想想...` 会被
+    /// 逐点转成「。。。」，见 `ChineseScript.normalizedHalfWidth`），
+    /// 这里照数。度量该看见全部，改不改是另一个决定。
     static func halfWidthPunctuationInChinese(_ text: String) -> Int {
-        let characters = Array(text)
-        var count = 0
-
-        for (index, character) in characters.enumerated() {
-            guard ChineseScript.fullWidthPunctuation[character] != nil else { continue }
-
-            var previous = index - 1
-            while previous >= 0, characters[previous].isWhitespace { previous -= 1 }
-            var next = index + 1
-            while next < characters.count, characters[next].isWhitespace { next += 1 }
-
-            let before = previous >= 0 ? characters[previous] : nil
-            let after = next < characters.count ? characters[next] : nil
-            if ChineseScript.isChineseContext(before) || ChineseScript.isChineseContext(after) {
-                count += 1
-            }
-        }
-        return count
+        ChineseScript.fullWidthConversions(in: Array(text)).count
     }
 
     /// 从标准文本里抽出技术词：连续的拉丁字母序列（可含空格连接的多词）。

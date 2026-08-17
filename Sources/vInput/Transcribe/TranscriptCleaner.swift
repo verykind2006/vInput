@@ -102,14 +102,15 @@ enum TranscriptCleaner {
                 withTemplate: ""
             )
         }
-        result = normalizeCommas(result)
+        result = normalizePunctuation(result)
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// 把中文语境里的半角逗号转成全角。
+    /// 把中文语境里的半角标点转成全角。
     ///
     /// 说中文时 Whisper 输出的是半角 `,`，句号却是全角 `。`——同一句话里
-    /// 两种宽度混着（2026-08-17 用户报告）。
+    /// 两种宽度混着（2026-08-17 用户报告）。问号同样：用户日志里那句
+    /// `把 M8 的分场景优化改成?` 就是句号全角、问号半角。
     ///
     /// **不能靠改 prompt 修，那条路实测会炸。**
     /// `WhisperKitTranscriber.swift:164` 记着：全角「，」是 UTF-8 三字节
@@ -118,7 +119,7 @@ enum TranscriptCleaner {
     /// 转写零乱码。Whisper 跟着 prompt 的习惯走，输出也就成了半角。
     /// 所以只能在转写之后做字符替换。
     ///
-    /// **难点是中英混排。** 判据取「离逗号最近的那个实字符是不是中文语境」，
+    /// **难点是中英混排。** 判据在 `ChineseScript.fullWidthConversions`，
     /// 与 `CorrectionGate.joiningLatinWords` 同一种做法：在原始字符串上看
     /// 邻居，不做整段语言判定——整段判定在
     /// `他说 "Hello, world" 然后走了` 上必然出错。
@@ -126,48 +127,46 @@ enum TranscriptCleaner {
     /// 这条规则同时挡住了最贵的那个误伤：千分位 `1,200,000` 两侧都是数字，
     /// 数字不算中文语境，一个字都不会动。
     ///
-    /// **范围只有逗号**（2026-08-17 已定）。半角问号同样会出现（Roadmap 里
-    /// session 103 的日志就是「改成?」），但那不在本轮定下的范围里；
-    /// `BenchMetrics.halfWidthPunctuationInChinese` 会把它数出来，
-    /// 要不要一起改由用户再定。
-    static func normalizeCommas(_ text: String) -> String {
-        guard text.contains(",") else { return text }
-        guard let fullWidth = ChineseScript.fullWidthPunctuation[","] else { return text }
+    /// **范围**（2026-08-17 用户把它从「只有逗号」扩成「中文语境下的标点
+    /// 全部全角」）：`, ? ! : ;` 加上成对的 `( )`，**不含句号**。
+    /// 判据、范围与「为什么不含句号」都记在
+    /// `ChineseScript.fullWidthConversions` 与 `normalizedHalfWidth` 上，
+    /// 因为度量要用同一份。
+    static func normalizePunctuation(_ text: String) -> String {
+        guard text.contains(where: { ChineseScript.normalizedHalfWidth.contains($0) })
+        else { return text }
 
         let characters = Array(text)
+        let conversions = ChineseScript.fullWidthConversions(in: characters)
+            .filter { ChineseScript.normalizedHalfWidth.contains(characters[$0.key]) }
+        guard !conversions.isEmpty else { return text }
+
         var result: [Character] = []
         result.reserveCapacity(characters.count)
 
         var index = 0
         while index < characters.count {
-            guard characters[index] == "," else {
+            guard let fullWidth = conversions[index] else {
                 result.append(characters[index])
                 index += 1
                 continue
             }
 
-            // 往两边跳过空白再看：「这个逗号属于中文还是英文」看的是词，
-            // 不是词与逗号之间有没有空格。
-            var previous = result.count - 1
-            while previous >= 0, result[previous].isWhitespace { previous -= 1 }
-            var next = index + 1
-            while next < characters.count, characters[next].isWhitespace { next += 1 }
-
-            let before = previous >= 0 ? result[previous] : nil
-            let after = next < characters.count ? characters[next] : nil
-
-            guard ChineseScript.isChineseContext(before)
-                || ChineseScript.isChineseContext(after) else {
-                result.append(characters[index])
-                index += 1
-                continue
-            }
-
-            // 转换时连带吃掉紧邻的空白：全角逗号本身就占一个全宽位，
+            // 转换时连带吃掉紧邻的空白：全角标点本身就占一个全宽位，
             // 再留一个空格会出现双倍间距，而中文排版里标点紧跟前一个字。
-            result.removeLast(result.count - 1 - previous)
+            //
+            // **换行不吃**：它是内容边界，吃掉会把两行并成一行；而判定时
+            // 又必须跳过它（`。\n(中文)` 的括号确实在中文语境里），
+            // 所以「跳过」与「吃掉」的范围不同。
+            while let last = result.last, last.isWhitespace, !last.isNewline {
+                result.removeLast()
+            }
             result.append(fullWidth)
-            index = next
+            index += 1
+            while index < characters.count,
+                  characters[index].isWhitespace, !characters[index].isNewline {
+                index += 1
+            }
         }
         return String(result)
     }
