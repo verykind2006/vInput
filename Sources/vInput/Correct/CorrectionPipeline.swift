@@ -1,5 +1,44 @@
 import Foundation
 
+/// 「本次未校正」的两种成因。HUD 据此标注（M6 ③）。
+///
+/// **只有两种，这是 2026-08-17 用户拍板的。** 此前三种情况——模型加载中、
+/// 解析不出替换、被闸门全拦——用户都只看到「没变化」，无从判断是哪一种。
+/// 而真正对用户有区别的只有前两者：一个能等，一个是正常工作。
+///
+/// 「解析不出替换」是故障，**不给它单独的标注**：用户对它没有任何可做的
+/// 动作，显示出来只会造成疑惑。它与超时、引擎报错、闸门全拦一起落进
+/// `unchanged`，精确成因只进日志（见 `MLXCorrector.edits(for:)` 里那段
+/// 分三类的日志）。
+///
+/// 注意这里刻意**不是**「故障时什么都不显示」：那等于退回「静默不工作」，
+/// 正是本条要修的同一类问题。用户看到的是「校正这次没起作用」，
+/// 这句话在每一种成因下都是真的。
+enum CorrectionAnnotation: Equatable, Sendable {
+    /// 模型还在加载。用户可以等一等再说下一句。
+    case modelLoading
+    /// 校正跑过了，但一个字都没改。多数时候这就是正常工作。
+    case unchanged
+
+    /// HUD 上显示的一行字。
+    var hudLabel: String {
+        switch self {
+        case .modelLoading: "模型还在加载，本次未校正"
+        case .unchanged: "校正已运行，本次无改动"
+        }
+    }
+}
+
+/// 一次校正的结果。
+///
+/// 把标注与文本一起返回，而不是让流水线回调出去：调用方
+/// （`DictationSession`）本来就在等这次校正的结果，多一个回调只会多一条
+/// 时序要对齐。`annotation` 为 nil 表示「正常改动过了」，无需打扰用户。
+struct CorrectionResult: Equatable, Sendable {
+    let text: String
+    let annotation: CorrectionAnnotation?
+}
+
 /// 串起「求建议 → 解析 → 过闸 → 应用」，并保证任何失败都退回原文。
 ///
 /// **校正是锦上添花，绝不允许它的失败影响主路径。** 与预览引擎在 M2
@@ -52,10 +91,12 @@ struct CorrectionPipeline: Sendable {
         }
     }
 
-    /// 返回校正后的文本。任何环节失败都返回入参原文，本函数不抛错。
-    func correct(_ text: String) async -> String {
+    /// 返回校正后的文本与给 HUD 的标注。任何环节失败都退回入参原文，
+    /// 本函数不抛错。
+    func correct(_ text: String) async -> CorrectionResult {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return text
+            // 用户没说话，没什么可提示的。
+            return CorrectionResult(text: text, annotation: nil)
         }
 
         // **模型未就绪就立刻退回原文，一秒都不等。** 加载 2 GB 模型要几十秒，
@@ -66,7 +107,7 @@ struct CorrectionPipeline: Sendable {
         guard await corrector.isReady else {
             AppLogger.shared.log("校正跳过：模型尚未就绪，已在后台加载")
             warmUpInBackground()
-            return text
+            return CorrectionResult(text: text, annotation: .modelLoading)
         }
 
         // **上一次推理还没落地，这次就直接不校正。**
@@ -81,7 +122,7 @@ struct CorrectionPipeline: Sendable {
         // 下面的 `guard` 与紧随其后的推理任务之间没有挂起点，闸门不会漏。
         guard await inFlight.tryBegin() else {
             AppLogger.shared.log("校正跳过：上一次推理尚未落地")
-            return text
+            return CorrectionResult(text: text, annotation: .unchanged)
         }
 
         let started = ContinuousClock.now
@@ -95,18 +136,22 @@ struct CorrectionPipeline: Sendable {
             // 记录耗时：只写「timedOut」看不出实际要多久，也就无从判断
             // 预算该调到多少、还是该缩短提示词。
             AppLogger.shared.log("校正跳过：\(error) 耗时 \(ContinuousClock.now - started)")
-            return text
+            return CorrectionResult(text: text, annotation: .unchanged)
         }
         let elapsed = ContinuousClock.now - started
 
         guard !edits.isEmpty else {
             AppLogger.shared.log("校正 耗时 \(elapsed) 无替换")
-            return text
+            return CorrectionResult(text: text, annotation: .unchanged)
         }
 
         let outcome = CorrectionGate.apply(edits, to: text)
         logOutcome(outcome, elapsed: elapsed)
-        return outcome.text
+        // 按「有没有真的改动」而不是「有没有替换建议」判：建议全被闸门拦下
+        // 时用户看到的同样是原文，不标注的话又回到「只看到没变化」。
+        return CorrectionResult(
+            text: outcome.text, annotation: outcome.applied.isEmpty ? .unchanged : nil
+        )
     }
 
     /// 记录采纳与拦下的替换，供判断闸门松紧。

@@ -334,6 +334,12 @@ final class AppModel {
         session.onPreview = { [weak self] preview in
             self?.hudModel.preview = preview
         }
+        // 标注在 .correcting 与 .injecting 之间产生，那时 HUD 还开着；
+        // 真正让它被看见的是 endHUD 的停留（见 hudNoticeLinger）——
+        // 这两步之间只隔几十毫秒，不停留等于没显示。
+        session.onCorrection = { [weak self] annotation in
+            self?.hudModel.notice = annotation?.hudLabel
+        }
         self.session = session
         // 会话与全部回调就绪后再挂校正，让上次启动保存的开关状态生效。
         applyCorrectionPreference()

@@ -45,7 +45,7 @@ struct CorrectionPipelineTests {
                 CorrectionEdit(original: "耀空气", replacement: "遥控器")
             ]))
         )
-        let result = await pipeline.correct("小米耀空气")
+        let result = await pipeline.correct("小米耀空气").text
         #expect(result == "小米遥控器")
     }
 
@@ -56,7 +56,7 @@ struct CorrectionPipelineTests {
         let pipeline = CorrectionPipeline(
             corrector: FakeCorrector(.throwsError(.modelNotReady))
         )
-        #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+        #expect(await pipeline.correct("小米耀空气").text == "小米耀空气")
     }
 
     @Test("引擎报错时返回原文")
@@ -64,7 +64,7 @@ struct CorrectionPipelineTests {
         let pipeline = CorrectionPipeline(
             corrector: FakeCorrector(.throwsError(.engineFailed("boom")))
         )
-        #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+        #expect(await pipeline.correct("小米耀空气").text == "小米耀空气")
     }
 
     /// 超时是最重要的一条：本地推理慢于预期时，用户宁可拿到未校正的
@@ -76,7 +76,7 @@ struct CorrectionPipelineTests {
             timeout: .milliseconds(100)
         )
         let start = ContinuousClock.now
-        let result = await pipeline.correct("小米耀空气")
+        let result = await pipeline.correct("小米耀空气").text
         let elapsed = ContinuousClock.now - start
 
         #expect(result == "小米耀空气")
@@ -90,13 +90,13 @@ struct CorrectionPipelineTests {
                 CorrectionEdit(original: "useEffect", replacement: "副作用钩子")
             ]))
         )
-        #expect(await pipeline.correct("用 useEffect") == "用 useEffect")
+        #expect(await pipeline.correct("用 useEffect").text == "用 useEffect")
     }
 
     @Test("空清单返回原文")
     func emptyEditsReturnOriginal() async {
         let pipeline = CorrectionPipeline(corrector: FakeCorrector(.edits([])))
-        #expect(await pipeline.correct("没有错字") == "没有错字")
+        #expect(await pipeline.correct("没有错字").text == "没有错字")
     }
 
     /// 空白输入不值得唤醒模型——加载一次 4B 模型的代价远大于这次校正的价值。
@@ -104,7 +104,7 @@ struct CorrectionPipelineTests {
     func skipsEmptyText() async {
         let corrector = FakeCorrector(.edits([]))
         let pipeline = CorrectionPipeline(corrector: corrector)
-        #expect(await pipeline.correct("   ") == "   ")
+        #expect(await pipeline.correct("   ").text == "   ")
         #expect(corrector.prepareCallCount == 0)
     }
 
@@ -128,7 +128,7 @@ struct CorrectionPipelineTests {
         let pipeline = CorrectionPipeline(corrector: corrector, timeout: .milliseconds(50))
 
         // 首次校正撞上未就绪：退回原文，同时后台开始加载。
-        #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+        #expect(await pipeline.correct("小米耀空气").text == "小米耀空气")
 
         try await Task.sleep(for: .milliseconds(900))
         #expect(
@@ -138,7 +138,7 @@ struct CorrectionPipelineTests {
         #expect(await corrector.isReady)
 
         // 就绪之后校正真的生效，而不是每次会话白烧一遍加载。
-        #expect(await pipeline.correct("小米耀空气") == "小米遥控器")
+        #expect(await pipeline.correct("小米耀空气").text == "小米遥控器")
     }
 
     @Test("模型未就绪时立即返回原文，不等加载")
@@ -151,7 +151,7 @@ struct CorrectionPipelineTests {
         let pipeline = CorrectionPipeline(corrector: corrector, timeout: .seconds(3))
 
         let start = ContinuousClock.now
-        let result = await pipeline.correct("小米耀空气")
+        let result = await pipeline.correct("小米耀空气").text
         let elapsed = ContinuousClock.now - start
 
         #expect(result == "小米耀空气")
@@ -160,7 +160,7 @@ struct CorrectionPipelineTests {
         // 没等它，但也没白等：加载在后台跑完，下一句就能校正。
         try await Task.sleep(for: .milliseconds(1200))
         #expect(await corrector.counter.finished == 1)
-        #expect(await pipeline.correct("小米耀空气") == "小米遥控器")
+        #expect(await pipeline.correct("小米耀空气").text == "小米遥控器")
     }
 
     /// 拆掉加载的超时约束时，很容易顺手把推理的也拆了。这条守着它。
@@ -176,7 +176,7 @@ struct CorrectionPipelineTests {
         #expect(await corrector.isReady)
 
         let start = ContinuousClock.now
-        let result = await pipeline.correct("小米耀空气")
+        let result = await pipeline.correct("小米耀空气").text
         let elapsed = ContinuousClock.now - start
 
         #expect(result == "小米耀空气")
@@ -190,7 +190,7 @@ struct CorrectionPipelineTests {
         let pipeline = CorrectionPipeline(corrector: corrector, timeout: .milliseconds(50))
 
         for _ in 0..<3 {
-            #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+            #expect(await pipeline.correct("小米耀空气").text == "小米耀空气")
         }
 
         try await Task.sleep(for: .milliseconds(900))
@@ -208,7 +208,7 @@ struct CorrectionPipelineTests {
         #expect(await corrector.isReady == false)
         await pipeline.warmUp()
         #expect(await corrector.isReady)
-        #expect(await pipeline.correct("小米耀空气") == "小米遥控器")
+        #expect(await pipeline.correct("小米耀空气").text == "小米遥控器")
     }
 
     /// 超时必须真的中断等待，而不是等工作自然结束。
@@ -227,7 +227,7 @@ struct CorrectionPipelineTests {
             timeout: .milliseconds(200)
         )
         let start = ContinuousClock.now
-        let result = await pipeline.correct("小米耀空气")
+        let result = await pipeline.correct("小米耀空气").text
         let elapsed = ContinuousClock.now - start
 
         #expect(result == "小米耀空气")
@@ -251,10 +251,10 @@ struct CorrectionPipelineTests {
         let pipeline = CorrectionPipeline(corrector: corrector, timeout: .milliseconds(200))
 
         // 第一次：超时放弃，但推理还占着串行队列。
-        #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+        #expect(await pipeline.correct("小米耀空气").text == "小米耀空气")
 
         let start = ContinuousClock.now
-        let result = await pipeline.correct("小米耀空气")
+        let result = await pipeline.correct("小米耀空气").text
         let elapsed = ContinuousClock.now - start
 
         #expect(result == "小米耀空气")
@@ -272,7 +272,7 @@ struct CorrectionPipelineTests {
         let pipeline = CorrectionPipeline(corrector: corrector, timeout: .milliseconds(200))
 
         for _ in 0..<5 {
-            #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+            #expect(await pipeline.correct("小米耀空气").text == "小米耀空气")
         }
         let started = await corrector.counter.started
         #expect(started == 1, "5 次调用只该白烧一次推理，实际 \(started) 次")
@@ -286,14 +286,14 @@ struct CorrectionPipelineTests {
         let corrector = SerialBusyCorrector(inferenceSeconds: 0.5, laterInferenceSeconds: 0.02)
         let pipeline = CorrectionPipeline(corrector: corrector, timeout: .milliseconds(100))
 
-        #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
-        #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+        #expect(await pipeline.correct("小米耀空气").text == "小米耀空气")
+        #expect(await pipeline.correct("小米耀空气").text == "小米耀空气")
 
         // 等那次被放弃的推理跑完，闸门应自己开回来。
         try await Task.sleep(for: .milliseconds(900))
         #expect(await corrector.counter.finished == 1)
 
-        #expect(await pipeline.correct("小米耀空气") == "小米遥控器")
+        #expect(await pipeline.correct("小米耀空气").text == "小米遥控器")
         #expect(await corrector.counter.started == 2)
     }
 
@@ -303,8 +303,8 @@ struct CorrectionPipelineTests {
         let corrector = SerialBusyCorrector(inferenceSeconds: 0.05)
         let pipeline = CorrectionPipeline(corrector: corrector, timeout: .seconds(3))
 
-        #expect(await pipeline.correct("小米耀空气") == "小米遥控器")
-        #expect(await pipeline.correct("小米耀空气") == "小米遥控器")
+        #expect(await pipeline.correct("小米耀空气").text == "小米遥控器")
+        #expect(await pipeline.correct("小米耀空气").text == "小米遥控器")
         #expect(await corrector.counter.started == 2)
     }
 
@@ -318,12 +318,12 @@ struct CorrectionPipelineTests {
         let corrector = CancelAwareCorrector(inferenceSeconds: 1.0)
         let pipeline = CorrectionPipeline(corrector: corrector, timeout: .milliseconds(200))
 
-        #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+        #expect(await pipeline.correct("小米耀空气").text == "小米耀空气")
         // 隔一会儿再问第二次：若流水线取消了推理任务，消费侧要几毫秒才
         // 察觉并退出，紧挨着问会侥幸通过。这里等到它一定退干净，
         // 而生产方（1 秒）还牢牢占着队列。
         try await Task.sleep(for: .milliseconds(100))
-        #expect(await pipeline.correct("小米耀空气") == "小米耀空气")
+        #expect(await pipeline.correct("小米耀空气").text == "小米耀空气")
         let started = await corrector.counter.started
         #expect(started == 1, "生产方还占着队列就放行了第二次推理，实际发起 \(started) 次")
     }

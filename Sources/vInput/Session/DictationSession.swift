@@ -25,6 +25,10 @@ final class DictationSession {
     var onText: ((String) -> Void)?
     /// 预览更新时回调，供 HUD 显示。
     var onPreview: ((PreviewText) -> Void)?
+    /// 校正跑完后回调，携带给 HUD 的标注（nil 表示正常改动过，无需提示）。
+    ///
+    /// **校正关闭时一次都不回调**——没开的东西不该提示「未校正」。
+    var onCorrection: ((CorrectionAnnotation?) -> Void)?
 
     private let audioSource: AudioSource
     private let transcriber: Transcriber
@@ -230,7 +234,9 @@ final class DictationSession {
         let finalText: String
         if let correctionPipeline {
             transition(to: .correcting)
-            finalText = await correctionPipeline.correct(trimmed)
+            let result = await correctionPipeline.correct(trimmed)
+            finalText = result.text
+            onCorrection?(result.annotation)
         } else {
             finalText = trimmed
         }

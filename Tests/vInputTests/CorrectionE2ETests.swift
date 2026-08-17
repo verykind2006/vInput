@@ -75,7 +75,7 @@ struct CorrectionE2ETests {
         // **这条测的是「示例照着抄」，不是泛化能力**——同一句话就写在提示词的
         // 示例一里。摸底问过模型「耀空气的同音常用词是什么」，脱开示例它答不上来。
         // 泛化能力由「同音误听『矩子』改回『句子』」那条守，它现在是红的。
-        let result = await pipeline.correct("小米耀空气很好用")
+        let result = await pipeline.correct("小米耀空气很好用").text
         #expect(result.contains("遥控器"), "实际输出：\(result)")
     }
 
@@ -84,7 +84,7 @@ struct CorrectionE2ETests {
         let pipeline = try await makePipeline()
         // 验证拼音闸门在真实模型上同样生效：模型可能想把 useEffect
         // 「修正」成别的东西，闸门必须拦住这种非同音替换。
-        let result = await pipeline.correct("把这个变量改成 useEffect")
+        let result = await pipeline.correct("把这个变量改成 useEffect").text
         #expect(result.contains("useEffect"), "实际输出：\(result)")
     }
 
@@ -120,7 +120,7 @@ struct CorrectionE2ETests {
     )
     func leavesCorrectSentenceUnchanged(_ input: String) async throws {
         let pipeline = try await makePipeline()
-        let result = await pipeline.correct(input)
+        let result = await pipeline.correct(input).text
         #expect(result == input, "实际输出：\(result)")
     }
 
@@ -140,7 +140,7 @@ struct CorrectionE2ETests {
     func splitsGluedEnglishTerms() async throws {
         let input = "对于这种中英文夹杂包括例如我们说Claude CodeOpen AILLM这种识别度如何"
         let pipeline = try await makePipeline()
-        let result = await pipeline.correct(input)
+        let result = await pipeline.correct(input).text
 
         #expect(result.contains("Claude Code"), "实际输出：\(result)")
         #expect(result.contains("Open AI"), "实际输出：\(result)")
@@ -160,7 +160,7 @@ struct CorrectionE2ETests {
     func fixesMisheardHomophone() async throws {
         let pipeline = try await makePipeline()
         let input = "最后再来看一下长矩子的输出如果有一段长达20秒到30秒的矩子识别的能力"
-        let result = await pipeline.correct(input)
+        let result = await pipeline.correct(input).text
         withKnownIssue("Qwen3-4B 联想不到「句子」，见本用例注释") {
             #expect(result.contains("句子"), "实际输出：\(result)")
         }
@@ -181,7 +181,7 @@ struct CorrectionE2ETests {
     @Test("拆开的英文标识符拼回去")
     func rejoinsSplitIdentifier() async throws {
         let pipeline = try await makePipeline()
-        let result = await pipeline.correct("把这个变量改成Use Effect")
+        let result = await pipeline.correct("把这个变量改成Use Effect").text
         #expect(result.contains("useEffect"), "实际输出：\(result)")
     }
 
@@ -195,7 +195,7 @@ struct CorrectionE2ETests {
     func correctionMakesADifference() async throws {
         let pipeline = try await makePipeline()
         let input = "小米耀空气很好用"
-        let corrected = await pipeline.correct(input)
+        let corrected = await pipeline.correct(input).text
 
         // 关闭校正时管线直接返回原文，因此原文本身就代表「关」那条
         // 路径的结果，不需要另外跑一条不经校正的路径。
@@ -218,10 +218,10 @@ struct CorrectionE2ETests {
         let pipeline = try await makePipeline()
         let input = "小米耀空气很好用"
 
-        let first = await pipeline.correct(input)
+        let first = await pipeline.correct(input).text
         #expect(first != input, "第一次就没校正。实际输出：\(first)")
 
-        let second = await pipeline.correct(input)
+        let second = await pipeline.correct(input).text
         #expect(second != input, "第二次被跳过了——闸门没开回来。实际输出：\(second)")
     }
 
