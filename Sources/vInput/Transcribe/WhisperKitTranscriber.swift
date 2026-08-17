@@ -1,6 +1,94 @@
 import Foundation
 import WhisperKit
 
+/// 送进 `DecodingOptions` 的几个可调旋钮。
+///
+/// **为什么把它们单拎出来做成可注入的**：M6 ⓪ 那个「超过 30 秒的语音被静默
+/// 截断」的成因链条落在这几个参数上（见 `docs/Roadmap.md`），而它们两两之间
+/// 有代价交换——放宽 `firstTokenLogProbThreshold` 是在拿防幻觉换不丢字，
+/// 关掉 VAD 分块是在拿静音幻觉换不丢字。**只报一个维度的数没有意义**，
+/// 必须在同一轮里既量「长语音丢不丢字」又量「静音会不会冒话」，所以要能
+/// 在一次进程、一次模型加载里把几个变体全跑一遍。做法与 `prompt` 完全一样。
+///
+/// 对照脚本：`./scripts/decode-sweep.sh`，结论写在 `Bench/decode-sweep.txt`。
+///
+/// **`production` 是唯一的生产取值，改它等于改产品行为。** 变体只在实验里用。
+struct DecodeTuning: Sendable, Equatable {
+    /// 是否启用 `chunkingStrategy: .vad`。
+    ///
+    /// WhisperKit 只在音频长度大于 `windowSamples`（30 秒）时才真正分块
+    /// （`vendor/WhisperKit/Sources/WhisperKit/Core/WhisperKit.swift:1021`），
+    /// 所以这个开关对 30 秒以内的录音没有任何影响。
+    ///
+    /// 开：静音被切掉，字幕署名类幻觉的触发源少一个；代价是连续语音里
+    /// 找不到干净的静音时，切点落在句子中间，那一块开头模型接不上前文。
+    /// 关：走 Whisper 原生滑窗，窗口解到句子边界、下一窗从那里续上，
+    /// 永远不会在句中冷启动；代价是静音不再被预先切掉。
+    var vadChunking: Bool
+
+    /// 首个采样 token 的 logProb 下限，低于它整窗作废。
+    ///
+    /// `nil` 表示不做这道检查。WhisperKit 默认 −1.5
+    /// （`Configurations.swift:215`），它是 `needsFallback` 的第一优先判据
+    /// （`Models.swift:367`）。M6 ⓪ 实测被 VAD 切中句中的那一块首 token
+    /// logProb ≈ −1.86，稳定地卡在这条线外侧一点点。
+    var firstTokenLogProbThreshold: Float?
+
+    /// 整窗平均 logProb 下限，低于它触发退火。`nil` 表示不做这道检查。
+    var logProbThreshold: Float?
+
+    /// 温度退火的档数。WhisperKit 默认 5，即 0.0/0.2/…/1.0 六档。
+    ///
+    /// **调小它不是在省时间，是在改「失败时返回哪一次」。**
+    /// `decodeWithFallback`（`TranscribeTask.swift:367`）每轮直接覆盖
+    /// `decodingResult`，全部不达标时返回的是**最后一次**而不是最好的一次；
+    /// 实测最后一次（温度 1.0）恰好又是「首 token 太低、零个 token」，
+    /// 于是整块变成空字符串。档数取 0 时只跑温度 0 那一次，返回的就是它。
+    var temperatureFallbackCount: Int
+
+    /// 自己做 VAD 分块，并对「明明有人声却解出空文本」的那一块放宽阈值重来一次。
+    ///
+    /// **这是「在 `decodeWithFallback` 里保留最好的一次」的不碰 vendor 等效做法。**
+    /// 那个最对症的修法要改 `vendor/WhisperKit`，而 vendor 在 `.gitignore` 里、
+    /// 改了不进版本库；但它要达到的效果——「别把一整块真话丢成空字符串」——
+    /// 可以在我们这一层用公开 API 达到：
+    ///
+    /// `VADAudioChunker`、`EnergyVAD`、`AudioChunk`、
+    /// `transcribe(audioArray:audioArrayOffset:decodeOptions:)` 全是 public，
+    /// 于是我们可以用**与 WhisperKit 完全相同的分块器、相同的参数**自己切一遍，
+    /// 逐块解码，再在块级别做判断。
+    ///
+    /// **它比「放宽阈值」这类全局改动强在范围**：防幻觉机制在默认路径上一个
+    /// 都没动，只有同时满足两个条件才放宽——
+    ///
+    /// 1. 这一块解出来是空的（否则用户什么都拿不到，已经是最坏结果，无可失去）；
+    /// 2. 这一块里确实有人声（`EnergyVAD` 的活跃帧占比高于
+    ///    `rescueVoiceFraction`）。纯静音块解出空是**正确答案**，不重试，
+    ///    所以静音幻觉那一维不会因此变差。
+    ///
+    /// 代价有两个，都记在这里：分块从并发变成串行（WhisperKit 原本用
+    /// `concurrentWorkerCount` 并发跑各块），长录音的延迟会涨；失败那一块要
+    /// 多解一次，那一块的耗时翻倍。
+    var rescueEmptyChunks: Bool = false
+
+    /// 触发重试所需的最低人声帧占比。
+    ///
+    /// 取 0.10：真机日志里一段正常说话的能量统计是「304 个块超阈值 145 个
+    /// (47%)」，而纯静音是 0%。两者之间隔着整整一个数量级，阈值放在这个
+    /// 区间里哪里都不改变结论；取靠下的一端是为了不漏掉「一块里只有末尾
+    /// 一句话」的情形。
+    static let rescueVoiceFraction = 0.10
+
+    /// 生产取值。除 `vadChunking` 外都是 WhisperKit 的默认值。
+    static let production = DecodeTuning(
+        vadChunking: true,
+        firstTokenLogProbThreshold: -1.5,
+        logProbThreshold: -1.0,
+        temperatureFallbackCount: 5,
+        rescueEmptyChunks: false
+    )
+}
+
 /// WhisperKit 适配层。
 ///
 /// 用 actor 而非 class，是因为模型加载与推理都不可重入：
@@ -100,18 +188,27 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
     /// 放进同一份报告里对比。生产路径不传这个参数，行为与从前完全一致。
     private let promptText: String
 
+    /// 实际使用的解码参数。默认与 `DecodeTuning.production` 一致。
+    ///
+    /// **可注入的理由与 `promptText` 同一条**：这几个旋钮之间是有代价交换的
+    /// （放宽防幻觉换回丢字、关掉分块换回静音幻觉），只能靠同一轮实测里的
+    /// 对照表来选，而不能靠改一行常量重编译。生产路径不传，行为不变。
+    private let tuning: DecodeTuning
+
     init(
         modelName: String = "base",
         modelFolder: String? = nil,
         language: String = "zh",
         normalizeToSimplified: Bool = true,
-        prompt: String = WhisperKitTranscriber.punctuationPrompt
+        prompt: String = WhisperKitTranscriber.punctuationPrompt,
+        tuning: DecodeTuning = .production
     ) {
         self.modelName = modelName
         self.modelFolder = modelFolder
         self.language = language
         self.normalizeToSimplified = normalizeToSimplified
         self.promptText = prompt
+        self.tuning = tuning
     }
 
     /// tokenizer 等辅助文件的存放目录。
@@ -393,6 +490,8 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
         do {
             let options = DecodingOptions(
                 language: language,
+                // 退火档数。见 DecodeTuning.temperatureFallbackCount。
+                temperatureFallbackCount: tuning.temperatureFallbackCount,
                 // segment.text 是原始文本，不开这个会带 <|zh|>、<|0.00|>
                 // 这类标记。TranscriptionResult.text 是处理过的，但我们
                 // 为了做分段级过滤直接读 segments，必须自己关掉。
@@ -403,14 +502,15 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
                 // WhisperKit 默认 false。开启后抑制空白 token，
                 // 减少静音段凭空生成内容。
                 suppressBlank: true,
+                logProbThreshold: tuning.logProbThreshold,
+                firstTokenLogProbThreshold: tuning.firstTokenLogProbThreshold,
                 // 用能量 VAD 切掉静音段。静音是字幕署名类幻觉
                 // （「( 字幕:XXX )」）的主要触发源。
-                chunkingStrategy: .vad
+                chunkingStrategy: tuning.vadChunking ? .vad : nil
             )
-            let results = try await pipe.transcribe(
-                audioArray: audio,
-                decodeOptions: options
-            )
+            let results = tuning.rescueEmptyChunks
+                ? try await transcribeRescuingEmptyChunks(audio, options: options, pipe: pipe)
+                : try await pipe.transcribe(audioArray: audio, decodeOptions: options)
             // 按分段过滤，而不是把所有文本拼起来再猜词。
             // 模型自己给出了每段「其实没人说话」的概率，用它比维护
             // 一张幻觉短语表可靠得多——短语表打不完，且每加一个词
@@ -427,6 +527,85 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
         } catch {
             throw TranscribeError.engineFailed(error.localizedDescription)
         }
+    }
+
+    /// 一块音频里 `EnergyVAD` 判为有人声的帧占比。
+    ///
+    /// 用它区分「这一块是静音，解出空是对的」与「这一块有人在说话，解出空
+    /// 是丢字」。用的是 WhisperKit 自己那个 VAD 的默认参数（帧长 0.1 秒、
+    /// 能量阈值 0.02），与分块器看到的是同一把尺子。
+    nonisolated static func voiceFraction(of samples: [Float], vad: EnergyVAD) -> Double {
+        let activity = vad.voiceActivity(in: samples)
+        guard !activity.isEmpty else { return 0 }
+        return Double(activity.filter { $0 }.count) / Double(activity.count)
+    }
+
+    /// 自己分块解码，并救回「有人声却解成空」的那一块。见
+    /// `DecodeTuning.rescueEmptyChunks` 的注释——那里写了为什么要这么绕。
+    ///
+    /// **分块参数必须与 WhisperKit 内部完全一致**，否则救回来的那一块与
+    /// 原本会被解码的那一块不是同一段音频，对照就没有意义：
+    /// `maxChunkLength` 取 `featureExtractor.windowSamples`、`VADAudioChunker`
+    /// 用默认的 `windowPadding` 与 `EnergyVAD`——照抄
+    /// `vendor/WhisperKit/Sources/WhisperKit/Core/WhisperKit.swift:1021-1046`。
+    ///
+    /// 30 秒以内的音频 WhisperKit 本来就不分块，这里也原样直传，免得多绕一层。
+    private func transcribeRescuingEmptyChunks(
+        _ audio: [Float], options: DecodingOptions, pipe: WhisperKit
+    ) async throws -> [TranscriptionResult] {
+        let maxChunkLength = pipe.featureExtractor.windowSamples ?? Constants.defaultWindowSamples
+        guard audio.count > maxChunkLength else {
+            return try await pipe.transcribe(audioArray: audio, decodeOptions: options)
+        }
+
+        let vad = EnergyVAD()
+        let chunks = try await VADAudioChunker(vad: vad).chunkAll(
+            audioArray: audio, maxChunkLength: maxChunkLength, decodeOptions: options
+        )
+
+        // 逐块解码。块本身不超过 maxChunkLength，所以这里必须关掉分块策略，
+        // 否则等于让 WhisperKit 再判一次（结论相同，但多绕一层）。
+        var perChunk = options
+        perChunk.chunkingStrategy = nil
+        // 救援档：只松开首 token 那道闸，其余不动。松它是因为实测那一块死在
+        // 它手上（首 token logProb −1.86 对阈值 −1.5，见 docs/Roadmap.md）。
+        var rescue = perChunk
+        rescue.firstTokenLogProbThreshold = nil
+
+        var all: [TranscriptionResult] = []
+        for (index, chunk) in chunks.enumerated() {
+            var results = try await pipe.transcribe(
+                audioArray: chunk.audioSamples,
+                audioArrayOffset: chunk.seekOffsetIndex,
+                decodeOptions: perChunk
+            )
+            let text = results.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.isEmpty {
+                let voice = Self.voiceFraction(of: chunk.audioSamples, vad: vad)
+                let seconds = Double(chunk.audioSamples.count) / AudioFormat.sampleRate
+                if voice >= DecodeTuning.rescueVoiceFraction {
+                    // **这条日志是这套机制唯一的可观测点。** 原本的失败形态是
+                    // 「不报错、不记日志、整块话消失」，那正是它难查的原因。
+                    AppLogger.shared.log(
+                        "第 \(index + 1)/\(chunks.count) 块（\(String(format: "%.1f", seconds))s，"
+                        + "人声帧占比 \(String(format: "%.0f%%", voice * 100))）解出空文本，"
+                        + "放宽 firstTokenLogProbThreshold 重试"
+                    )
+                    results = try await pipe.transcribe(
+                        audioArray: chunk.audioSamples,
+                        audioArrayOffset: chunk.seekOffsetIndex,
+                        decodeOptions: rescue
+                    )
+                    let retried = results.map(\.text).joined()
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    AppLogger.shared.log(
+                        retried.isEmpty ? "  重试后仍是空" : "  重试救回 \(retried.count) 字"
+                    )
+                }
+            }
+            all += results
+        }
+        return all
     }
 
     /// 基于当前已加载的模型构造预览引擎。
