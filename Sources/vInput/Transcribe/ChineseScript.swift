@@ -88,7 +88,8 @@ enum ChineseScript {
     ///
     /// 两类判据：
     ///
-    /// **① `, . ? ! : ;`——看邻居。** 跳过空白后离它最近的那个实字符，
+    /// **① `, . ? ! : ;`——看邻居。** 跳过空白与相连的标点（见
+    /// `isSkippableNeighbor`）之后离它最近的那个实字符，
     /// 两侧任一处在中文语境就转。这条同时挡住了最贵的误伤：千分位
     /// `1,200,000` 两侧都是数字，一个字都不会动。
     ///
@@ -146,24 +147,37 @@ enum ChineseScript {
         return character.isASCII && (character.isLetter || character.isNumber)
     }
 
-    /// 跳过空白后，`index` 左边最近的那个实字符。`nil` 表示这一侧到头了。
+    /// 找邻居时可以跨过去的字符：空白，以及别的半角标点。
     ///
-    /// **判据只看原文**：不看已经转换过的中间结果，否则前一个刚转成全角的
-    /// 标点会变成后一个标点的「中文语境」，判定跟着改写顺序走。
+    /// **必须跨过标点**：`真的吗?!` 里叹号紧挨着问号，只看紧邻的实字符会把
+    /// 叹号判成「不在中文语境」，转出「真的吗？!」这种一半一半的结果。
+    /// 连写的标点（`?!`、`!!!`）在口语转写里常见，一串必须一起转或一起不转。
+    ///
+    /// **数字与字母不在其列**，千分位 `1,200,000` 的保护正来自这一点：
+    /// 逗号两边紧挨着的是数字，跨不过去。
+    private static func isSkippableNeighbor(_ character: Character) -> Bool {
+        character.isWhitespace || fullWidthPunctuation[character] != nil
+            || character == "(" || character == ")"
+    }
+
+    /// 跳过空白与标点后，`index` 左边最近的那个实字符。`nil` 表示这一侧到头了。
+    ///
+    /// **判据只看原文**：不看已经转换过的中间结果，否则判定会跟着改写顺序
+    /// 走——同一段文本，度量（不改写）与转换器（边改边看）会得出两种答案。
     private static func precedingCharacter(
         in characters: [Character], before index: Int
     ) -> Character? {
         var cursor = index - 1
-        while cursor >= 0, characters[cursor].isWhitespace { cursor -= 1 }
+        while cursor >= 0, isSkippableNeighbor(characters[cursor]) { cursor -= 1 }
         return cursor >= 0 ? characters[cursor] : nil
     }
 
-    /// 跳过空白后，`index` 右边最近的那个实字符。
+    /// 跳过空白与标点后，`index` 右边最近的那个实字符。
     private static func followingCharacter(
         in characters: [Character], after index: Int
     ) -> Character? {
         var cursor = index + 1
-        while cursor < characters.count, characters[cursor].isWhitespace { cursor += 1 }
+        while cursor < characters.count, isSkippableNeighbor(characters[cursor]) { cursor += 1 }
         return cursor < characters.count ? characters[cursor] : nil
     }
 }

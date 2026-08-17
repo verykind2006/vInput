@@ -123,6 +123,19 @@ struct PunctuationWidthTests {
         #expect(TranscriptCleaner.clean("先装依赖;再跑测试") == "先装依赖；再跑测试")
     }
 
+    @Test("连着写的标点一起转，不能一半一半")
+    func convertsPunctuationRuns() {
+        // 叹号紧挨着问号，找邻居时要跨过它继续往外看：只看紧邻的实字符
+        // 会把叹号判成「不在中文语境」，转出「真的吗？!」这种一半一半的结果。
+        #expect(TranscriptCleaner.clean("真的吗?!") == "真的吗？！")
+        #expect(TranscriptCleaner.clean("太好了!!!") == "太好了！！！")
+    }
+
+    @Test("跨过标点找邻居不会把英文里的连写标点带进来")
+    func punctuationRunsStayLatin() {
+        #expect(TranscriptCleaner.clean("Really?!") == "Really?!")
+    }
+
     @Test("英文语境里这四个一律不动")
     func keepsLatinContextMarks() {
         #expect(TranscriptCleaner.clean("Is it ready? Not yet!") == "Is it ready? Not yet!")
