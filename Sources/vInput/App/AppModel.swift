@@ -165,19 +165,72 @@ final class AppModel {
     /// 正常收尾，已经录进去的部分照常写成当前这条的 WAV，不白录。
     private func benchWindowDidClose() {
         guard benchIsRecording else { return }
-        AppLogger.shared.log("录制窗口关闭时仍在录音，已停止并写出当前这条")
+        // **先做再记，而且记的是结果。** 原先是无条件先打「已停止并写出」
+        // 再调用——被 guard 挡下时日志照样说停了，而麦克风还开着。
+        // 排查时日志是唯一线索，它谎报一次就够让人走错方向。
         toggleBenchRecording()
+        if benchIsRecording {
+            AppLogger.shared.log("录制窗口关闭，但停止失败，仍在录音")
+        } else {
+            AppLogger.shared.log("录制窗口关闭时仍在录音，已停止并写出当前这条")
+        }
+    }
+
+    /// `toggleBenchRecording` 该做什么。
+    ///
+    /// 抽成纯函数是为了能测：真要走进那个方法得先让 `benchIsRecording`
+    /// 为真，而那需要真启动麦克风——测试进程拿不到麦克风权限（TCC 绑 app
+    /// bundle）。判断本身与硬件无关，抽出来就钉得住。
+    enum BenchToggleAction: Equatable {
+        case stop
+        case start
+        /// 听写占着麦克风，不能**开始**录制。
+        case rejectBusy
+    }
+
+    /// **停止永远允许，忙碌只拦开始。**
+    ///
+    /// 原先的实现把忙碌 guard 写在停止分支前面，于是连「停止」都被拦下。
+    /// 失效链：录制中按遥控器语音键（那条路径当时漏查 `benchIsRecording`，
+    /// 见 `startRemote`）→ 听写非 idle → 关掉录制窗口 → 停止被拦 →
+    /// 麦克风一直开着、`benchIsRecording` 卡在 true、⌥D 从此被永久拒绝，
+    /// 而窗口已经关了，**没有任何 UI 能清掉这个状态**。
+    ///
+    /// 停止本身永远是安全的：只是关掉麦克风、写出已录到的部分。
+    static func benchToggleAction(
+        isRecording: Bool,
+        dictationIdle: Bool
+    ) -> BenchToggleAction {
+        if isRecording { return .stop }
+        return dictationIdle ? .start : .rejectBusy
+    }
+
+    /// 遥控器语音键是否可以开始一次听写。
+    ///
+    /// 抽出来的理由同上，外加一条：这两个条件必须**同时**存在。
+    /// 原先这里只查了模型加载，注释却写着「与 ⌥D 的守卫保持一致」——
+    /// ⌥D 有两条，这里只有一条。漏掉的后果不是「多录一次」，是两个
+    /// `AVAudioEngine` 抢同一支麦克风。
+    static func remoteStartAllowed(
+        modelLoading: Bool,
+        benchRecording: Bool
+    ) -> Bool {
+        !modelLoading && !benchRecording
     }
 
     /// 开始/结束录当前这条。
     func toggleBenchRecording() {
         guard let bench = benchSession, let entry = bench.current else { return }
 
-        // 听写进行中不许录基准集：同一支麦克风、两个引擎，同时开会打架。
-        // session 尚未初始化（bootstrap 之前）时视为空闲。
-        guard (session?.state ?? .idle) == .idle else {
+        switch Self.benchToggleAction(
+            isRecording: benchIsRecording,
+            dictationIdle: (session?.state ?? .idle) == .idle
+        ) {
+        case .rejectBusy:
             AppLogger.shared.log("听写进行中，基准集录制已忽略")
             return
+        case .stop, .start:
+            break
         }
 
         if benchIsRecording {
@@ -803,8 +856,18 @@ final class AppModel {
 
         coordinator.onStartSession = { [weak self] in
             guard let self, let session = self.session else { return }
-            // 模型加载中不接受录音请求，与 ⌥D 的守卫保持一致
-            guard self.loadingModelName == nil else { return }
+            // 两个条件缺一不可，判据见 AppModel.remoteStartAllowed。
+            // 基准集那条以前漏了，而注释却写着「与 ⌥D 的守卫保持一致」。
+            guard Self.remoteStartAllowed(
+                modelLoading: self.loadingModelName != nil,
+                benchRecording: self.benchIsRecording
+            ) else {
+                AppLogger.shared.log(
+                    "遥控器录音被拒：模型加载中=\(self.loadingModelName != nil) "
+                        + "基准集录制中=\(self.benchIsRecording)"
+                )
+                return
+            }
             self.audioRouter?.select(.bluetooth)
             // RC003 的语音键同时是 HID 按键，按住期间 macOS 会持续把它
             // 投递给前台应用（实测为 Page Up 自动重复）。录音期间吞掉。
