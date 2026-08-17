@@ -38,6 +38,9 @@ final class DictationSession {
     /// 而本仓库不重建会话（`AppModel` 里的 session 只构造一次，
     /// 换 Whisper 模型走的是 `SwitchableTranscriber.switchTo`）。
     private var correctionPipeline: CorrectionPipeline?
+    /// 注入失败时的兜底：写剪贴板 + 发通知。可为 nil——缺席时行为与从前
+    /// 完全一致（报错、回 idle），只是文字又会蒸发。
+    private let rescue: TextRescuing?
 
     private var buffer = AudioBuffer(sampleRate: AudioFormat.sampleRate)
     private var targetToken: String?
@@ -53,7 +56,8 @@ final class DictationSession {
         sink: TextSink,
         targetGuard: TargetAppGuard,
         previewEngine: PreviewEngine? = nil,
-        correctionPipeline: CorrectionPipeline? = nil
+        correctionPipeline: CorrectionPipeline? = nil,
+        rescue: TextRescuing? = nil
     ) {
         self.audioSource = audioSource
         self.transcriber = transcriber
@@ -61,6 +65,7 @@ final class DictationSession {
         self.targetGuard = targetGuard
         self.previewEngine = previewEngine
         self.correctionPipeline = correctionPipeline
+        self.rescue = rescue
 
         audioSource.onFrame = { [weak self] samples in
             self?.buffer.append(samples)
@@ -242,6 +247,12 @@ final class DictationSession {
         case .success:
             onText?(finalText)
         case .failure(let error):
+            // 规则二（注入失败）与规则三（目标应用改变）此前都到此为止，
+            // 文本直接蒸发。现在先把它救进剪贴板并通知用户，再报错。
+            //
+            // 顺序上兜底在 onError 之前：`AppModel` 在 onError 里只是把错误
+            // 写到菜单栏，而用户看到提示时文字必须已经在剪贴板里了。
+            await rescue?.rescue(finalText, error: error)
             onError?(error)
         }
     }

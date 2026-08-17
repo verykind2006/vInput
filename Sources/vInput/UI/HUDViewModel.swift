@@ -24,6 +24,12 @@ final class HUDViewModel {
     var energy: [Float] = []
     /// 预览落后实时超过阈值后置位，文本停止更新但音量与时长照常。
     var previewDegraded = false
+    /// 一行附注：通知发不出去时的退路提示、「本次未校正」等。nil 表示没有。
+    ///
+    /// **与 `statusText` 分开是必须的**：状态描述的是当前阶段，会随阶段推进
+    /// 被覆盖掉；而附注产生的时刻恰恰是会话末尾——面板马上就要关了。
+    /// 混在一起的话，用户永远看不到它（`AppModel` 为此让 HUD 多停留几秒）。
+    var notice: String?
 
     var durationText: String { Self.formatDuration(elapsed) }
     var confirmedLines: [String] {

@@ -18,6 +18,7 @@ struct HUDView: View {
         VStack(alignment: .leading, spacing: 10) {
             header
             transcriptBox
+            if let notice = model.notice { noticeRow(notice) }
             footer
         }
         .padding(.horizontal, 18)
@@ -102,6 +103,23 @@ struct HUDView: View {
         case .transcribing, .correcting, .injecting: "正在整理…"
         case .idle: ""
         }
+    }
+
+    // MARK: - 附注
+
+    /// 一行附注，出现在文本框与按键提示之间。
+    ///
+    /// 位置刻意不放在顶部状态条里：那一行已经挤了状态、时长与波形，而附注
+    /// 出现的时刻（会话末尾）恰恰是波形停下、用户视线该被拉过来的时刻。
+    private func noticeRow(_ text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 10))
+            Text(text)
+                .font(.system(size: 11))
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.secondary)
     }
 
     // MARK: - 底部按键提示

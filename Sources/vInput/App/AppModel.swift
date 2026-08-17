@@ -77,6 +77,18 @@ final class AppModel {
     /// 录音开始时刻，用于 HUD 的时长显示。
     private var recordingStartedAt: Date?
     private var hudTimer: Timer?
+    /// 附注的收起计时器，见 `hudNoticeLinger`。
+    private var hudNoticeTimer: Timer?
+    /// 通知投递（含未授权时退回 HUD）。在 `bootstrap` 里建，因为退路要拿到
+    /// 已经接好线的 HUD。
+    private var notificationPresenter: NotificationPresenter?
+
+    /// 会话结束后 HUD 为附注多停留的时长。
+    ///
+    /// 附注（「文字未输入，已复制」「本次未校正」）**产生的时刻就是面板
+    /// 该关掉的时刻**——不多停这几秒，等于把它画上去再立刻擦掉。
+    /// 4 秒是「扫一眼够、挡住屏幕又不烦人」的折中，需要真机上按感觉调。
+    private static let hudNoticeLinger: TimeInterval = 4
 
     /// 默认快捷键：Option + D。
     private let hotkeyCode = UInt32(kVK_ANSI_D)
@@ -259,6 +271,15 @@ final class AppModel {
             .bluetooth: bluetoothSource,
         ])
         self.audioRouter = router
+
+        // 通知拿不到授权时退回 HUD 提示。这条退路不是补丁：通知权限是个
+        // 新弹窗，用户划掉或拒掉之后剪贴板兜底就会静默失效——而它兜的正是
+        // 「说的话没落地也没留下副本」那类问题。
+        let presenter = NotificationPresenter(notifier: SystemNotifier()) { [weak self] notice in
+            self?.showHUDNotice(notice)
+        }
+        notificationPresenter = presenter
+
         let session = DictationSession(
             audioSource: router,
             transcriber: transcriber,
@@ -266,7 +287,8 @@ final class AppModel {
                 typing: TypingSink(),
                 clipboard: ClipboardSink()
             ),
-            targetGuard: TargetAppGuard()
+            targetGuard: TargetAppGuard(),
+            rescue: TextRescue(clipboard: ClipboardSink(), presenter: presenter)
         )
 
         session.onStateChange = { [weak self] state in
@@ -341,6 +363,11 @@ final class AppModel {
             phase = .error("快捷键注册失败：\(error)")
         }
 
+        // 把通知授权弹窗提前到启动时问掉。**不能等到第一次注入失败再问**：
+        // 那一刻用户人在别的应用里、手上还有一句话要救，是最不该被打断的
+        // 时机，而弹窗本身还会抢焦点，反过来把注入目标搅得更乱。
+        Task { await presenter.primeAuthorization() }
+
         // 预览引擎依赖已加载的模型，异步挂载。
         Task { await warmUpAndAttachPreview() }
 
@@ -359,6 +386,11 @@ final class AppModel {
         hudModel.energy = []
         hudModel.elapsed = 0
         hudModel.previewDegraded = false
+        // 上一轮的附注与它的收起计时器必须一起清掉：不清计时器的话，
+        // 它会在新会话进行到一半时把面板关掉。
+        hudModel.notice = nil
+        hudNoticeTimer?.invalidate()
+        hudNoticeTimer = nil
         recordingStartedAt = Date()
         hud.show()
 
@@ -379,7 +411,12 @@ final class AppModel {
         hudTimer?.invalidate()
         hudTimer = nil
         recordingStartedAt = nil
-        hud.hide()
+        // 有附注就让面板多停一会儿，没有就照旧立刻收起。
+        if hudModel.notice == nil {
+            hud.hide()
+        } else {
+            scheduleHUDNoticeHide()
+        }
 
         // 记录本次录音的能量分布。真机反馈「预览要 20-30 秒才出字」，
         // 而流式转写的静音阈值是 0.3——若真人对着麦克风说话的能量普遍
@@ -393,6 +430,32 @@ final class AppModel {
                 + "超阈值(0.3) \(energy.aboveThreshold) 个 "
                 + "(\(energy.aboveThreshold * 100 / energy.count)%)"
             )
+        }
+    }
+
+    /// 把一行附注显示在 HUD 上，并让面板停留几秒。
+    ///
+    /// 会话已经结束、面板已经收起时也要能用——通知投递不出去这条退路正是
+    /// 在那之后触发的，所以这里主动 `show()`。
+    func showHUDNotice(_ text: String) {
+        hudModel.notice = text
+        hud.show()
+        scheduleHUDNoticeHide()
+    }
+
+    private func scheduleHUDNoticeHide() {
+        hudNoticeTimer?.invalidate()
+        hudNoticeTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.hudNoticeLinger, repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // 这几秒里用户又开始说话了就别收：新会话的 beginHUD 已经把
+                // 面板重新点亮，这时候关掉等于把正在用的 HUD 关了。
+                guard (self.session?.state ?? .idle) == .idle else { return }
+                self.hudModel.notice = nil
+                self.hud.hide()
+            }
         }
     }
 
