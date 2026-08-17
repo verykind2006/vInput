@@ -92,16 +92,26 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
     /// 引导标点用的 prompt token，模型加载后编码一次并缓存。
     private var promptTokens: [Int]?
 
+    /// 实际使用的 initial prompt。默认就是 `punctuationPrompt`。
+    ///
+    /// **可注入是为了做 A/B**：换 prompt 只能靠实测判优劣（见
+    /// `punctuationPrompt` 那一长段注释里的教训），而「改一行静态常量、
+    /// 重新编译、跑一轮」的做法每轮都要重新加载模型、也没法把几个候选
+    /// 放进同一份报告里对比。生产路径不传这个参数，行为与从前完全一致。
+    private let promptText: String
+
     init(
         modelName: String = "base",
         modelFolder: String? = nil,
         language: String = "zh",
-        normalizeToSimplified: Bool = true
+        normalizeToSimplified: Bool = true,
+        prompt: String = WhisperKitTranscriber.punctuationPrompt
     ) {
         self.modelName = modelName
         self.modelFolder = modelFolder
         self.language = language
         self.normalizeToSimplified = normalizeToSimplified
+        self.promptText = prompt
     }
 
     /// tokenizer 等辅助文件的存放目录。
@@ -133,7 +143,7 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
             }
             let loaded = try await WhisperKit(config)
             pipe = loaded
-            promptTokens = loaded.tokenizer.map { Self.encodePrompt(Self.punctuationPrompt, with: $0) }
+            promptTokens = loaded.tokenizer.map { Self.encodePrompt(promptText, with: $0) }
         } catch {
             throw TranscribeError.engineFailed(error.localizedDescription)
         }
@@ -188,8 +198,40 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
     /// 「Claude Code,Cursor,GitHub,AWS,prompt,token。」在 1.5 秒静音上吐出
     /// 「Claude Code,Claude Code,Claude Code Code,…」连着 13 遍；
     /// 纯英文词表则在静音上吐「Thank you.」——套话表只收了中文，拦不住。
+    /// 引导标点与技术专名的条件前缀。
+    ///
+    /// **每一处都是实测定的，改动前请用基准集复测**
+    /// （`./scripts/bench-run.sh openai_whisper-large-v3-v20240930_turbo`）。
+    ///
+    /// 三条约束：
+    ///
+    /// 1. **必须半角逗号。** 全角「，」是 3 字节 UTF-8，字节级 BPE 拆开后
+    ///    采样只命中前两字节，解码成 `Ｂ`、`４`、`�`。用全角的候选在长音频
+    ///    上稳定吐乱码。
+    /// 2. **术语必须嵌在正常句子里，不能堆成词表。** 纯词表候选把长句标点
+    ///    从 4 个砍到 1–2 个。
+    /// 3. **不能像一句能被续写下去的日常闲话。** 更早的版本以「时间上没
+    ///    问题,你放心。」结尾，在 30 秒底噪上 8/8 被模型续写出来，且不带
+    ///    套话特征、幻觉过滤拦不住；改成技术句结尾后 0/48。
+    ///
+    /// **短比全好。** 2026-08-17 用 23 条真人基准集扫了 9 个候选：
+    ///
+    /// | 候选 | 总体 CER | 技术类 | 术语命中 | 泄漏 | 字数 |
+    /// |---|---|---|---|---|---|
+    /// | 旧版（只点 3 个词） | 0.0317 | 0.0742 | 0.389 | 0 | 63 |
+    /// | 全覆盖版 | 0.0212 | 0.0339 | 0.917 | 0 | 161 |
+    /// | 单句式加长版 | 0.0199 | 0.0290 | 1.000 | **2** | 172 |
+    /// | **本版** | **0.0190** | **0.0254** | **1.000** | 0 | 124 |
+    ///
+    /// 更长的候选反而更差：附带的句式会渗进转写（全覆盖版把「改 useEffect
+    /// **的**依赖数组」的「的」渗进了正文），加长版还漏了 2 次。起作用的是
+    /// 「点名」，不是上下文。
+    ///
+    /// **本版在总体 CER 上超过了 large-v3**（0.0190 vs 0.0207），技术类
+    /// 持平（0.0254 vs 0.0251），同音类更好（0.0294 vs 0.0363）——而 turbo
+    /// 快 4.5 倍（1.2 秒/条 vs 5.4 秒/条）。
     static let punctuationPrompt =
-        "对,这个我知道,那我们就先这样吧,回头再说。用 Claude Code 和 GitHub Actions,最后部署到 AWS。"
+        "对,这个我知道,那我们就先这样吧,回头再说。用 Claude Code 和 GitHub Actions 部署到 AWS,先跑 npm install 改 useEffect,把 getUserName 里的 token 用 refresh 换掉。"
 
     /// 把 prompt 文本编成 token，并剔除特殊标记。
     ///

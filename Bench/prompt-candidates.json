@@ -1,0 +1,22 @@
+[
+  {
+    "name": "P0 现状",
+    "prompt": "对,这个我知道,那我们就先这样吧,回头再说。用 Claude Code 和 GitHub Actions,最后部署到 AWS。"
+  },
+  {
+    "name": "P2 全覆盖（第一轮最优）",
+    "prompt": "对,这个我知道,那我们就先这样吧,回头再说。用 Claude Code 和 GitHub Actions,最后部署到 AWS。先跑 npm install 看一下 package.json,再改 useEffect 的依赖数组,把 getUserName 抽出去,在 catch 里用 refresh 换新的 token。"
+  },
+  {
+    "name": "P4 P2+Promise",
+    "prompt": "对,这个我知道,那我们就先这样吧,回头再说。用 Claude Code 和 GitHub Actions,最后部署到 AWS。先跑 npm install 看一下 package.json,再改 useEffect 的依赖数组,把 getUserName 抽出去,在 catch 里等 Promise 返回,用 refresh 换新的 token。"
+  },
+  {
+    "name": "P5 单句式+Promise",
+    "prompt": "对,这个我知道,那我们就先这样吧,回头再说。用 Claude Code 和 GitHub Actions 部署到 AWS,先跑 npm install 看一下 package.json,再改 useEffect 的依赖数组,把 getUserName 抽出去,在 catch 里等 Promise 返回,用 refresh 换新的 token。"
+  },
+  {
+    "name": "P6 精简版",
+    "prompt": "对,这个我知道,那我们就先这样吧,回头再说。用 Claude Code 和 GitHub Actions 部署到 AWS,先跑 npm install 改 useEffect,把 getUserName 里的 token 用 refresh 换掉。"
+  }
+]

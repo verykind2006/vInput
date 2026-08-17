@@ -27,3 +27,6 @@ Bench/audio/
 Bench/.run-config.json
 Bench/report.txt
 Bench/reports/
+
+# prompt 扫描的中间产物
+Bench/prompt-sweep*.txt

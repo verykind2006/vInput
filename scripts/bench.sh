@@ -107,4 +107,14 @@ mix_gen() {
 mix_gen noisy_thanks "谢谢大家" 0.06 0.05
 
 cd "$ROOT"
+# --audio-only：只生成音频就退出。
+#
+# /tmp 会被系统定期清空，而转写端到端（PipelineE2ETests）依赖这批音频。
+# 清空之后测试会以 loadAudioFailed 整片失败，看着像代码坏了。
+# 没有这个入口的话，重新生成音频得连带跑一遍完整的模型对比（好几分钟）。
+if [[ "${1:-}" == "--audio-only" ]]; then
+  print "音频已生成于 $AUDIO"
+  exit 0
+fi
+
 exec swift run -c release vInputBench
