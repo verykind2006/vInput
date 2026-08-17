@@ -6,13 +6,43 @@ import WhisperKit
 /// 用法：
 /// ```bash
 /// ./scripts/bench.sh          # 对比所有模型
-/// ./scripts/bench.sh switch   # 诊断运行时切换（走与 App 相同的代码路径）
+/// ./scripts/bench.sh switch   # 诊断运行时切换
 /// ```
+///
+/// **本工具的输出不代表生产管线，不要拿它评估产品表现。** 它直接调
+/// WhisperKit，用的是不挂 initial prompt 的 `benchDecodingOptions`，而生产的
+/// `WhisperKitTranscriber` 还有条件前缀、短音频补白、结尾套话过滤、繁简转换。
+/// **要评估生产表现请用 `./scripts/bench-run.sh`**——它跑的是真正的
+/// `WhisperKitTranscriber`，零复刻（`Tests/vInputTests/BenchRunnerTests.swift`）。
+/// 本工具回答的是另一类问题：模型能不能加载、切换后还转不转得出来、
+/// 各模型的相对速度。
+///
+/// **本文件刻意不再复刻任何生产参数。** 这里原有一个 `WhisperKitTranscriberShim`，
+/// 注释写着「与生产同源，改一处要改两处」，而两次都只改了一处：M4 期间差了
+/// `skipSpecialTokens` 与 `promptTokens`；M5 把 prompt 从 63 字换成 124 字
+/// （提交 036240e）时 shim 又没跟上，2026-08-17 独立验收才查出来。
+/// **复刻必然漂移，注释拦不住。**
+///
+/// 技术上可以让 `vInputBench` 依赖 `vInput` 目标（实测 SPM 允许可执行目标
+/// 之间依赖，能编过），但代价是把生产类型改成 `public`，并把整个 App 连同
+/// MLX 链进这个诊断工具——`./scripts/bench.sh` 从此要先做一遍 MLX 的 release
+/// 构建。为一个诊断工具付这个代价不值得。所以选择是：**不复刻，也不假装
+/// 等同**，质量结论一律交给 bench-run.sh。
 @main
 struct Bench {
     static let modelsRoot =
         "/Users/vk/Library/CloudStorage/OneDrive-个人/projects/vInput/vendor/models"
     static let audioRoot = "/tmp/vinput-bench"
+
+    /// 本工具两条路径共用的解码参数。**不挂 initial prompt，与生产不同**，
+    /// 见文件头。
+    ///
+    /// 三项取值与 main 上 `compareModels()` 里的完全一致，只是提出来给切换
+    /// 诊断共用——一个文件里长出第二套「看起来像生产」的参数，正是那个 shim
+    /// 的来路。
+    static let benchDecodingOptions = DecodingOptions(
+        language: "zh", suppressBlank: true, chunkingStrategy: .vad
+    )
 
     struct Sample {
         let file: String
@@ -49,7 +79,31 @@ struct Bench {
 
     // MARK: - 切换诊断
 
-    /// 复现 App 的运行时切换路径：large-v3 → turbo，两边各转写一次。
+    /// 加载一个模型并转写一次，返回加载耗时、转写耗时与文本。
+    static func loadAndTranscribe(
+        model: String, audio: [Float]
+    ) async throws -> (load: Double, run: Double, text: String) {
+        var t = Date()
+        let pipe = try await WhisperKit(
+            WhisperKitConfig(modelFolder: "\(modelsRoot)/\(model)")
+        )
+        let load = Date().timeIntervalSince(t)
+
+        t = Date()
+        let results = try await pipe.transcribe(
+            audioArray: audio, decodeOptions: benchDecodingOptions
+        )
+        let text = results.map(\.text).joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (load, Date().timeIntervalSince(t), text)
+    }
+
+    /// 复现运行时切换：加载第一个模型转写一次，再加载第二个转写一次。
+    ///
+    /// 它回答的问题是「切换之后还转不转得出来」——那是模型加载与解码器生命
+    /// 周期的问题，**与 initial prompt 无关**，所以这里用
+    /// `benchDecodingOptions` 而不复刻生产参数（见文件头）。要看切换后的
+    /// 转写**质量**，换模型跑两次 `./scripts/bench-run.sh` 再 diff 两份归档。
     static func diagnoseSwitching() async {
         let all = discoverModels()
         guard all.count >= 2 else {
@@ -65,28 +119,20 @@ struct Bench {
         }
 
         print("初始模型: \(first)")
-        var t = Date()
-        let transcriber = WhisperKitTranscriberShim(name: first, root: modelsRoot)
         do {
-            try await transcriber.prepare()
-            print("  加载 \(fmt(Date().timeIntervalSince(t)))s")
-            t = Date()
-            let text = try await transcriber.transcribe(floats)
-            print("  转写 \(fmt(Date().timeIntervalSince(t)))s → \(quoted(text))")
+            let run = try await loadAndTranscribe(model: first, audio: floats)
+            print("  加载 \(fmt(run.load))s")
+            print("  转写 \(fmt(run.run))s → \(quoted(run.text))")
         } catch {
             print("  失败: \(error)"); exit(1)
         }
 
         print("\n切换到: \(second)")
-        t = Date()
-        let next = WhisperKitTranscriberShim(name: second, root: modelsRoot)
         do {
-            try await next.prepare()
-            print("  加载 \(fmt(Date().timeIntervalSince(t)))s  ← App 在此期间禁用录音")
-            t = Date()
-            let text = try await next.transcribe(floats)
-            print("  转写 \(fmt(Date().timeIntervalSince(t)))s → \(quoted(text))")
-            if text.isEmpty {
+            let run = try await loadAndTranscribe(model: second, audio: floats)
+            print("  加载 \(fmt(run.load))s  ← App 在此期间禁用录音")
+            print("  转写 \(fmt(run.run))s → \(quoted(run.text))")
+            if run.text.isEmpty {
                 print("\n*** 复现：切换后转写结果为空 ***")
             } else {
                 print("\n切换后转写正常。若 App 中无输出，问题在 UI 层而非转写层。")
@@ -98,6 +144,13 @@ struct Bench {
 
     // MARK: - 模型对比
 
+    /// 逐个模型跑同一批 TTS 音频，看加载耗时、转写耗时与输出。
+    ///
+    /// **这里的输出不代表生产管线**：`benchDecodingOptions` 不挂 initial
+    /// prompt，而生产的 `WhisperKitTranscriber` 挂着一段 124 字的条件前缀
+    /// （标点密度与技术专名写法几乎全靠它），另有短音频补白、结尾套话过滤、
+    /// 繁简转换。**要评估生产表现请用 `./scripts/bench-run.sh`。**
+    /// 本函数适合回答「哪个模型加载快、转写快、大致听不听得清」。
     static func compareModels() async {
         let models = discoverModels()
         guard !models.isEmpty else {
@@ -127,10 +180,7 @@ struct Bench {
 
                 let start = Date()
                 let results = try? await pipe.transcribe(
-                    audioArray: floats,
-                    decodeOptions: DecodingOptions(
-                        language: "zh", suppressBlank: true, chunkingStrategy: .vad
-                    )
+                    audioArray: floats, decodeOptions: benchDecodingOptions
                 )
                 let elapsed = Date().timeIntervalSince(start)
                 let raw = (results ?? []).map(\.text).joined()
@@ -163,58 +213,4 @@ struct Bench {
 
     static func fmt(_ value: Double) -> String { String(format: "%.2f", value) }
     static func quoted(_ text: String) -> String { text.isEmpty ? "(空)" : "「\(text)」" }
-}
-
-/// 复刻 App 中 WhisperKitTranscriber 的行为，用于诊断。
-/// 保持与生产代码相同的 DecodingOptions。
-actor WhisperKitTranscriberShim {
-    private let folder: String
-    private var pipe: WhisperKit?
-
-    init(name: String, root: String) {
-        self.folder = "\(root)/\(name)"
-    }
-
-    func prepare() async throws {
-        guard pipe == nil else { return }
-        pipe = try await WhisperKit(WhisperKitConfig(modelFolder: folder))
-    }
-
-    /// 引导标点与技术专名的 prompt token，与生产同源。
-    ///
-    /// **这段必须与 `WhisperKitTranscriber` 保持一致。** bench 存在的意义
-    /// 是拿它做模型/参数对照（M5 要用它比 large-v3 与 turbo），一旦两边的
-    /// `DecodingOptions` 不同，对照出来的差异就分不清是模型造成的还是参数
-    /// 造成的——结论直接作废。
-    ///
-    /// 曾经就差了两项（`skipSpecialTokens` 与 `promptTokens`），而注释还写着
-    /// 「保持与生产代码相同的 DecodingOptions」。
-    private var promptTokens: [Int]?
-
-    /// 与 `WhisperKitTranscriber.punctuationPrompt` 同源，改一处要改两处。
-    /// 这是复刻工具的固有代价：bench 是独立的可执行目标，import 不到 vInput。
-    static let punctuationPrompt =
-        "对,这个我知道,那我们就先这样吧,回头再说。用 Claude Code 和 GitHub Actions,最后部署到 AWS。"
-
-    func transcribe(_ samples: [Float]) async throws -> String {
-        try await prepare()
-        guard let pipe else { return "" }
-
-        if promptTokens == nil, let tokenizer = pipe.tokenizer {
-            promptTokens = tokenizer.encode(text: Self.punctuationPrompt)
-                .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
-        }
-
-        let results = try await pipe.transcribe(
-            audioArray: samples,
-            decodeOptions: DecodingOptions(
-                language: "zh",
-                skipSpecialTokens: true,
-                promptTokens: promptTokens,
-                suppressBlank: true,
-                chunkingStrategy: .vad
-            )
-        )
-        return results.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 }

@@ -117,4 +117,7 @@ if [[ "${1:-}" == "--audio-only" ]]; then
   exit 0
 fi
 
-exec swift run -c release vInputBench
+# 参数透传。`Bench.main` 读 `CommandLine.arguments` 判断是不是 `switch`，
+# 而此处此前没有 "$@"——`./scripts/bench.sh switch` 一直进不到切换诊断，
+# 跑的还是默认的模型对比（2026-08-17 独立验收顺带查出）。
+exec swift run -c release vInputBench "$@"
