@@ -24,6 +24,8 @@ struct DecodeTuning: Sendable, Equatable {
     /// 找不到干净的静音时，切点落在句子中间，那一块开头模型接不上前文。
     /// 关：走 Whisper 原生滑窗，窗口解到句子边界、下一窗从那里续上，
     /// 永远不会在句中冷启动；代价是静音不再被预先切掉。
+    ///
+    /// **2026-08-17 改为默认关闭**，理由见 `production` 那段的对照表。
     var vadChunking: Bool
 
     /// 首个采样 token 的 logProb 下限，低于它整窗作废。
@@ -79,9 +81,52 @@ struct DecodeTuning: Sendable, Equatable {
     /// 一句话」的情形。
     static let rescueVoiceFraction = 0.10
 
-    /// 生产取值。除 `vadChunking` 外都是 WhisperKit 的默认值。
+    /// 生产取值。全部是 WhisperKit 的默认值——包括不挂 `chunkingStrategy`。
+    ///
+    /// ## `vadChunking` 为什么从 true 改成 false（2026-08-17）
+    ///
+    /// M6 ⓪ 那个「超 30 秒的语音整块变空」的 bug，成因在 vendor 里改不得
+    /// （`decodeWithFallback` 返回最后一次而非最好的一次，而 `vendor/` 在
+    /// `.gitignore` 里）。能从我们这一层设的只剩 `DecodingOptions` 上这几个
+    /// 旋钮，于是拿 `./scripts/decode-sweep.sh` 做了三维对照。**每个变体相对
+    /// 现状只动一处**，dense-31 每档重复 12 次（该 bug 是间歇性的，失败率
+    /// 四到七成，单次结果没有意义），静音/底噪每档 24 次：
+    ///
+    /// | 变体 | dense-31 失败 | 静音非空 | 基准集 CER |
+    /// |---|---|---|---|
+    /// | 现状（vad on, 首 token −1.5） | 4/12、6/12（两轮） | 0/24 | 0.0190 |
+    /// | **关 VAD 分块（本版）** | **0/12、0/12（两轮）** | **1/24、0/24** | 0.0190 |
+    /// | 关首 token 阈值 | 0/12 | **12/24** | 0.0190 |
+    /// | 首 token 阈值放宽到 −3.0 | 0/12 | **10/24** | 0.0190 |
+    /// | 关分块 + 关首 token 阈值 | 0/12 | **16/24** | 0.0190 |
+    /// | 关首 token 阈值 + 不退火 | 0/12 | **12/24** | 0.0190 |
+    ///
+    /// **四个候选都能治丢字，区别全在代价。** 动 `firstTokenLogProbThreshold`
+    /// 的三档把静音幻觉从 0 拉到 10–16 次，漏出来的正是这个产品一直在防的
+    /// 那一类——「谢谢大家。」「好,谢谢。」，还有
+    /// 「请不吝点赞 讨订阅 转发 打赏支持明镜与点点栏目」。**那是拿一种丢字
+    /// 换另一种丢字**，不能要。关分块两轮只漏 1 次「谢谢。」，是唯一便宜的。
+    ///
+    /// 另外实测掉的两个顾虑（`./scripts/decode-sweep.sh --scaling`，
+    /// 3/6/10 分钟连续语音，分块 on/off 各一次）：
+    ///
+    /// ```
+    /// 3min  176.8s   on 27.6s (6.4x)   off 25.2s (7.0x)
+    /// 6min  353.6s   on 57.3s (6.2x)   off 59.1s (6.0x)
+    /// 10min 618.8s   on 111.1s (5.6x)  off 109.8s (5.6x)   峰值内存 48MB
+    /// ```
+    ///
+    /// **耗时没有差别，内存也没有。** 这一条反直觉：分块那条路把各块丢进
+    /// `TaskGroup` 并发解码（`WhisperKit.swift:803-870`，macOS 上 16 个
+    /// worker），不分块走的是串行滑窗，看代码会以为长录音要变慢。实际不会——
+    /// ANE 是**一块硬件**，并发的 worker 照样在它上面排队，并行度买不到吞吐。
+    ///
+    /// **静音那一维不能只看 M5 那套素材。** `silence30` 恰好是 30.0 秒，而
+    /// 分块的触发条件是「严格大于 30 秒」（`WhisperKit.swift:1021`），拿它比
+    /// 分块 on/off 两边跑的是同一条代码路径。本轮补了 45 秒的静音与底噪，
+    /// 以及「真人说 14.7 秒 + 尾部 20 秒静音」这个生产上最常见的形态。
     static let production = DecodeTuning(
-        vadChunking: true,
+        vadChunking: false,
         firstTokenLogProbThreshold: -1.5,
         logProbThreshold: -1.0,
         temperatureFallbackCount: 5,
@@ -504,8 +549,10 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
                 suppressBlank: true,
                 logProbThreshold: tuning.logProbThreshold,
                 firstTokenLogProbThreshold: tuning.firstTokenLogProbThreshold,
-                // 用能量 VAD 切掉静音段。静音是字幕署名类幻觉
-                // （「( 字幕:XXX )」）的主要触发源。
+                // **默认不分块**（2026-08-17 起）。VAD 分块本来是用来切掉
+                // 静音、少一个字幕署名类幻觉的触发源的，但它在连续语音上
+                // 把切点落在句子中间，被切中的那块整块作废——实测 31 秒的
+                // dense 语料 12 次里丢 4–6 次。见 DecodeTuning.production。
                 chunkingStrategy: tuning.vadChunking ? .vad : nil
             )
             let results = tuning.rescueEmptyChunks

@@ -30,6 +30,17 @@ import Testing
 /// 只是运气。判「修好了」要看三个变体的失败次数全为 0 且连续两轮如此；
 /// 判「坏了」一次就够。budget 组不受此限——它是确定性的。
 ///
+/// **2026-08-17：dense-31 已修**——生产默认改成不做 VAD 分块
+/// （`DecodeTuning.production`，选型对照见 `./scripts/decode-sweep.sh` 与
+/// `docs/Roadmap.md` M6 ⓪）。本套从「复现」转为「回归」：它现在守的是
+/// 「别再把分块打开」以及「别在别的长度上退化」。
+///
+/// **budget-24 / budget-27 仍然是红的，且与本条修法无关。** 那是另一条
+/// 确定性的边界：124 字的生产 prompt 编成 63 个 token，与采样共用 224 的
+/// 预算，只剩 156 个可采样；这两条用 7.6 字/秒的超速语料刻意撞它。修它要
+/// 回滚 prompt 长度，而那会牺牲技术类 CER（0.0254 → 0.0584 起），是独立的
+/// 产品取舍。
+///
 /// **必须串行**：并发跑多个 Core ML 实例会报 `ANE op async execution has
 /// timed out`，整片假失败（与 `BenchRunnerTests` 同一条）。
 @Suite("长音频截断", .enabled(if: LongAudioGate.isEnabled), .serialized)
