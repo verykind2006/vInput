@@ -67,18 +67,69 @@ enum BenchMetrics {
     /// 不补这一格，M6 ⑤ 修完之后它会再次无声退化，而这已经是同一个盲区
     /// 的第三次了。
     ///
-    /// 判据与 `TranscriptCleaner.normalizePunctuation` **共用同一个函数**
-    /// `ChineseScript.fullWidthConversions`，不是各写一遍同一条规则——
-    /// 两把尺子不一样的话，「转换器改了但度量看不见」会照样发生，
-    /// 反过来「度量把转换器刻意不改的东西记成退化」也一样致命：指标从此
-    /// 恒不为零，没人会再看它。因此千分位 `1,200,000`、`3.14` 与代码里的
-    /// `foo(a, b)` 都不计入：那些本来就该是半角。
+    /// **这条判据刻意不共用转换器的函数，而且比它窄。**
     ///
-    /// **数的范围比转换器宽一个句号**：转换器不改句号（`我想想...` 会被
-    /// 逐点转成「。。。」，见 `ChineseScript.normalizedHalfWidth`），
-    /// 这里照数。度量该看见全部，改不改是另一个决定。
+    /// 最初的实现是 `ChineseScript.fullWidthConversions(in:).count`——与
+    /// `TranscriptCleaner.normalizePunctuation` 用同一个函数。当时的理由是
+    /// 「两把尺子不一样会各错各的」，理由本身没错，但结果更糟：**度量跑在
+    /// 转换之后，凡是这个函数认得出的半角标点都已经被同一个函数转掉了，
+    /// 指标必然读 0**。基准集 26 条全是「半角=0/0」，那不是测量结果，
+    /// 是恒等式。
+    ///
+    /// 代价还是双向的：既量不出误伤（规则太激进），也量不出漏转（规则太
+    /// 保守）——**规则越保守，指标越漂亮**。这是 M5「把答案抄进被测系统」
+    /// 那个错误的同形缩小版，独立验收 2026-08-17 指出。
+    ///
+    /// 现在的判据：**半角 `,;:?!` 的左右紧邻（跳过空格）都是汉字；
+    /// 位于文本末尾时只要求左邻是汉字。**
+    ///
+    /// 末尾那一档不能省——它恰是最常见的真实形态。用户 2026-08-17 的日志
+    /// 里就是「…把 M8 的分场景优化改成**?**」：句号是全角、句末问号是半角。
+    /// 要求右邻存在的话，这一类一个都数不到。开头那一档不补：文本以半角
+    /// 逗号起头本来就少见，且没有左邻就没有「中文语境」可言。
+    ///
+    /// 它比转换器窄——转换器是「任一侧是中文语境」（还包括 CJK 标点、
+    /// 全角形式），这里要求「两侧都是汉字」。窄的好处是**凡它报出来的都
+    /// 无疑是错的**：两个汉字中间夹半角逗号，没有任何正当解释。千分位、
+    /// `foo(a, b)`、`3:30`、URL 全部自动排除，不需要特例。
+    ///
+    /// 于是读 0 是有意义的（没有无争议的漏网），读非 0 就是转换器真漏了。
+    /// 判据是独立写的，转换器那边的规则被改窄、改坏、或被括号那套三条件
+    /// 逻辑连累时，这里能独立发现。
+    ///
+    /// **它只能发现漏转，发现不了误伤。** 误伤（该留半角的被转成全角）
+    /// 需要另一把尺子，目前没有——已知的两条误伤
+    /// （`int x = 1; 然后编译`、`fix: 中文`）靠钉死的测试守着。
     static func halfWidthPunctuationInChinese(_ text: String) -> Int {
-        ChineseScript.fullWidthConversions(in: Array(text)).count
+        let chars = Array(text)
+        let targets: Set<Character> = [",", ";", ":", "?", "!"]
+
+        func isHan(_ c: Character) -> Bool {
+            guard let scalar = c.unicodeScalars.first, c.unicodeScalars.count == 1 else {
+                return false
+            }
+            // CJK 统一表意文字基本区。扩展区在听写场景里见不到，
+            // 漏掉它们只会让这个指标更保守，不会误报。
+            return (0x4E00...0x9FFF).contains(scalar.value)
+        }
+
+        /// 跳过空白找相邻的实字符。
+        func neighbor(from index: Int, step: Int) -> Character? {
+            var i = index + step
+            while chars.indices.contains(i) {
+                if !chars[i].isWhitespace { return chars[i] }
+                i += step
+            }
+            return nil
+        }
+
+        return chars.indices.filter { i in
+            guard targets.contains(chars[i]) else { return false }
+            guard let left = neighbor(from: i, step: -1), isHan(left) else { return false }
+            // 右邻不存在＝位于文本末尾，只看左邻。见上面注释里那条真机例子。
+            guard let right = neighbor(from: i, step: 1) else { return true }
+            return isHan(right)
+        }.count
     }
 
     /// 从标准文本里抽出技术词：连续的拉丁字母序列（可含空格连接的多词）。

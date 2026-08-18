@@ -271,36 +271,51 @@ struct PunctuationWidthTests {
         #expect(BenchMetrics.halfWidthPunctuationInChinese("版本是 3.14 那个") == 0)
     }
 
-    @Test("括号在度量里用的是同一条成对规则")
-    func bracketsUseTheSameRuleInMetrics() {
-        #expect(BenchMetrics.halfWidthPunctuationInChinese("他说(其实我不同意)然后走了") == 2)
-        // 代码括号不算退化，否则这个指标在任何含代码的输出上都恒不为零，
-        // 也就没人会再看它。
-        #expect(BenchMetrics.halfWidthPunctuationInChinese("函数 foo(x) 的返回值") == 0)
-        #expect(BenchMetrics.halfWidthPunctuationInChinese("写成 foo(a, b) 就行") == 0)
+    /// **下面四条替换了原来钉住「转换器与度量是同一把尺子」的那批测试。**
+    ///
+    /// 那个契约本身是错的：度量跑在转换之后，共用同一个函数就意味着凡是
+    /// 该函数认得出的半角标点都已经被它转掉了，**指标必然读 0**。基准集
+    /// 26 条全是「半角=0」，那不是测量结果，是恒等式。独立验收 2026-08-17
+    /// 指出这是 M5「把答案抄进被测系统」那个错误的同形缩小版。
+    ///
+    /// 新判据独立实现，且**严格更窄**：只认「半角 `,;:?!` 两侧紧邻都是
+    /// 汉字」。窄的代价是括号、句号、单侧中文都不再计入；换来的是**凡它
+    /// 报出来的都无疑是错的**，读 0 因此是有意义的。
+
+    @Test("度量不再共用转换器的判据——括号与句号都不计入")
+    func metricNoLongerSharesConverterRule() {
+        // 括号：转换器会转（成对 + 内部中文无拉丁 + 外部无粘连），
+        // 但度量不管——括号不在「两侧都是汉字夹一个半角标点」这个形状里。
+        #expect(BenchMetrics.halfWidthPunctuationInChinese("他说(其实我不同意)然后走了") == 0)
+        // 句号：转换器刻意不改（`我想想...` 会变成「。。。」），
+        // 度量也不再数它。想量句号得另立指标，混进来只会让这一格恒不为零。
+        #expect(BenchMetrics.halfWidthPunctuationInChinese("今天天气不错.") == 0)
     }
 
-    @Test("转换器与度量是同一把尺子：转完之后指标归零")
-    func converterAndMetricAgree() {
-        let raw = "他说(其实我不同意)然后走了,真的吗?太好了!注意:这里有坑;写成 foo(a, b) 就行"
-        #expect(BenchMetrics.halfWidthPunctuationInChinese(raw) == 7)
+    /// 这条是新判据存在的理由：**它必须能独立发现转换器漏转。**
+    ///
+    /// 旧判据做不到——转换器漏掉的东西，共用函数的度量同样看不见。
+    @Test("转换器漏转时度量能独立发现")
+    func metricCatchesConverterMisses() {
+        let raw = "你好,世界。对吗?注意:这里有坑;太好了!"
+        #expect(BenchMetrics.halfWidthPunctuationInChinese(raw) == 5)
+        // 转换器正常工作时清零——这不是恒等式，是两条独立规则的交集为空。
         #expect(BenchMetrics.halfWidthPunctuationInChinese(TranscriptCleaner.clean(raw)) == 0)
     }
 
-    @Test("度量比转换器多数一个句号——刻意的")
-    func metricStillCountsPeriod() {
-        // 「度量该看见全部，改不改是另一个决定」。句号本轮不改（见
-        // `leavesPeriodAlone`），但它在中文语境里写成半角仍然是退化，
-        // 指标必须看得见，否则下次想改时又没有数据。
-        let text = "今天天气不错."
-        #expect(BenchMetrics.halfWidthPunctuationInChinese(text) == 1)
-        #expect(BenchMetrics.halfWidthPunctuationInChinese(TranscriptCleaner.clean(text)) == 1)
+    /// 新判据比转换器窄，窄的部分要写明白，免得以后有人以为是漏了。
+    @Test("单侧中文不计入——那是转换器的地盘，不是度量的")
+    func metricStaysNarrowerThanConverter() {
+        // 转换器会把这个逗号转成全角（它的规则是「任一侧是中文语境」），
+        // 度量不报——两侧不都是汉字，就有正当解释的余地。
+        #expect(BenchMetrics.halfWidthPunctuationInChinese("部署到 AWS,先跑 npm install") == 0)
+        #expect(TranscriptCleaner.clean("部署到 AWS,先跑 npm install") == "部署到 AWS，先跑 npm install")
     }
 
     @Test("这个指标正是基准集从第一天起就屏蔽掉的那个不匹配")
     func exposesTheBlindSpot() {
         let reference = "今天下午三点开会，讨论一下发版计划。"
-        let hypothesis = "今天下午三点开会,讨论一下发版计划."
+        let hypothesis = "今天下午三点开会,讨论一下发版计划。"
 
         // CER 刻意排除标点，两者一模一样——这就是它藏了这么久的原因。
         #expect(BenchMetrics.characterErrorRate(reference: reference, hypothesis: hypothesis) == 0)
@@ -308,6 +323,6 @@ struct PunctuationWidthTests {
         #expect(BenchMetrics.punctuationCount(reference) == BenchMetrics.punctuationCount(hypothesis))
         // 只有新指标看得见。
         #expect(BenchMetrics.halfWidthPunctuationInChinese(reference) == 0)
-        #expect(BenchMetrics.halfWidthPunctuationInChinese(hypothesis) == 2)
+        #expect(BenchMetrics.halfWidthPunctuationInChinese(hypothesis) == 1)
     }
 }
