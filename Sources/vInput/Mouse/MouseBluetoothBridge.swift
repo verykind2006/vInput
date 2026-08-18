@@ -237,6 +237,16 @@ final class MouseBluetoothBridge: NSObject {
             case .closedSilentForeign(let code):
                 log(String(format: "按键 0x%02X 没有送音频，会话已静默收掉", code))
 
+            case .ignoredStop(let code, let expected):
+                // **这一行是为了让日志不说谎。** 上面每个控制码都打了一行，
+                // 若这里悄无声息，读日志的人会以为会话被它结束了。
+                // 它同时是发现新按键的线索：出现一次就说明鼠标上有个键
+                // 我们还不认识——把它的码原样报出来，下一轮就能定它的归属。
+                log(String(
+                    format: "结束码 0x%02X 与本次会话不配对（本次该收 0x%02X），已忽略",
+                    code, expected
+                ))
+
             case .pressEnter:
                 log("回车键按下，注入 Return")
                 keyPoster.postReturn()
@@ -364,7 +374,10 @@ final class MouseBluetoothBridge: NSObject {
         case .voiceStart: return "语音会话开始"
         case .unpairedStart: return "长按持续开麦，无结束码"
         case .otherStart(let value): return String(format: "其他按键开始 0x%02X", value)
-        case .stop(let value): return String(format: "结束 0x%02X", value)
+        // **不写「结束」两个字**：它只结束与它配对的那个会话，
+        // 别的会话进行中时它什么也不做（见 MouseVoiceSession.handleControl）。
+        // 写成「结束」会让日志在最需要看清的那一刻说谎。
+        case .stop(let value): return String(format: "结束码 0x%02X", value)
         }
     }
 

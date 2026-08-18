@@ -149,7 +149,12 @@ enum MouseControlSemantics: Equatable {
     case enterKey
     /// 其他奇数开始码（实测 `0x23`，鼠标上别的 AI 功能键）。
     case otherStart(UInt8)
-    /// 任意偶数码 = 结束。
+    /// 任意偶数码 = 结束**它自己那个会话**。
+    ///
+    /// **不是「结束任何进行中的会话」。** 一次会话只认
+    /// `MouseVoiceProtocol.pairedStop(forStart:)` 算出来的那一个码，
+    /// 判在 `MouseVoiceSession.handleControl` 里（这一层没有会话状态）。
+    /// 理由见那边：默认结束一切已经误伤过 `0x28` 与 `0x24` 两次。
     case stop(UInt8)
 }
 
@@ -272,6 +277,18 @@ enum MouseVoiceProtocol {
     static let frameInfix: [UInt8] = [0x0A, 0x06, 0x07, 0x09]
     static let frameSuffix: UInt8 = 0x44
 
+    /// 一个开始码配对的结束码。
+    ///
+    /// **规律是「开始码 + 1」，三对逐一实测**（2026-08-18 真机、逐动作）：
+    /// `0x21`/`0x22` 语音键、`0x23`/`0x24` 第三个键长按、
+    /// `0x27`/`0x28` 回车键。
+    ///
+    /// 拿它做什么见 `MouseVoiceSession.handleControl`：一次会话只认自己的
+    /// 配对码，别的偶数码一律不动状态。**这条规律本身也可能不成立**
+    /// （换固件），但代价是有界的——会话挂在那里由时长上限收掉，
+    /// 而「结束码永远不来」本来就是这台设备上必须处理的一档（`0x31`）。
+    static func pairedStop(forStart start: UInt8) -> UInt8 { start &+ 1 }
+
     /// 映射成回车的那个按键码。抽成常量而不是散在 switch 里，
     /// 是为了让「哪个键接了什么」一眼可查。
     static let enterKeyCode: UInt8 = 0x27
@@ -346,6 +363,13 @@ enum MouseVoiceProtocol {
         // 不送音频），长按发 `0x23` → `0x24`。用户要求它完全没有功能。
         case 0x41, 0x43, 0x23, 0x24: return .ignored
         default:
+            // **偶数即结束，但只结束与它配对的那个会话。**
+            //
+            // 奇数那一半有抓包证据（`0x51`/`0x21` 之间一个音频包都没有）；
+            // 偶数这一半原来是当断言写的「偶数即结束任何进行中的会话」，
+            // 没有论证过，而且已经误伤两次：`0x28`（回车松开）截断听写、
+            // `0x24`（第三个键松开）也是手工补的忽略名单。配对判据放在
+            // 状态机里，那里才知道当前会话是谁开的。
             return code % 2 == 1 ? .otherStart(code) : .stop(code)
         }
     }

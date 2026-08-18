@@ -155,6 +155,83 @@ struct MouseVoiceSessionTests {
         #expect(!session.isDictating)
     }
 
+    // MARK: - 只认自己那个配对码
+
+    /// **未知偶数码默认结束会话，这个默认值从来没被论证过。**
+    ///
+    /// 奇数那一半有抓包证据（`0x51` 与 `0x21` 之间一个音频包都没有，
+    /// 见 `MouseDecode/capture.log`）；偶数那一半是当断言写下来的：
+    /// 「偶数即结束」。它已经出过两次事——`0x28`（回车松开）截断听写，
+    /// `0x24`（第三个键松开）也是手工打的补丁。**每发现一个新按键，
+    /// 就要回来手工加一次忽略名单**，而在没加之前它会打断用户正在说的话。
+    /// 独立验收 2026-08-18 指出（P9）。
+    ///
+    /// 改成只认配对码之后，这一类新按键**默认无害**。
+    /// 配对规律有实测支撑：`0x21`/`0x22`、`0x23`/`0x24`、`0x27`/`0x28`
+    /// 三对逐一实测，全是「开始码 + 1」。
+    @Test("陌生的偶数码不结束听写")
+    func unpairedEvenCodeDoesNotEndDictation() {
+        let session = MouseVoiceSession()
+        _ = session.handleControl(code: 0x21, at: t0)
+
+        for stranger: UInt8 in [0x02, 0x2A, 0x44, 0x60] {
+            #expect(
+                session.handleControl(code: stranger, at: at(1))
+                    == [.ignoredStop(code: stranger, expected: 0x22)],
+                "0x\(String(stranger, radix: 16)) 不该结束一次 0x21 开的听写"
+            )
+            #expect(session.isDictating)
+        }
+
+        #expect(session.handleControl(code: 0x22, at: at(2)) == [.endDictation(.controlFrame(0x22))])
+    }
+
+    /// 非听写会话同理：`0x31` 开的会话不该被别的键的松开码收掉。
+    /// 收掉的后果比听写那边更隐蔽——`0x31` 是持续送流的那一档，
+    /// 会话被清掉就没人给它计时了。
+    @Test("陌生的偶数码不结束 0x31 那档会话")
+    func unpairedEvenCodeDoesNotEndForeignSession() {
+        let session = MouseVoiceSession()
+        _ = session.handleControl(code: 0x31, at: t0)
+        session.noteAudioPacket(at: t0)
+
+        #expect(
+            session.handleControl(code: 0x22, at: at(1))
+                == [.ignoredStop(code: 0x22, expected: 0x32)]
+        )
+        // 会话还在，计时也还在——上限照样撞得到。
+        #expect(
+            session.tick(at: at(MouseSessionLimits.unpaired))
+                == [.stopReceiving(cooldown: MouseSessionLimits.initialCooldown)]
+        )
+    }
+
+    /// 配对规律若哪天不成立（换固件），代价必须是有界的：会话挂在那里，
+    /// 由时长上限收掉。**这正是上限存在的理由**——`0x31` 本来就没有
+    /// 结束码，「结束码永远不来」是这台设备上早就要处理的一档。
+    ///
+    /// 而且鼠标只在按住时送流（硬件行为，见 Roadmap 的 toggle 一节），
+    /// 所以「漏认结束码」不会多录到一秒音频，只会晚一点出文本。
+    @Test("结束码若永远不来，上限照样收尾并出文本")
+    func missingPairedStopStillEndsAtLimit() {
+        let session = MouseVoiceSession()
+        _ = session.handleControl(code: 0x21, at: t0)
+        _ = session.handleControl(code: 0x2A, at: at(1))
+
+        let actions = session.tick(at: at(MouseSessionLimits.dictation))
+        #expect(actions.first == .endDictation(.durationLimit(MouseSessionLimits.dictation)))
+        #expect(!session.isDictating)
+    }
+
+    /// 空闲时来的结束码不该产生「已忽略」那行日志——没有会话可比对，
+    /// 报出来只是噪音。
+    @Test("空闲时的结束码静默丢弃")
+    func stopWhileIdleIsSilent() {
+        let session = MouseVoiceSession()
+        #expect(session.handleControl(code: 0x22, at: t0).isEmpty)
+        #expect(session.handleControl(code: 0x2A, at: at(1)).isEmpty)
+    }
+
     // MARK: - 第三个键：刻意无功能
 
     /// **不开会话是关键，不只是「不听写」。**

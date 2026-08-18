@@ -78,6 +78,13 @@ enum MouseSessionAction: Equatable {
     /// 一个非听写会话在宽限期内一个音频包都没收到，已静默收掉。
     /// **不退订、不冷却**——它是一次按键，不是送流。
     case closedSilentForeign(code: UInt8)
+    /// 收到一个偶数码，但它不是本次会话的配对码，已忽略。
+    ///
+    /// **有这个动作是为了让日志不说谎。** 桥对每个控制码都打一行
+    /// 「控制码 0x2A（结束码…）」，若这里悄无声息，读日志的人会以为
+    /// 会话被它结束了。同时它也是发现新按键的线索：出现一次，
+    /// 就说明鼠标上有个键我们还不认识。
+    case ignoredStop(code: UInt8, expected: UInt8)
 }
 
 /// 会话时长上限与冷却时间。集中在一处，理由见文件头。
@@ -97,8 +104,9 @@ enum MouseSessionLimits {
 final class MouseVoiceSession {
     enum Phase: Equatable {
         case idle
-        /// 听写进行中。
-        case dictating(startedAt: Date)
+        /// 听写进行中。`startCode` 是开这次会话的那个码（实测只可能是
+        /// `0x21`），用来判结束码配不配对——见 `currentStartCode`。
+        case dictating(startCode: UInt8, startedAt: Date)
         /// 非听写的开麦会话（`0x31` / `0x23` / `0x27` / 未知奇数码）。
         ///
         /// **这类会话不启动听写。** 理由：`0x23`/`0x27` 是鼠标上别的 AI
@@ -130,7 +138,7 @@ final class MouseVoiceSession {
             return []
 
         case .voiceStart:
-            return begin(.dictating(startedAt: now), code: code, at: now)
+            return begin(.dictating(startCode: code, startedAt: now), code: code, at: now)
 
         case .unpairedStart:
             return begin(.foreign(code: code, startedAt: now), code: code, at: now)
@@ -149,21 +157,50 @@ final class MouseVoiceSession {
             return begin(.foreign(code: value, startedAt: now), code: code, at: now)
 
         case .stop(let value):
-            switch phase {
-            case .dictating:
-                phase = .idle
-                consecutiveLimitHits = 0
-                return [.endDictation(.controlFrame(value))]
-            case .foreign:
-                phase = .idle
-                consecutiveLimitHits = 0
-                return []
-            case .idle, .muted:
-                // 静默期或空闲期的结束码：没有会话可结束。
-                // 静默期**不退出静默**——退订是我们主动做的，
-                // 该由冷却计时决定何时恢复，不该由设备的一个字节决定。
+            // **只认本次会话的配对码。**
+            //
+            // 原来这里是「任意偶数码结束任何进行中的会话」，从没论证过，
+            // 而且已经误伤两次：`0x28`（回车松开）会把正在进行的听写截断，
+            // `0x24`（第三个键松开）同样，两次都是**事后手工加忽略名单**
+            // 才堵上的。那条路上每发现一个新按键就要回来补一次，
+            // 而在补上之前，误碰它就会打断用户正在说的话。
+            //
+            // 改成配对之后，陌生的偶数码**默认无害**。代价是「配对规律
+            // 若不成立，会话不会被结束码收掉」——这个代价有界且已有对策：
+            // 时长上限会收尾（听写那档还会照常出文本），而
+            // 「结束码永远不来」本来就是这台设备上必须处理的一档
+            // （`0x31` 根本没有结束码）。
+            //
+            // 更关键的一条：**鼠标只在按住时送流**（硬件行为，见 Roadmap
+            // 的 toggle 一节）。所以漏认一个结束码不会多录到一秒音频，
+            // 只会晚一点出文本——不在「一切不出本机」那条线的错误方向上。
+            guard let startCode = currentStartCode else {
+                // 空闲或静默期：没有会话可结束，也没什么可报的。
+                // 静默期**不退出静默**——退订是我们主动做的，该由冷却计时
+                // 决定何时恢复，不该由设备的一个字节决定。
                 return []
             }
+            let expected = MouseVoiceProtocol.pairedStop(forStart: startCode)
+            guard value == expected else {
+                return [.ignoredStop(code: value, expected: expected)]
+            }
+            let wasDictating = isDictating
+            phase = .idle
+            consecutiveLimitHits = 0
+            return wasDictating ? [.endDictation(.controlFrame(value))] : []
+        }
+    }
+
+    /// 开出当前这次会话的那个码。没有会话时是 nil。
+    ///
+    /// 放在 phase 里而不是单独一个变量：单独一个变量要在每一处
+    /// `phase = .idle` 旁边记得清掉，迟早漏一处，而漏掉的表现是
+    /// 「上一次会话的配对码还认得」这种极难复现的错。
+    private var currentStartCode: UInt8? {
+        switch phase {
+        case .dictating(let code, _): return code
+        case .foreign(let code, _): return code
+        case .idle, .muted: return nil
         }
     }
 
@@ -192,7 +229,7 @@ final class MouseVoiceSession {
             let cooldown = enterMuted(at: now)
             return [.stopReceiving(cooldown: cooldown)]
 
-        case .dictating(let startedAt):
+        case .dictating(_, let startedAt):
             let elapsed = now.timeIntervalSince(startedAt)
             guard elapsed >= MouseSessionLimits.dictation else { return [] }
             let cooldown = enterMuted(at: now)

@@ -194,6 +194,28 @@ struct MouseEnterReleaseTests {
     }
 }
 
+/// 开始码与结束码的配对规律。
+///
+/// 三对逐一实测（2026-08-18 真机、逐动作）：`0x21`/`0x22` 语音键、
+/// `0x23`/`0x24` 第三个键长按、`0x27`/`0x28` 回车键。**全是「开始码 + 1」。**
+@Suite("开始码与结束码的配对")
+struct MousePairedStopTests {
+    @Test("实测到的三对都满足「开始码 + 1」")
+    func measuredPairs() {
+        #expect(MouseVoiceProtocol.pairedStop(forStart: 0x21) == 0x22)
+        #expect(MouseVoiceProtocol.pairedStop(forStart: 0x23) == 0x24)
+        #expect(MouseVoiceProtocol.pairedStop(forStart: 0x27) == 0x28)
+    }
+
+    /// `0x31` 至今没观测到结束码。规律推出来的 `0x32` 只是「如果它有，
+    /// 那应该是这个」——**它不改变任何行为**，0x31 的保护靠时长上限，
+    /// 与结束码无关。
+    @Test("0x31 按规律推出 0x32")
+    func unpairedStartFollowsSameRule() {
+        #expect(MouseVoiceProtocol.pairedStop(forStart: 0x31) == 0x32)
+    }
+}
+
 @Suite("控制帧的电量字节")
 struct MouseControlFrameBatteryTests {
     private func frame(battery: UInt8, code: UInt8) -> Data {
