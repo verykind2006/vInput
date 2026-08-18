@@ -121,6 +121,21 @@ def seconds(stamp):
 #   0x27 → [音频] → 0x28           第三个键
 # 0x31 也出现过（长按开麦），同样是奇数开始码。
 STARTS = {0x21, 0x23, 0x27, 0x31}
+
+# **超过这个时长的会话一律跳过，不写码流也不写 WAV。**
+#
+# 2026-08-18 真机上出过一次：0x31（长按开麦）没有配对的结束码，鼠标持续
+# 送流 11 分钟，把用户不知情的房间环境音录进了抓包日志，随后被这个脚本
+# 解成 15 MB 的 WAV 还转写了一遍。用户是靠菜单栏的麦克风图标才发现的。
+#
+# 有意按键说话不会超过一分钟——遥控器那边固件 60 秒就切断（见
+# Testing/M3-Acceptance.md）。所以「很长」等价于「不是有意录的」，
+# 默认跳过比默认解码安全得多：漏解一段有意的录音只是重跑一次，
+# 而误解一段环境音是把它落盘、转写、可能还进了版本库。
+#
+# 真要处理长会话，显式设 MOUSE_DECODE_MAX_SECONDS 覆盖它。
+MAX_SESSION_SECONDS = float(os.environ.get("MOUSE_DECODE_MAX_SECONDS", "90"))
+
 control = [i for i, (_, p) in enumerate(rows) if len(p) == 17]
 
 spans = []
@@ -138,8 +153,13 @@ for index, position in enumerate(control):
     spans.append((code, seconds(end_stamp) - seconds(rows[position][0]), packets))
 
 candidates = []
+skipped = []
 for number, (code, duration, packets) in enumerate(spans, start=1):
     name = f"s{number:02d}-code{code:02x}"
+    if duration > MAX_SESSION_SECONDS:
+        # 只报时长，不报内容——这段大概率是没人想录的东西。
+        skipped.append(f"{name} 时长={duration:.1f}s")
+        continue
     stream = b"".join(packets)
     # 每包 4 个 32 字节 SBC 帧，直接首尾相接就是合法的裸 SBC 码流。
     with open(os.path.join(out, "sbc", name + ".sbc"), "wb") as handle:
@@ -154,6 +174,13 @@ for number, (code, duration, packets) in enumerate(spans, start=1):
         "durationSeconds": round(duration, 3),
     })
     print(f"会话 {name}: 包={len(packets)} 帧={frames} 时长={duration:.3f}s")
+
+if skipped:
+    print(f"\n已跳过 {len(skipped)} 段超长会话（超过 {MAX_SESSION_SECONDS:.0f} 秒，"
+          f"多半是误触长按录到的环境音，不解码不落盘）：")
+    for item in skipped:
+        print(f"  {item}")
+    print("  确需处理请显式设 MOUSE_DECODE_MAX_SECONDS\n")
 
 if not candidates:
     sys.exit("抓包里没有任何完整会话——确认这份日志录到了按键说话的那一段")
