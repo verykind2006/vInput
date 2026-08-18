@@ -106,7 +106,23 @@ struct TranslationPipeline: Sendable {
 
     /// 后台预热。**只在挂载时调用，不要放在注入路径上**——
     /// 加载一次本地模型要几十秒。
-    func prepareTranslator() async throws { try await translator.prepare() }
+    func prepareTranslator() async throws {
+        // 耗时的理由与 `CorrectionPipeline.warmUp` 那条一字不差：翻译层与
+        // 校正层共用同一个 `ModelContainer`，而「共用命中」与「又加载了一遍」
+        // 在日志里长得一模一样，只有耗时分得开——实测冷加载 14.1 秒、
+        // 有页缓存 3.7–8.0 秒（M8 第 0 步），命中时应当接近 0。
+        //
+        // 失败也要记：只在成功那条记的话，两次都失败时看不出第二次有没有
+        // 真的重试过。**本函数照旧抛错**，调用方的降级路径不变。
+        let started = ContinuousClock.now
+        do {
+            try await translator.prepare()
+            AppLogger.shared.log("翻译模型预热完成 耗时 \(ContinuousClock.now - started)")
+        } catch {
+            AppLogger.shared.log("翻译模型预热失败 耗时 \(ContinuousClock.now - started)：\(error)")
+            throw error
+        }
+    }
 
     /// 返回译文（或退回的中文原文）与给 HUD 的标注。**本函数不抛错。**
     func translate(_ text: String, to target: TranslationTarget) async -> TranslationResult {

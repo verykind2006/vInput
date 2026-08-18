@@ -13,6 +13,10 @@ actor MLXTranslator: Translator {
     /// （超时一到就前功尽弃，模型永远等不到就绪），且两次并发调用会各自
     /// 启动一次加载（判重的 await 之间有空隙）。两条都由 `OneShotLoader`
     /// 解决，它的注释里记着 M4 那次「校正永不生效」的实测。
+    ///
+    /// **加载器不再由本类型独占，而是向 `ModelContainerRegistry` 领。**
+    /// 翻译的默认后端就是校正层在用的那个模型（M8 第 0 步实测定的
+    /// `qwen3-4b-instruct-2507-4bit`），各自加载会常驻两份 2 GB 权重。
     private let loader: OneShotLoader<ModelContainer>
 
     /// 提示词变体。生产路径不传，永远是 `.englishLanguageName`；
@@ -55,16 +59,16 @@ actor MLXTranslator: Translator {
     init(
         modelDirectory: URL,
         promptVariant: TranslationPrompt.Variant = .englishLanguageName,
-        maxTokens: Int = MLXTranslator.defaultMaxTokens
+        maxTokens: Int = MLXTranslator.defaultMaxTokens,
+        registry: ModelContainerRegistry<ModelContainer> = SharedModelContainers.registry
     ) {
         self.promptVariant = promptVariant
         self.maxTokens = maxTokens
-        loader = OneShotLoader {
-            do {
-                return try await loadModelContainer(directory: modelDirectory)
-            } catch {
-                throw TranslatorError.engineFailed(error.localizedDescription)
-            }
+        // **错误包装留在 `prepare()`，不写进这个闭包。** 闭包只在「本层
+        // 第一个到」时才会被用到，包在里面的话，校正层先启动时翻译层会拿到
+        // `CorrectorError`，反之亦然——错误类型取决于谁先开机。
+        loader = registry.loader(for: .local(modelDirectory)) {
+            try await loadModelContainer(directory: modelDirectory)
         }
     }
 
@@ -72,8 +76,15 @@ actor MLXTranslator: Translator {
         get async { await loader.ready != nil }
     }
 
+    /// 本实例拿到的加载器身份。理由见 `MLXCorrector.loaderIdentity`。
+    var loaderIdentity: ObjectIdentifier { ObjectIdentifier(loader) }
+
     func prepare() async throws {
-        _ = try await loader.value()
+        do {
+            _ = try await loader.value()
+        } catch {
+            throw TranslatorError.engineFailed(error.localizedDescription)
+        }
     }
 
     func translate(_ text: String, to target: TranslationTarget) async throws -> String {

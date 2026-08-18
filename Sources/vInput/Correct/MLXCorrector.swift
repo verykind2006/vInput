@@ -16,20 +16,28 @@ actor MLXCorrector: Corrector {
     /// 模型目录为 nil 时按 Hugging Face 标识符下载。优先支持本地目录，
     /// 与 Whisper 同一考量：内置下载器在本机网络下会整体超时放弃，
     /// 模型一律预先拉好再指过来。
+    ///
+    /// **加载器不再由本类型独占，而是向 `ModelContainerRegistry` 领。**
+    /// 翻译层默认指向同一个模型（M8 第 0 步定的
+    /// `qwen3-4b-instruct-2507-4bit`），各自加载会常驻两份 2 GB 权重。
     private let loader: OneShotLoader<ModelContainer>
 
     init(
         modelDirectory: URL? = nil,
-        modelID: String = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
+        modelID: String = "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+        registry: ModelContainerRegistry<ModelContainer> = SharedModelContainers.registry
     ) {
-        loader = OneShotLoader {
-            do {
-                if let modelDirectory {
-                    return try await loadModelContainer(directory: modelDirectory)
-                }
-                return try await loadModelContainer(id: modelID)
-            } catch {
-                throw CorrectorError.engineFailed(error.localizedDescription)
+        // **错误包装留在 `prepare()`，不写进这个闭包。** 闭包只在「本层
+        // 第一个到」时才会被用到，包在里面的话，翻译层先启动时校正层会拿到
+        // `TranslatorError`，反之亦然——错误类型取决于谁先开机，而这件事
+        // 在日志里长得和真故障一模一样。
+        if let modelDirectory {
+            loader = registry.loader(for: .local(modelDirectory)) {
+                try await loadModelContainer(directory: modelDirectory)
+            }
+        } else {
+            loader = registry.loader(for: .identifier(modelID)) {
+                try await loadModelContainer(id: modelID)
             }
         }
     }
@@ -38,8 +46,21 @@ actor MLXCorrector: Corrector {
         get async { await loader.ready != nil }
     }
 
+    /// 本实例拿到的加载器身份。
+    ///
+    /// **共用生效没有别的办法可测。** 真的 `loadModelContainer` 要读 2 GB
+    /// 权重、还必须走 xcodebuild 才有 Metal 着色器，单元测试里跑不了；
+    /// 注入假闭包只能证明登记处本身对，证明不了本类型真的去登记处领了。
+    /// 比对两层拿到的是不是同一个对象，是在不加载任何模型的前提下唯一
+    /// 剩下的观测点。
+    var loaderIdentity: ObjectIdentifier { ObjectIdentifier(loader) }
+
     func prepare() async throws {
-        _ = try await loader.value()
+        do {
+            _ = try await loader.value()
+        } catch {
+            throw CorrectorError.engineFailed(error.localizedDescription)
+        }
     }
 
     func edits(for text: String) async throws -> [CorrectionEdit] {

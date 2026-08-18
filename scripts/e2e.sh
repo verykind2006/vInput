@@ -34,3 +34,13 @@ xcodebuild test \
     -derivedDataPath "${DERIVED_DATA:-$ROOT/.xcbuild}" \
     -only-testing:vInputTests/CorrectionE2ETests \
     "$@"
+
+# 共用体检单独起一个进程跑，**不能和上面并在一次 xcodebuild 里**。
+# 它量的是「第二层加载时进程物理内存涨了多少」，而 Swift Testing 默认跨
+# suite 并行——校正那套同时在加载它自己的 2 GB，量出来的增量就成了别人的。
+xcodebuild test \
+    -scheme vInput \
+    -destination "platform=OS X" \
+    -derivedDataPath "${DERIVED_DATA:-$ROOT/.xcbuild}" \
+    -only-testing:vInputTests/SharedModelContainerE2ETests \
+    "$@"
