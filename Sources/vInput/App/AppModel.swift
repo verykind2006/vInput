@@ -389,6 +389,12 @@ final class AppModel {
             }
             self.hudModel.phase = state
             self.cancelHotkey.update(for: state)
+            // 按键抑制跟着会话状态自己收。**离开 .listening 的出口不止一个**
+            // （松开语音键、撞时长上限、转写失败、按 Esc 取消），逐个出口去调
+            // endSuppressing() 迟早会漏一个——Esc 那条就漏了，见下面
+            // cancelHotkey.onCancel 的注释。理由与语义见
+            // RemoteKeySuppressor.update(for:)：只收不开。
+            self.keySuppressor.update(for: state)
             // 每次状态变化都同步，而不是只在回到 idle 时同步：新会话一
             // 开始 `retainedSamples` 就被清掉，菜单项必须立刻跟着灰掉，
             // 否则录音途中点它是「点得动但什么都不发生」。
@@ -450,6 +456,19 @@ final class AppModel {
         cancelHotkey.onCancel = { [weak self] in
             guard let self, let session = self.session else { return }
             AppLogger.shared.log("用户按 Esc 取消会话")
+            // **取消也要立刻把按键抑制收掉。**
+            //
+            // 原来这里只有 cancel()。鼠标那档策略是 `.allExcept([Esc])`，
+            // 于是按 Esc 取消之后**整个键盘只剩 Esc 能用**，直到用户松开
+            // 鼠标语音键（`0x22` 走 onFinishSession 才自愈）。RC003 那档是
+            // `.only([F5])`，同样的不对称从来看不出来——第三个源把旧的缺口
+            // 暴露了出来。独立验收 2026-08-18 指出。
+            //
+            // 上面 onStateChange 里的 update(for:) 已经是一道网，这一行**不是
+            // 冗余**：cancel() 是 async 的，状态回到 .idle 要等 Task 被调度，
+            // 那期间 tap 还在吃键；而 cancel() 对非 .listening 的会话直接返回，
+            // 那种情况下状态变化永远不会来。用户按了取消，键盘就该当场还给他。
+            self.keySuppressor.endSuppressing()
             Task { await session.cancel() }
         }
         AppLogger.shared.log("启动完成，模型=\(initial.name) 可用模型=\(availableModels.map(\.name))")

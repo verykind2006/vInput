@@ -139,6 +139,29 @@ final class RemoteKeySuppressor {
         isActive = false
     }
 
+    /// 跟着听写会话的状态自己收。**只收不开。**
+    ///
+    /// **这道是一个真 bug 逼出来的。** `AppModel` 的 `cancelHotkey.onCancel`
+    /// 原来只调 `session.cancel()`：鼠标那档策略是 `.allExcept([Esc])`，
+    /// 于是按 Esc 取消之后**整个键盘只剩 Esc 能用**，直到用户松开鼠标语音键
+    /// （`0x22` 走 `onFinishSession` 才自愈）。RC003 那档是 `.only([F5])`，
+    /// 这个不对称从来看不出来——第三个源把旧的缺口暴露了出来。
+    /// 独立验收 2026-08-18 指出。
+    ///
+    /// 只在 `onCancel` 里补一次调用不够：**离开 `.listening` 的出口不止一个**
+    /// （松开键、撞时长上限、转写失败、用户取消），每多一个出口就多一次忘记
+    /// 的机会，而忘记的后果是用户的键盘从此不响应。挂到状态上以后，
+    /// 「说完了就还给用户」这件事只有一个落点。形状照 `CancelHotkeyController`
+    /// 的 `update(for:)`，两者管的是同一段时间窗。
+    ///
+    /// **不在 `.listening` 时打开**：⌥D 那条路从不 `beginSuppressing`
+    /// （内置麦克风不产生杂键），而它同样会经过 `.listening`。
+    /// 在这里顺手打开等于让用户用 ⌥D 说话时键盘莫名失灵。
+    func update(for state: DictationSession.State) {
+        guard state != .listening else { return }
+        endSuppressing()
+    }
+
     /// 是否该吞掉这个键。抽成纯函数以便测试——`handle` 需要真实 CGEvent。
     ///
     /// 只在会话进行中吞键：平时用户按 F5 是他自己的意思，不该被我们截走。

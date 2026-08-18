@@ -84,4 +84,49 @@ struct RemoteKeySuppressorTests {
         #expect(!suppressor.shouldSuppress(keyCode: Int64(kVK_ANSI_A)))
         #expect(suppressor.shouldSuppress(keyCode: Int64(kVK_F5)))
     }
+
+    // MARK: - 跟着会话状态自己收（Esc 取消那条缺口）
+
+    /// **这一条来自一个真 bug。** `AppModel` 的 `cancelHotkey.onCancel`
+    /// 原来只调 `session.cancel()`，不收抑制：鼠标那档是
+    /// `.allExcept([Esc])`，于是按 Esc 取消之后**整个键盘只剩 Esc 能用**，
+    /// 直到用户松开鼠标语音键（`0x22` 走 `onFinishSession` 才自愈）。
+    /// RC003 那档是 `.only([F5])`，同样的不对称从来看不出来——
+    /// 第三个源把旧的缺口暴露了出来。独立验收 2026-08-18 指出。
+    ///
+    /// 修法不是「在 onCancel 里补一次调用」就完了：**出口不止一个**
+    /// （松开键、撞时长上限、转写失败、取消），每多一个出口就多一次
+    /// 忘记的机会。所以把它挂到会话状态上——状态一离开 `.listening`
+    /// 就收，与 `CancelHotkeyController.update(for:)` 同一个形状。
+    @Test("会话离开 listening 就收掉抑制")
+    func endsSuppressionWhenSessionLeavesListening() {
+        for state in [DictationSession.State.idle, .transcribing, .correcting, .injecting] {
+            let suppressor = RemoteKeySuppressor()
+            suppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
+            suppressor.update(for: state)
+            #expect(
+                !suppressor.shouldSuppress(keyCode: Int64(kVK_ANSI_A)),
+                "离开 listening 进入 \(state) 之后键盘必须恢复"
+            )
+        }
+    }
+
+    @Test("listening 期间不收")
+    func keepsSuppressingWhileListening() {
+        let suppressor = RemoteKeySuppressor()
+        suppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
+        suppressor.update(for: .listening)
+        #expect(suppressor.shouldSuppress(keyCode: Int64(kVK_ANSI_A)))
+    }
+
+    /// `update(for:)` 不该反过来**开**抑制。⌥D 那条路从不调
+    /// `beginSuppressing`（内置麦克风不产生杂键），而它同样会经过
+    /// `.listening`——若在这里顺手打开，用户用 ⌥D 说话时键盘会莫名其妙
+    /// 失灵。只收不开。
+    @Test("update 只收不开")
+    func updateNeverStartsSuppression() {
+        let suppressor = RemoteKeySuppressor()
+        suppressor.update(for: .listening)
+        #expect(!suppressor.shouldSuppress(keyCode: Int64(kVK_F5)))
+    }
 }
