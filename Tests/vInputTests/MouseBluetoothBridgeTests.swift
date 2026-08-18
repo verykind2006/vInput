@@ -144,6 +144,12 @@ struct MouseBluetoothBridgeTests {
         let after = Date().addingTimeInterval(MouseSessionLimits.unpaired + 1)
 
         bridge.handleVoicePacket(controlFrame(code: 0x31))
+        // 真实的 0x31 是在送流的——先过一个音频包，否则会走「按键，静默
+        // 收掉」那条路（见 MouseVoiceSession.silentForeignGrace），
+        // 测的就不是这个事故了。这一包本身仍然不该到达 delegate。
+        bridge.handleVoicePacket(try audioPacket())
+        #expect(delegate.audioPackets.isEmpty, "非听写会话的音频不该往下送")
+
         let actions = bridge.session.tick(at: after)
         #expect(actions.count == 1)
         #expect(actions.first == .stopReceiving(cooldown: MouseSessionLimits.initialCooldown))

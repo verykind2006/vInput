@@ -73,6 +73,49 @@ struct MouseVoiceSessionTests {
         #expect(session.tick(at: at(MouseSessionLimits.unpaired)).count == 1)
     }
 
+    // MARK: - 只按了一下的按键，不该被当成送流
+
+    /// 2026-08-18 实测：鼠标上还有一个键发 `0x43`，**只发开始码、不送音频、
+    /// 也永远不发结束码**（3/3 次）。
+    ///
+    /// 按原来的处理它会挂起一个 30 秒会话，撞线后退订特征 + 冷却 10 秒
+    /// ——**按一下鼠标上某个键，鼠标停摆 10 秒，而用户完全不知道为什么**。
+    /// 那套保护是为 `0x31`（真的在持续送音频）设计的，用来对付一次按键
+    /// 属于误伤。区分的不是「多久」，是「到底有没有音频在流」。
+    @Test("只发开始码、不送音频的按键被静默收掉，不退订不冷却")
+    func silentForeignSessionClosesWithoutMuting() {
+        let session = MouseVoiceSession()
+        _ = session.handleControl(code: 0x43, at: t0)
+
+        // 宽限期内不动。
+        #expect(session.tick(at: at(MouseVoiceSession.silentForeignGrace - 1)).isEmpty)
+        // 宽限期到，静默收掉——**不是** stopReceiving。
+        #expect(
+            session.tick(at: at(MouseVoiceSession.silentForeignGrace))
+                == [.closedSilentForeign(code: 0x43)]
+        )
+        // 关键：没进静默期，下一次按语音键照常能开始。
+        #expect(
+            session.handleControl(code: 0x21, at: at(MouseVoiceSession.silentForeignGrace + 1))
+                == [.beginDictation]
+        )
+        #expect(session.isDictating)
+    }
+
+    /// 反面：来过音频就走原来那条路。两条一起看才说明「记账」真的起作用。
+    @Test("送过音频的非听写会话仍然走退订 + 冷却")
+    func streamingForeignSessionStillMutes() {
+        let session = MouseVoiceSession()
+        _ = session.handleControl(code: 0x43, at: t0)
+        session.noteAudioPacket()
+
+        #expect(session.tick(at: at(MouseVoiceSession.silentForeignGrace + 1)).isEmpty)
+        #expect(
+            session.tick(at: at(MouseSessionLimits.unpaired))
+                == [.stopReceiving(cooldown: MouseSessionLimits.initialCooldown)]
+        )
+    }
+
     // MARK: - 0x31 的保护（本里程碑最重要的一条）
 
     /// 2026-08-18 真机事故：0x31 之后鼠标持续送流 11 分钟。
@@ -81,6 +124,10 @@ struct MouseVoiceSessionTests {
     func unpairedSessionStopsAtLimit() {
         let session = MouseVoiceSession()
         _ = session.handleControl(code: 0x31, at: t0)
+        // 真实的 0x31 **是在送流的**——那正是它危险的原因。不喂音频包的话
+        // 会走「按键，静默收掉」那条路（见 silentForeignGrace），
+        // 测的就不是这个事故了。
+        session.noteAudioPacket()
 
         #expect(session.tick(at: at(MouseSessionLimits.unpaired - 1)).isEmpty)
         #expect(
@@ -94,6 +141,10 @@ struct MouseVoiceSessionTests {
     func elevenMinuteIncidentIsCapped() {
         let session = MouseVoiceSession()
         _ = session.handleControl(code: 0x31, at: t0)
+        // 真实的 0x31 **是在送流的**——那正是它危险的原因。不喂音频包的话
+        // 会走「按键，静默收掉」那条路（见 silentForeignGrace），
+        // 测的就不是这个事故了。
+        session.noteAudioPacket()
 
         var stoppedAt: TimeInterval?
         for second in stride(from: 1.0, through: 660, by: 1) {
@@ -138,6 +189,10 @@ struct MouseVoiceSessionTests {
     func mutedThenResumes() {
         let session = MouseVoiceSession()
         _ = session.handleControl(code: 0x31, at: t0)
+        // 真实的 0x31 **是在送流的**——那正是它危险的原因。不喂音频包的话
+        // 会走「按键，静默收掉」那条路（见 silentForeignGrace），
+        // 测的就不是这个事故了。
+        session.noteAudioPacket()
         _ = session.tick(at: at(MouseSessionLimits.unpaired))
 
         let stillMuted = MouseSessionLimits.unpaired + MouseSessionLimits.initialCooldown - 1
@@ -166,6 +221,10 @@ struct MouseVoiceSessionTests {
     func startIgnoredWhileMuted() {
         let session = MouseVoiceSession()
         _ = session.handleControl(code: 0x31, at: t0)
+        // 真实的 0x31 **是在送流的**——那正是它危险的原因。不喂音频包的话
+        // 会走「按键，静默收掉」那条路（见 silentForeignGrace），
+        // 测的就不是这个事故了。
+        session.noteAudioPacket()
         _ = session.tick(at: at(MouseSessionLimits.unpaired))
 
         #expect(session.handleControl(code: 0x21, at: at(MouseSessionLimits.unpaired + 1)).isEmpty)
@@ -178,6 +237,10 @@ struct MouseVoiceSessionTests {
     func stopDoesNotClearMute() {
         let session = MouseVoiceSession()
         _ = session.handleControl(code: 0x31, at: t0)
+        // 真实的 0x31 **是在送流的**——那正是它危险的原因。不喂音频包的话
+        // 会走「按键，静默收掉」那条路（见 silentForeignGrace），
+        // 测的就不是这个事故了。
+        session.noteAudioPacket()
         _ = session.tick(at: at(MouseSessionLimits.unpaired))
 
         #expect(session.handleControl(code: 0x22, at: at(MouseSessionLimits.unpaired + 1)).isEmpty)
@@ -201,6 +264,7 @@ struct MouseVoiceSessionTests {
         var now: TimeInterval = 0
 
         _ = session.handleControl(code: 0x31, at: at(now))
+        session.noteAudioPacket()
         now += MouseSessionLimits.unpaired
         #expect(session.tick(at: at(now)) == [.stopReceiving(cooldown: 10)])
 
@@ -208,6 +272,7 @@ struct MouseVoiceSessionTests {
         #expect(session.tick(at: at(now)) == [.resumeReceiving])
 
         _ = session.handleControl(code: 0x31, at: at(now))
+        session.noteAudioPacket()
         now += MouseSessionLimits.unpaired
         #expect(session.tick(at: at(now)) == [.stopReceiving(cooldown: 20)])
     }
@@ -216,6 +281,10 @@ struct MouseVoiceSessionTests {
     func normalSessionResetsBackoff() {
         let session = MouseVoiceSession()
         _ = session.handleControl(code: 0x31, at: t0)
+        // 真实的 0x31 **是在送流的**——那正是它危险的原因。不喂音频包的话
+        // 会走「按键，静默收掉」那条路（见 silentForeignGrace），
+        // 测的就不是这个事故了。
+        session.noteAudioPacket()
         _ = session.tick(at: at(MouseSessionLimits.unpaired))
         _ = session.tick(at: at(MouseSessionLimits.unpaired + 10))
         #expect(session.consecutiveLimitHits == 1)

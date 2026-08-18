@@ -220,6 +220,9 @@ final class MouseBluetoothBridge: NSObject {
     private func apply(_ actions: [MouseSessionAction]) {
         for action in actions {
             switch action {
+            case .closedSilentForeign(let code):
+                log(String(format: "按键 0x%02X 没有送音频，会话已静默收掉", code))
+
             case .pressEnter:
                 log("回车键按下，注入 Return")
                 keyPoster.postReturn()
@@ -374,8 +377,11 @@ final class MouseBluetoothBridge: NSObject {
             apply(session.handleControl(code: frame.code, at: Date()))
 
         case .audio:
+            // 记账必须在过滤之前：非听写会话的音频虽然被丢掉，
+            // 会话仍然要知道「其实有流」，否则分不清按键与送流。
+            session.noteAudioPacket()
             // 第一道过滤在这里：不是听写会话就一个字节都不往下送。
-            // 0x31 / 0x23 / 0x27 开的会话到不了音频源，也就到不了转写与注入。
+            // 0x31 / 0x23 开的会话到不了音频源，也就到不了转写与注入。
             guard session.acceptsAudio else { return }
             delegate?.mouseBridge(self, didReceiveAudio: data)
 

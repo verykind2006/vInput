@@ -75,6 +75,9 @@ enum MouseSessionAction: Equatable {
     case resumeReceiving
     /// 按一次回车。
     case pressEnter
+    /// 一个非听写会话在宽限期内一个音频包都没收到，已静默收掉。
+    /// **不退订、不冷却**——它是一次按键，不是送流。
+    case closedSilentForeign(code: UInt8)
 }
 
 /// 会话时长上限与冷却时间。集中在一处，理由见文件头。
@@ -160,6 +163,18 @@ final class MouseVoiceSession {
         }
     }
 
+    /// 非听写会话「没有音频」的宽限期。
+    ///
+    /// **区分的不是「多久」，是「到底有没有音频在流」。** 退订 + 冷却那套
+    /// 保护是为 `0x31`（真的在持续送音频）设计的；而 `0x43` 这类按键只发
+    /// 一个开始码、不送音频、也永远不发结束码（2026-08-18 实测 3/3 次）。
+    /// 拿同一套对付它，结果是按一下鼠标上某个键，30 秒后特征被退订、
+    /// 鼠标停摆 10 秒——**误伤，而且用户完全不知道为什么**。
+    ///
+    /// 所以：宽限期内一个音频包都没来，就静默收掉会话，不退订、不冷却。
+    /// 3 秒足够——实测其他按键的会话在 0.09–0.35 秒内就开始送音频了。
+    static let silentForeignGrace: TimeInterval = 3
+
     /// 每秒调用一次。撞线与冷却结束都在这里判。
     func tick(at now: Date) -> [MouseSessionAction] {
         switch phase {
@@ -174,8 +189,14 @@ final class MouseVoiceSession {
             // 那 90 秒交出来，而不是连同截断一起丢掉。
             return [.endDictation(.durationLimit(elapsed)), .stopReceiving(cooldown: cooldown)]
 
-        case .foreign(_, let startedAt):
+        case .foreign(let code, let startedAt):
             let elapsed = now.timeIntervalSince(startedAt)
+            // 一个音频包都没来过：这不是送流，是一次按键。静默收掉，
+            // 不退订、不冷却——理由见 silentForeignGrace。
+            if !foreignSawAudio, elapsed >= Self.silentForeignGrace {
+                phase = .idle
+                return [.closedSilentForeign(code: code)]
+            }
             guard elapsed >= MouseSessionLimits.unpaired else { return [] }
             let cooldown = enterMuted(at: now)
             return [.stopReceiving(cooldown: cooldown)]
@@ -185,6 +206,18 @@ final class MouseVoiceSession {
             phase = .idle
             return [.resumeReceiving]
         }
+    }
+
+    /// 当前这次非听写会话有没有真的收到过音频包。
+    ///
+    /// 桥每收到一个音频包就调 `noteAudioPacket()`——**在 `acceptsAudio`
+    /// 这道过滤之前**。不然非听写会话的音频被丢掉，会话永远不知道
+    /// 「其实有流」，也就分不清按键与送流。
+    private var foreignSawAudio = false
+
+    /// 收到一个音频包。只做记账，不改状态。
+    func noteAudioPacket() {
+        if case .foreign = phase { foreignSawAudio = true }
     }
 
     /// 连接断开。会话一律作废。
@@ -203,6 +236,9 @@ final class MouseVoiceSession {
 
     // MARK: - 私有
 
+    /// 开始任一会话时清掉上一次的音频记账。
+    private func resetAudioAccounting() { foreignSawAudio = false }
+
     private func begin(_ next: Phase, code: UInt8, at now: Date) -> [MouseSessionAction] {
         // 静默期内不开新会话：此刻已经退订，开了也收不到音频，
         // 只会让状态与射频事实不一致。
@@ -215,6 +251,7 @@ final class MouseVoiceSession {
             actions.append(.endDictation(.superseded(code)))
         }
         phase = next
+        resetAudioAccounting()
         if case .dictating = next { actions.append(.beginDictation) }
         return actions
     }
