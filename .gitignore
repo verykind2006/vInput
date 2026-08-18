@@ -57,3 +57,8 @@ MouseDecode/
 # 而它里面是本机绝对路径。报告是产物，每轮被覆盖。
 Bench/.translate-sweep.json
 Bench/translate-sweep.txt
+
+# Whisper 直译对照（scripts/whisper-translate.sh）。理由与上面那一对完全相同：
+# 标记文件里是本机绝对路径，报告是每轮被覆盖的产物。
+Bench/.whisper-translate.json
+Bench/whisper-translate.txt
