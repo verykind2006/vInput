@@ -72,6 +72,9 @@ final class AppModel {
     private let keepalive = VoiceSessionKeepalive()
     private var remoteCoordinator: RemoteCoordinator?
     private var bluetoothBridge: XiaomiBluetoothBridge?
+    private var bleScanner: BLEScanner?
+    private var hidProbe: HIDReportProbe?
+    private var bleScanFileLog: BLEScanFileLog?
     private var audioRouter: AudioSourceRouter?
     private let hudModel = HUDViewModel()
     // 不能用 lazy：@Observable 宏为存储属性生成 init accessor，
@@ -443,6 +446,11 @@ final class AppModel {
         if Self.benchEnabled {
             AppLogger.shared.log("基准集录制入口已启用（VINPUT_BENCH=1），录音会写入 Bench/audio")
         }
+        if Self.bleScanEnabled {
+            AppLogger.shared.log(
+                "BLE 扫描诊断已启用（\(BLEScanGate.enableKey)=1），目标=\(BLEScanGate.targetName)"
+            )
+        }
 
         do {
             try hotkey.register(keyCode: hotkeyCode, modifiers: hotkeyModifiers) { [weak self] in
@@ -461,11 +469,14 @@ final class AppModel {
         Task { await warmUpAndAttachPreview() }
 
         startRemote()
+
+        if Self.bleScanEnabled { scheduleBLEScanStart() }
     }
 
     func shutdown() {
         hotkey.unregister()
         stopRemote()
+        stopBLEScan()
     }
 
     // MARK: - HUD
@@ -957,6 +968,64 @@ final class AppModel {
         bluetoothBridge?.stop()
         bluetoothBridge = nil
         remoteCoordinator = nil
+    }
+
+    // MARK: - BLE 扫描诊断（开发期工具）
+
+    /// 扫描诊断是否可用。**开发期工具，默认隐藏**，理由同 `benchEnabled`：
+    /// 它会连一台与主功能无关的蓝牙设备，并把原始字节写到磁盘。
+    ///
+    /// 用途见 `BLEScanner` 的文件头——查清那支蓝牙鼠标的音频走什么协议。
+    nonisolated static var bleScanEnabled: Bool { BLEScanGate.isEnabled }
+
+    /// 延后几秒再开扫。
+    ///
+    /// **让遥控器桥先抢到 RC003。** 两个 `CBCentralManager` 同时扫描是允许
+    /// 的，但用户每天在用遥控器听写，把诊断工具排在主功能后面是免费的保险。
+    private func scheduleBLEScanStart() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            MainActor.assumeIsolated { self?.startBLEScan() }
+        }
+    }
+
+    func startBLEScan() {
+        guard Self.bleScanEnabled else { return }
+        if bleScanner?.isRunning == true {
+            AppLogger.shared.log("BLESCAN 已在扫描中")
+            return
+        }
+        let fileLog = bleScanFileLog ?? BLEScanFileLog()
+        bleScanFileLog = fileLog
+
+        let scanner = BLEScanner(
+            targetName: BLEScanGate.targetName,
+            // 遥控器当前占着的那台一律排除。这是「不打断 RC003」这条约束
+            // 在代码里的落点之一，另外两处在 BLEScanTargetMatcher。
+            excludedIdentifiers: { [weak self] in
+                guard let identifier = self?.bluetoothBridge?.deviceIdentifier else { return [] }
+                return [identifier]
+            },
+            fileLog: fileLog
+        )
+        bleScanner = scanner
+        scanner.start()
+
+        // GATT 与 HID 两条路一起看：macOS 会把 HID over GATT 从
+        // CoreBluetooth 里滤掉，只扫 GATT 有可能一无所获，而真机每跑一轮
+        // 都要用户坐在电脑前按键。理由详见 HIDReportProbe 的文件头。
+        let probe = HIDReportProbe(targetName: BLEScanGate.targetName, fileLog: fileLog)
+        hidProbe = probe
+        probe.start()
+    }
+
+    func stopBLEScan() {
+        hidProbe?.stop()
+        hidProbe = nil
+        bleScanner?.stop()
+        bleScanner = nil
+        if let path = bleScanFileLog?.path {
+            AppLogger.shared.log("BLESCAN 原始包已写入 \(path)")
+        }
     }
 }
 
