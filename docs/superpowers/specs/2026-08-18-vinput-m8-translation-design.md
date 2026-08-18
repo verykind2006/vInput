@@ -270,6 +270,12 @@ transition(to: .injecting)    // 已有
 4. 云端后端默认不加载；显式开启且未配 key 时 HUD 明确提示
 5. 基准集能跑出翻译那几格指标，一条命令、无人值守
 6. 会话状态多出 `.translating`，且校正在翻译之前（同音错字不被固化）
+7. **闸门按 `usesLatinScript` 分流，不是 `requiresTranslation`。** 两者今天
+   等价，但语义不同：残留汉字、中文标点、长度比三条判据**只对拉丁字母
+   书写系统成立**。写成 `requiresTranslation` 的话，将来加日语时
+   `TranslationTarget` 那三处 switch 会逼人把 `usesLatinScript` 填成 false
+   （护栏有效），**而闸门仍会把这套判据套上去**——护栏就白设了。
+   Task 1 的评审原话：「这次修复，在它声称保护的地方买不到任何东西。」
 
 ---
 
