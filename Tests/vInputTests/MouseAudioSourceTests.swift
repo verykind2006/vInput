@@ -228,3 +228,54 @@ struct MouseCoordinatorTests {
         #expect(received == 512)
     }
 }
+
+@Suite("被拒的会话不能踩到别人")
+@MainActor
+struct VoiceSessionAbandonTests {
+
+    /// 三个音频源之后这是真实场景：鼠标正录着（按键抑制归它），用户按了
+    /// 遥控器的语音键被拒。若拒绝路径走 handleVoiceStop() 去清状态，
+    /// 遥控器的 onFinishSession 会把鼠标那次的抑制一起关掉。
+    @Test("鼠标：放弃会话不发任何回调")
+    func mouseAbandonIsSilent() {
+        let coordinator = MouseCoordinator(source: MouseAudioSource())
+        coordinator.onStartSession = {}
+        coordinator.onFinishSession = { Issue.record("放弃会话不该触发收尾") }
+
+        coordinator.handleVoiceStart()
+        coordinator.abandonSession()
+        #expect(!coordinator.isActive)
+    }
+
+    /// 不清状态的话协调器会一直认为「录着」：随后真正的结束码被它自己的
+    /// guard 吃掉，下一次按键又因「重复的开始」被忽略——语音键从此失灵。
+    @Test("鼠标：放弃之后下一次按键还能开始")
+    func mouseRecoversAfterAbandon() {
+        var starts = 0
+        let coordinator = MouseCoordinator(source: MouseAudioSource())
+        coordinator.onStartSession = { starts += 1 }
+
+        coordinator.handleVoiceStart()
+        coordinator.abandonSession()
+        coordinator.handleVoiceStop()   // 设备随后送来的结束码，应被忽略
+        coordinator.handleVoiceStart()
+
+        #expect(starts == 2)
+    }
+
+    @Test("遥控器：放弃会话不发任何回调，之后还能重新开始")
+    func remoteAbandonIsSilentAndRecovers() {
+        var starts = 0
+        let coordinator = RemoteCoordinator(source: BluetoothRemoteSource())
+        coordinator.onStartSession = { starts += 1 }
+        coordinator.onFinishSession = { Issue.record("放弃会话不该触发收尾") }
+        coordinator.onCancelSession = { Issue.record("放弃会话不该触发取消") }
+
+        coordinator.handleVoiceStart()
+        coordinator.abandonSession()
+        coordinator.handleVoiceStop()
+        coordinator.handleVoiceStart()
+
+        #expect(starts == 2)
+    }
+}

@@ -49,6 +49,20 @@ final class MouseCoordinator {
         onFinishSession?()
     }
 
+    /// 这次开始被上层拒了（模型加载中 / 基准集录制中 / 另一个源正在录）。
+    ///
+    /// **必须清状态，但一个回调都不能发。** 不清的话协调器会一直认为
+    /// 「录着」：随后真正的结束码被它自己的 guard 吃掉，下一次按键又因
+    /// 「重复的开始」被忽略——语音键从此失灵。
+    ///
+    /// 而走 `handleVoiceStop()` 去清同样不行：那会触发 `onFinishSession`，
+    /// 进而 `endSuppressing()` ——**此刻按键抑制很可能正属于另一台设备的
+    /// 会话**（三个音频源之后这是真实场景：鼠标正录着，用户按了遥控器的
+    /// 语音键被拒，遥控器的收尾会把鼠标那次的抑制关掉）。
+    func abandonSession() {
+        isVoiceActive = false
+    }
+
     func handleAudio(_ packet: Data) {
         source.deliver(packet)
     }

@@ -927,6 +927,8 @@ final class AppModel {
                         + "基准集录制中=\(self.benchIsRecording) "
                         + "听写状态=\(session.state)"
                 )
+                // 状态退回去，但不发任何回调——见 RemoteCoordinator.abandonSession。
+                self.remoteCoordinator?.abandonSession()
                 return
             }
             self.audioRouter?.select(.bluetooth)
@@ -1035,10 +1037,8 @@ final class AppModel {
                         + "基准集录制中=\(self.benchIsRecording) "
                         + "听写状态=\(session.state)"
                 )
-                // 被拒时把协调器的状态也退回去，否则它会一直认为「录着」，
-                // 之后真正的结束码会被它自己的 guard 吃掉，而下一次按键
-                // 又因为「重复的开始」被忽略——语音键从此失灵。
-                self.mouseCoordinator?.handleVoiceStop()
+                // 状态退回去，但不发任何回调——见 MouseCoordinator.abandonSession。
+                self.mouseCoordinator?.abandonSession()
                 return
             }
             self.audioRouter?.select(.mouse)

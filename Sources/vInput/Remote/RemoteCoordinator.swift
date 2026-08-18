@@ -44,6 +44,17 @@ final class RemoteCoordinator {
         onFinishSession?()
     }
 
+    /// 这次开始被上层拒了（模型加载中 / 基准集录制中 / 另一个源正在录）。
+    ///
+    /// **必须清状态，但一个回调都不能发。** 理由与
+    /// `MouseCoordinator.abandonSession` 完全相同：走 `handleVoiceStop()`
+    /// 去清会触发 `onFinishSession` → `endSuppressing()`，而 M7 之后按键
+    /// 抑制可能正属于另一台设备的会话（鼠标正录着，用户按了遥控器的语音键
+    /// 被拒，遥控器的收尾会把鼠标那次的抑制关掉）。
+    func abandonSession() {
+        isVoiceActive = false
+    }
+
     func handleCancelPressed() {
         guard isVoiceActive else { return }
         isVoiceActive = false
