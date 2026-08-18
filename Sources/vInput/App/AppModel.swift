@@ -1150,6 +1150,19 @@ final class AppModel {
         // 都要用户坐在电脑前按键。理由详见 HIDReportProbe 的文件头。
         let probe = HIDReportProbe(targetName: BLEScanGate.targetName, fileLog: fileLog)
         hidProbe = probe
+
+        // **两条路写的是同一个 fileLog，所以撞到失控流上限时必须一起停。**
+        // 原来只有扫描器有守卫，而它 `stop()` 的只是自己——探针照样往同一个
+        // 文件里写。独立验收 2026-08-18 指出。
+        scanner.onRunawayStop = { [weak self] in
+            self?.hidProbe?.stop()
+            self?.hidProbe = nil
+        }
+        probe.onRunawayStop = { [weak self] in
+            self?.bleScanner?.stop()
+            self?.bleScanner = nil
+        }
+
         probe.start()
     }
 
