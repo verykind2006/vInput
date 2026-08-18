@@ -67,9 +67,23 @@ enum MouseTargetMatcher {
         guard !normalizedTarget.isEmpty,
               let normalizedName = normalize(name), !normalizedName.isEmpty
         else { return false }
-        // 用包含而非相等：广播包里的 local name 常带后缀（"iMouse Pro"），
-        // 要求严格相等会在真机上白连一轮。
-        return normalizedName.contains(normalizedTarget)
+        // **相等，不是包含。**
+        //
+        // 最初写的是 `contains`，理由是「广播包里的 local name 常带后缀
+        // （"iMouse Pro"），要求严格相等会在真机上白连一轮」。推理成立，
+        // 现实反驳了它：2026-08-18 真机上，用户周围存在另一台名为
+        // **`iMouse2`** 的设备（这类廉价外设重名极常见）。包含匹配把它
+        // 当成了目标，于是桥连上一台陌生设备并永远停在「连接中」，
+        // 菜单栏一直显示连接中而鼠标本身用得好好的——症状与「没连上」
+        // 完全不同，很难往「连错了」上想。
+        //
+        // 两种错的代价不对称：漏连自己的设备，用户会立刻发现并报告；
+        // **连上别人的设备，我们会订阅它的特征、收它的字节**——这既是
+        // 功能故障，也是不该发生的事。所以宁可漏，不可错。
+        //
+        // 真遇到带后缀的名字，用 `VINPUT_MOUSE_NAME` 显式指定即可，
+        // 那是一条明确的用户决定，而不是我们替他猜。
+        return normalizedName == normalizedTarget
     }
 
     /// 禁止名单。复用 `XiaomiVoiceRemoteNameMatcher`（遥控器那份名单）——

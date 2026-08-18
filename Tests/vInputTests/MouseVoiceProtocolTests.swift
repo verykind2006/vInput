@@ -115,11 +115,29 @@ struct MouseVoiceProtocolTests {
 @Suite("鼠标目标匹配与门控")
 struct MouseTargetMatcherTests {
 
-    @Test("按名字子串匹配目标")
-    func matchesTargetBySubstring() {
+    @Test("名字必须完全相等（大小写与空白不计）")
+    func matchesTargetExactly() {
         #expect(MouseTargetMatcher.isTarget(name: "iMouse", target: "iMouse"))
-        #expect(MouseTargetMatcher.isTarget(name: "iMouse Pro", target: "iMouse"))
         #expect(MouseTargetMatcher.isTarget(name: "IMOUSE", target: "iMouse"))
+        #expect(MouseTargetMatcher.isTarget(name: " iMouse ", target: "iMouse"))
+    }
+
+    /// **这条替换了原来钉住「子串匹配」的用例。**
+    ///
+    /// 原实现用 `contains`，理由是「广播名常带后缀（"iMouse Pro"）」。
+    /// 2026-08-18 真机推翻了它：用户周围存在另一台 `iMouse2`，包含匹配把
+    /// 它当成目标，桥连上陌生设备后永远停在「连接中」，而鼠标本身用得
+    /// 好好的——症状与「没连上」完全不同，很难往「连错了」上想。
+    ///
+    /// 代价不对称：漏连自己的设备用户会立刻发现；连上别人的设备我们会
+    /// 订阅它的特征、收它的字节。宁可漏，不可错。
+    @Test("同前缀的别人的设备一律不连")
+    func rejectsSimilarlyNamedDevices() {
+        #expect(!MouseTargetMatcher.isTarget(name: "iMouse2", target: "iMouse"))
+        #expect(!MouseTargetMatcher.isTarget(name: "iMouse Pro", target: "iMouse"))
+        #expect(!MouseTargetMatcher.isTarget(name: "iMouseX", target: "iMouse"))
+        // 反向也不行：目标名比设备名长时同样不该匹配。
+        #expect(!MouseTargetMatcher.isTarget(name: "iMouse", target: "iMouse2"))
     }
 
     @Test("不匹配的设备名一律拒绝")
