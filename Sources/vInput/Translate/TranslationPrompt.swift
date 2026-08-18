@@ -24,6 +24,12 @@ enum TranslationPrompt {
     /// 输出到一句压根不含那个词的话上（见 `CorrectionPrompt` 的注记）。
     /// 翻译要不要给示例、给几条，同样该由 Task 3 的对照装置来定，
     /// 而不是在这里拍脑袋。
+    ///
+    /// **调用方保证 `target.requiresTranslation`。** 这里不拦 `.chinese`：
+    /// 传进来会生成 "Translate the following Chinese text into Chinese."，
+    /// 是句废话但不是崩溃。要在这一层拦就得决定「拦了返回什么」，而唯一
+    /// 合理的答案（原样返回、根本别调模型）是流水线的分支，不是提示词的。
+    /// Task 7 的 pipeline 落地时按这条来。
     static func user(for text: String, target: TranslationTarget) -> String {
         """
         Translate the following Chinese text into \(target.englishName).
