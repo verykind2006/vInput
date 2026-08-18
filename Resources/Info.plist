@@ -23,6 +23,6 @@
     <key>NSMicrophoneUsageDescription</key>
     <string>vInput 需要使用麦克风来录制你的语音并在本机转写成文字。音频不会上传，也不会保存到磁盘。</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>vInput 需要蓝牙来连接小米遥控器并接收语音。音频不会上传，也不会保存到磁盘。</string>
+    <string>vInput 需要蓝牙来连接小米遥控器与蓝牙鼠标并接收语音。音频不会上传，也不会保存到磁盘。</string>
 </dict>
 </plist>
