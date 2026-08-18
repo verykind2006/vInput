@@ -157,6 +157,43 @@ struct PunctuationWidthTests {
                 == "写成 int x = 1；然后编译")
     }
 
+    /// 独立验收 2026-08-17 找到的同族误伤，**概率比分号那条高一个数量级**：
+    /// 口述 commit message、口述日志前缀是日常动作。
+    ///
+    /// 同样不改规则。冒号左边那个拉丁词是不是标识符，邻居规则看不出来，
+    /// 而 `注意: 这里有坑`、`第 5 章: 数据结构` 转全角是对的——一刀切改会
+    /// 把对的一起改坏。钉在这里是为了让它是**已知**的，别以后被当成新
+    /// bug 重查一遍。
+    @Test("已知误伤：口述 commit 前缀的冒号会被转全角")
+    func knownFalsePositiveOnCommitPrefix() {
+        #expect(TranscriptCleaner.clean("fix: 修复了那个问题")
+                == "fix：修复了那个问题")
+        // 对照：这两条转全角是对的，不能为了上面那条把它们一起改坏。
+        #expect(TranscriptCleaner.clean("注意: 这里有坑") == "注意：这里有坑")
+        #expect(TranscriptCleaner.clean("第 5 章: 数据结构") == "第 5 章：数据结构")
+    }
+
+    /// 独立验收同批报的几条，逐一实测后**只有一条成立**。写在一起是为了
+    /// 让「查过、不成立」和「没查」区分得开。
+    @Test("口述代码场景：括号内部逗号确实会被转")
+    func knownFalsePositiveInsideCallParentheses() {
+        // 成立。括号本身因内部有拉丁而保持半角，但内部的逗号左右分别是
+        // `d` 与「名」——邻居规则里「任一侧是中文语境」成立，于是转了。
+        #expect(TranscriptCleaner.clean("写成 setName(id, 名字) 就行")
+                == "写成 setName(id，名字) 就行")
+    }
+
+    /// **这条独立验收报了但没复现**，记下来免得以后有人照着报告去「修」
+    /// 一个不存在的问题。
+    ///
+    /// 报告说 `见 [点这里](地址)` 的圆括号会被转成全角导致 Markdown 失效。
+    /// 实测不会：括号那条三条件规则的第三条要求「外部至少一处是中文语境」，
+    /// 而这里左边紧邻是 `]`、右边是字符串结尾，两处都不是。
+    @Test("Markdown 链接的圆括号不会被转——独立验收报的这条没复现")
+    func markdownLinkParenthesesAreUntouched() {
+        #expect(TranscriptCleaner.clean("见 [点这里](地址)") == "见 [点这里](地址)")
+    }
+
     @Test("URL 里的问号冒号不动——两侧都是拉丁")
     func keepsURLPunctuation() {
         #expect(TranscriptCleaner.clean("打开 https://x.com/s?q=vinput 看看")
