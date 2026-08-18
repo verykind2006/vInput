@@ -30,33 +30,43 @@ struct TranslationTargetTests {
         #expect(TranslationTarget.allCases.filter(\.requiresTranslation).count == 6)
     }
 
-    /// prompt 里要用英文名——模型对 "Spanish" 的理解比对「西班牙语」稳。
-    @Test("每种语言都有 prompt 用的英文名")
-    func hasEnglishNameForPrompt() {
+    /// englishName 直接插进 prompt（见 TranslationPrompt）。写错就是让模型
+    /// 翻成别的语言，**而闸门对此完全无感**——残留汉字、长度比、中文标点
+    /// 三条判据都发现不了「你选意大利语、结果给了法语」。所以逐个钉死。
+    @Test("prompt 用的英文名逐个钉死")
+    func englishNamesArePinned() {
+        #expect(TranslationTarget.chinese.englishName == "Chinese")
+        #expect(TranslationTarget.english.englishName == "English")
         #expect(TranslationTarget.spanish.englishName == "Spanish")
+        #expect(TranslationTarget.german.englishName == "German")
         #expect(TranslationTarget.portuguese.englishName == "Portuguese")
-        for target in TranslationTarget.allCases where target.requiresTranslation {
-            #expect(!target.englishName.isEmpty)
-        }
+        #expect(TranslationTarget.french.englishName == "French")
+        #expect(TranslationTarget.italian.englishName == "Italian")
     }
 
-    /// 菜单栏要显示中文名。
-    @Test("每种语言都有菜单显示名")
-    func hasDisplayName() {
-        #expect(TranslationTarget.chinese.displayName == "中文")
-        #expect(TranslationTarget.english.displayName == "英文")
-        for target in TranslationTarget.allCases {
-            #expect(!target.displayName.isEmpty)
-        }
+    @Test("菜单显示名逐个钉死且不重名")
+    func displayNamesArePinnedAndUnique() {
+        #expect(
+            TranslationTarget.allCases.map(\.displayName)
+                == ["中文", "英文", "西班牙文", "德文", "葡萄牙文", "法文", "意大利文"]
+        )
+        // 重名不会被编译器拦住，而菜单栏出现两个「意大利文」用户没法选。
+        let names = TranslationTarget.allCases.map(\.displayName)
+        #expect(Set(names).count == names.count)
     }
 
-    /// 偏好要跨启动保存，所以必须有稳定的字符串标识——
-    /// 不能靠枚举顺序，加一种语言就会把用户的设置改掉。
-    @Test("标识符稳定且唯一")
-    func rawValuesAreStableAndUnique() {
-        #expect(TranslationTarget.english.rawValue == "en")
-        #expect(TranslationTarget.chinese.rawValue == "zh")
-        let ids = TranslationTarget.allCases.map(\.rawValue)
-        #expect(Set(ids).count == ids.count)
+    /// 偏好要跨启动保存，所以 rawValue 必须稳定——**逐个列全，不能只抽查
+    /// 两个**。将来有人「统一成 ISO 639-2」把 es 改成 spa，用户已保存的
+    /// 语言设置会静默丢失，而抽查式断言一片绿。
+    ///
+    /// 顺带取代了原来那条 `Set(ids).count == ids.count`：重复 rawValue 是
+    /// **编译错误**（`raw value for enum case is not unique`），
+    /// 那条断言永远不可能失败，检查不到任何东西。
+    @Test("标识符稳定且逐个钉死")
+    func rawValuesAreStable() {
+        #expect(
+            TranslationTarget.allCases.map(\.rawValue)
+                == ["zh", "en", "es", "de", "pt", "fr", "it"]
+        )
     }
 }

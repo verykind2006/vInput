@@ -50,9 +50,17 @@ enum TranslationTarget: String, CaseIterable, Sendable, Equatable {
         }
     }
 
-    /// prompt 里用的语言名。**用英文名而非中文名**：模型对
-    /// "Spanish" 的理解比对「西班牙语」稳定，这与 M5 的
-    /// `punctuationPrompt` 用具体术语点名是同一个道理。
+    /// prompt 里用的语言名。**用英文名而非中文名是本轮的假设，尚未测量。**
+    ///
+    /// 假设的依据是「模型对指令语言的理解在英文上更稳」，但这条在本项目里
+    /// 没有任何实测支撑——而 Task 1–4 那个第 0 步正是为「不许断言未测量的
+    /// 事」设的。**Task 3 的对照装置应当顺带验一次**：同一套素材、
+    /// 只把语言名换成中文，看指标差多少。
+    ///
+    /// 不要拿 M5 的 `punctuationPrompt` 类比：那是把词写进 prompt 让 ASR
+    /// 更可能吐出它（输出 token 先验），而且那个机制恰恰被本仓库记录为
+    /// 指标陷阱——技术类 79% 的「改善」来自把答案写进了 prompt。
+    /// 这里是指令可理解性，两回事。
     var englishName: String {
         switch self {
         case .chinese: return "Chinese"
