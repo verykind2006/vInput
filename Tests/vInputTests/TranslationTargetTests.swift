@@ -17,11 +17,17 @@ struct TranslationTargetTests {
     /// 无从判断「报价三百」有没有被翻成「报价三千」。见 spec 第一节。
     @Test("本轮只有拉丁字母语种")
     func onlyLatinScriptForNow() {
-        let translatable = TranslationTarget.allCases.filter(\.requiresTranslation)
-        #expect(translatable.count == 6)
-        for target in translatable {
-            #expect(target.usesLatinScript, "\(target) 不是拉丁字母语种")
-        }
+        // 逐个点名而不是遍历——遍历 requiresTranslation 的集合来断言
+        // usesLatinScript，在两者实现相同时是同义反复，检查不到东西。
+        #expect(TranslationTarget.chinese.usesLatinScript == false)
+        #expect(TranslationTarget.english.usesLatinScript)
+        #expect(TranslationTarget.spanish.usesLatinScript)
+        #expect(TranslationTarget.german.usesLatinScript)
+        #expect(TranslationTarget.portuguese.usesLatinScript)
+        #expect(TranslationTarget.french.usesLatinScript)
+        #expect(TranslationTarget.italian.usesLatinScript)
+        // 本轮的范围闸门：加语言时这条会先红，逼人回来想清楚闸门还成不成立。
+        #expect(TranslationTarget.allCases.filter(\.requiresTranslation).count == 6)
     }
 
     /// prompt 里要用英文名——模型对 "Spanish" 的理解比对「西班牙语」稳。

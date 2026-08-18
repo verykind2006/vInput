@@ -21,9 +21,21 @@ enum TranslationTarget: String, CaseIterable, Sendable, Equatable {
     /// 选中它是否意味着要走翻译流水线。
     var requiresTranslation: Bool { self != .chinese }
 
-    /// 是否是拉丁字母书写系统。闸门只对这类语言有效，
-    /// 将来加日韩时这个标志会变成分流依据。
-    var usesLatinScript: Bool { requiresTranslation }
+    /// 是否是拉丁字母书写系统。
+    ///
+    /// **显式列举而不是 `requiresTranslation` 的别名。** 写成别名的话这个
+    /// 属性是同义反复，「所有可翻译语种都是拉丁字母」这条断言定义上必然
+    /// 成立、检查不到任何东西——而将来加日语时，只要有人顺手把测试里的
+    /// `count == 6` 改成 7，日语就会被静默标成拉丁字母语种。
+    ///
+    /// 这个标志将来是闸门的分流依据（闸门「译文里不该有汉字」只对拉丁
+    /// 字母语种有效），标错的后果是把一整套判据用在它失效的语言上。
+    var usesLatinScript: Bool {
+        switch self {
+        case .chinese: return false
+        case .english, .spanish, .german, .portuguese, .french, .italian: return true
+        }
+    }
 
     /// 菜单栏显示用。
     var displayName: String {
