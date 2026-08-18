@@ -77,6 +77,10 @@ private struct MenuContent: View {
     var body: some View {
         Text(statusText)
         Text(model.remoteState.menuLabel(battery: model.remoteBattery))
+        // 鼠标那一行只在功能启用时显示：关掉时多一行「未启用」只是噪音。
+        if AppModel.mouseEnabled {
+            Text(model.mouseState.menuLabel(battery: model.mouseBattery))
+        }
 
         if !model.lastText.isEmpty {
             Divider()
@@ -101,6 +105,12 @@ private struct MenuContent: View {
         if AppModel.benchEnabled {
             Divider()
             benchMenu
+        }
+
+        // BLE 扫描诊断。开发期工具，VINPUT_BLE_SCAN=1 才显示。
+        if AppModel.bleScanEnabled {
+            Divider()
+            bleScanMenu
         }
 
         Divider()
@@ -172,6 +182,21 @@ private struct MenuContent: View {
     @ViewBuilder
     private var benchMenu: some View {
         Button("开始录制基准集") { model.startBenchRecording() }
+    }
+
+    /// BLE 扫描诊断。**开发期工具**，只在 `VINPUT_BLE_SCAN=1` 时出现。
+    ///
+    /// 扫描在启动后自动开始（延后几秒让遥控器先连上），所以这里只需要
+    /// 两个手动入口：
+    ///
+    /// - 「结束…并汇总」是**主入口**。合计行（哪个特征来了多少包）只在
+    ///   收尾时才产生，用户按完键必须点它一下，日志里才有第三个问题的答案。
+    /// - 「重新开始」用于设备当时没醒、或要换一支设备再扫一轮——
+    ///   不必退出应用重开。
+    @ViewBuilder
+    private var bleScanMenu: some View {
+        Button("结束 BLE 扫描并汇总") { model.stopBLEScan() }
+        Button("重新开始 BLE 扫描") { model.startBLEScan() }
     }
 
     private var modelMenuTitle: String {

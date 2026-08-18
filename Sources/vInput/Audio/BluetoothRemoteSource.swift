@@ -33,7 +33,7 @@ final class BluetoothRemoteSource: AudioSource {
     /// 混进新会话的缓冲区会让开头多出一段无关音频。
     func deliver(_ samples: [Int16]) {
         guard isRunning else { return }
-        onFrame?(Self.normalize(samples))
+        onFrame?(AudioFormat.normalize(samples))
     }
 
     /// 录音期间遥控器断连。
@@ -44,15 +44,5 @@ final class BluetoothRemoteSource: AudioSource {
         guard isRunning else { return }
         isRunning = false
         onStop?(AudioSourceError.engineFailedToStart("遥控器已断开连接"))
-    }
-
-    // MARK: - 归一化
-
-    /// Int16 PCM → Float，取值范围 -1…1。
-    ///
-    /// 除以 32768 而非 32767：Int16 的负半轴比正半轴多一个值，
-    /// 用 32768 才能保证 -32768 恰好映射到 -1 且不溢出。
-    nonisolated static func normalize(_ samples: [Int16]) -> [Float] {
-        samples.map { Float($0) / 32_768 }
     }
 }

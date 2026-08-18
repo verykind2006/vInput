@@ -120,6 +120,65 @@ struct AudioSourceRouterTests {
         }
     }
 
+    // MARK: - 三个源的互斥（M7）
+
+    private func makeThreeSourceRouter()
+        -> (AudioSourceRouter, FakeAudioSource, FakeAudioSource, FakeAudioSource) {
+        let mic = FakeAudioSource()
+        let bluetooth = FakeAudioSource()
+        let mouse = FakeAudioSource()
+        let router = AudioSourceRouter(
+            sources: [.microphone: mic, .bluetooth: bluetooth, .mouse: mouse]
+        )
+        return (router, mic, bluetooth, mouse)
+    }
+
+    @Test("同一时刻只有一个源在采")
+    func onlyOneSourceRunsAtATime() throws {
+        let (router, mic, bluetooth, mouse) = makeThreeSourceRouter()
+
+        router.select(.mouse)
+        try router.start()
+
+        #expect(mouse.startCallCount == 1)
+        #expect(mic.startCallCount == 0)
+        #expect(bluetooth.startCallCount == 0)
+    }
+
+    /// 遥控器正在录时鼠标的音频包必须被丢掉。桥那边还有一道
+    /// （`voiceDeviceStartAllowed` 会拒掉第二次开始），这里是最后一道：
+    /// 就算两个源同时在推，混进同一个缓冲区的也只有活跃的那个。
+    @Test("非活跃源的帧一律丢弃，三个源都一样")
+    func discardsFramesFromInactiveSources() throws {
+        let (router, mic, bluetooth, mouse) = makeThreeSourceRouter()
+        var received: [Float] = []
+        router.onFrame = { received.append(contentsOf: $0) }
+
+        router.select(.mouse)
+        try router.start()
+
+        mouse.emit([1, 2])
+        bluetooth.emit([8, 8])
+        mic.emit([9, 9])
+
+        #expect(received == [1, 2])
+    }
+
+    @Test("鼠标录完之后可以换回麦克风")
+    func canSwitchFromMouseBackToMic() throws {
+        let (router, mic, _, mouse) = makeThreeSourceRouter()
+
+        router.select(.mouse)
+        try router.start()
+        router.stop()
+        router.select(.microphone)
+        try router.start()
+
+        #expect(router.active == .microphone)
+        #expect(mouse.stopCallCount == 1)
+        #expect(mic.startCallCount == 1)
+    }
+
     @Test("缺少某个源时选择它会被忽略")
     func selectingMissingSourceIsIgnored() {
         let mic = FakeAudioSource()

@@ -66,12 +66,22 @@ final class AppModel {
     private(set) var remoteState: RemoteConnectionState = .disconnected
     private(set) var remoteBattery: Int?
 
+    private(set) var mouseState: MouseBridgeState = .stopped
+    private(set) var mouseBattery: Int?
+
     private let bluetoothSource = BluetoothRemoteSource()
+    /// 蓝牙鼠标那一路的音频源（第三个源，M7）。
+    private let mouseSource = MouseAudioSource()
     private let hidListener = RemoteHIDListener()
     private let keySuppressor = RemoteKeySuppressor()
     private let keepalive = VoiceSessionKeepalive()
     private var remoteCoordinator: RemoteCoordinator?
     private var bluetoothBridge: XiaomiBluetoothBridge?
+    private var mouseCoordinator: MouseCoordinator?
+    private var mouseBridge: MouseBluetoothBridge?
+    private var bleScanner: BLEScanner?
+    private var hidProbe: HIDReportProbe?
+    private var bleScanFileLog: BLEScanFileLog?
     private var audioRouter: AudioSourceRouter?
     private let hudModel = HUDViewModel()
     // 不能用 lazy：@Observable 宏为存储属性生成 init accessor，
@@ -210,17 +220,26 @@ final class AppModel {
         return dictationIdle ? .start : .rejectBusy
     }
 
-    /// 遥控器语音键是否可以开始一次听写。
+    /// 蓝牙设备（遥控器 / 鼠标）的语音键是否可以开始一次听写。
     ///
-    /// 抽出来的理由同上，外加一条：这两个条件必须**同时**存在。
+    /// 抽出来的理由同上，外加一条：这几个条件必须**同时**成立。
     /// 原先这里只查了模型加载，注释却写着「与 ⌥D 的守卫保持一致」——
     /// ⌥D 有两条，这里只有一条。漏掉的后果不是「多录一次」，是两个
     /// `AVAudioEngine` 抢同一支麦克风。
-    static func remoteStartAllowed(
+    ///
+    /// **M7 加上 `dictationIdle`，因为音频源从两个变成了三个。**
+    /// 前两条挡的是「听写 vs 基准集录制」的互斥；三个源之间的互斥是新的
+    /// 一条：遥控器正在录时按鼠标语音键，或反过来。
+    /// `DictationSession.start()` 自己有 `guard state == .idle`，但它是
+    /// **静默**返回的——会话没起来，而这边的按键抑制、路由选择、HUD 都已经
+    /// 按「开始了」走了一遍，日志里也没有任何一行说明为什么没录上。
+    /// 把条件摆到明面上，拒绝时才有话可说。
+    static func voiceDeviceStartAllowed(
         modelLoading: Bool,
-        benchRecording: Bool
+        benchRecording: Bool,
+        dictationIdle: Bool
     ) -> Bool {
-        !modelLoading && !benchRecording
+        !modelLoading && !benchRecording && dictationIdle
     }
 
     /// 开始/结束录当前这条。
@@ -333,6 +352,7 @@ final class AppModel {
         let router = AudioSourceRouter(sources: [
             .microphone: micSource,
             .bluetooth: bluetoothSource,
+            .mouse: mouseSource,
         ])
         self.audioRouter = router
 
@@ -369,6 +389,12 @@ final class AppModel {
             }
             self.hudModel.phase = state
             self.cancelHotkey.update(for: state)
+            // 按键抑制跟着会话状态自己收。**离开 .listening 的出口不止一个**
+            // （松开语音键、撞时长上限、转写失败、按 Esc 取消），逐个出口去调
+            // endSuppressing() 迟早会漏一个——Esc 那条就漏了，见下面
+            // cancelHotkey.onCancel 的注释。理由与语义见
+            // RemoteKeySuppressor.update(for:)：只收不开。
+            self.keySuppressor.update(for: state)
             // 每次状态变化都同步，而不是只在回到 idle 时同步：新会话一
             // 开始 `retainedSamples` 就被清掉，菜单项必须立刻跟着灰掉，
             // 否则录音途中点它是「点得动但什么都不发生」。
@@ -430,6 +456,19 @@ final class AppModel {
         cancelHotkey.onCancel = { [weak self] in
             guard let self, let session = self.session else { return }
             AppLogger.shared.log("用户按 Esc 取消会话")
+            // **取消也要立刻把按键抑制收掉。**
+            //
+            // 原来这里只有 cancel()。鼠标那档策略是 `.allExcept([Esc])`，
+            // 于是按 Esc 取消之后**整个键盘只剩 Esc 能用**，直到用户松开
+            // 鼠标语音键（`0x22` 走 onFinishSession 才自愈）。RC003 那档是
+            // `.only([F5])`，同样的不对称从来看不出来——第三个源把旧的缺口
+            // 暴露了出来。独立验收 2026-08-18 指出。
+            //
+            // 上面 onStateChange 里的 update(for:) 已经是一道网，这一行**不是
+            // 冗余**：cancel() 是 async 的，状态回到 .idle 要等 Task 被调度，
+            // 那期间 tap 还在吃键；而 cancel() 对非 .listening 的会话直接返回，
+            // 那种情况下状态变化永远不会来。用户按了取消，键盘就该当场还给他。
+            self.keySuppressor.endSuppressing()
             Task { await session.cancel() }
         }
         AppLogger.shared.log("启动完成，模型=\(initial.name) 可用模型=\(availableModels.map(\.name))")
@@ -442,6 +481,11 @@ final class AppModel {
         // 而日志里有这一行就能事后确认这次启动到底读到了什么。
         if Self.benchEnabled {
             AppLogger.shared.log("基准集录制入口已启用（VINPUT_BENCH=1），录音会写入 Bench/audio")
+        }
+        if Self.bleScanEnabled {
+            AppLogger.shared.log(
+                "BLE 扫描诊断已启用（\(BLEScanGate.enableKey)=1），目标=\(BLEScanGate.targetName)"
+            )
         }
 
         do {
@@ -461,11 +505,16 @@ final class AppModel {
         Task { await warmUpAndAttachPreview() }
 
         startRemote()
+        startMouse()
+
+        if Self.bleScanEnabled { scheduleBLEScanStart() }
     }
 
     func shutdown() {
         hotkey.unregister()
         stopRemote()
+        stopMouse()
+        stopBLEScan()
     }
 
     // MARK: - HUD
@@ -826,6 +875,28 @@ final class AppModel {
                 }
             }
         case .listening:
+            // **⌥D 不判「这次会话是谁的」。**
+            //
+            // 三个源共用一个 `DictationSession`，所以鼠标或遥控器正录着的时候
+            // 按 ⌥D，走的也是这一支：结束的是**别人的**会话。
+            //
+            // 独立验收 2026-08-18 列为低置信项（P6），复核后的结论是
+            // **高置信推断，但未实证**：
+            // - 推断成立的部分：这里确实没有任何「谁拥有这次会话」的判断，
+            //   而三个源共用会话是事实（`AudioSourceRouter` 只选源，不记归属）。
+            // - **未实证的部分**：鼠标那档抑制策略是 `.allExcept([Esc])`，
+            //   `D` 键很可能在会话期间就被 tap 吃掉了，⌥D 根本到不了这里。
+            //   遥控器那档是 `.only([F5])`，理论上 ⌥D 能穿过去。
+            //   两种情形都没有真机日志佐证——**不要假装验证过**。
+            //
+            // 独立验收同时提到「这条路不调 endSuppressing()」。那一半已经不成立了：
+            // 抑制器现在跟着会话状态自己收（`RemoteKeySuppressor.update(for:)`），
+            // 会话一离开 `.listening` 就还键盘，无论是谁结束的它。
+            //
+            // 剩下那一半（归属判断）没有修，因为**修法本身要先定语义**：
+            // 「⌥D 结束别人的会话」到底算 bug 还是算逃生口？用户可能正想用
+            // 键盘把一次失控的鼠标录音停掉。定不了语义就改，等于拿掉一个
+            // 可能有用的出口。等真机上先确认它到底触发不触发。
             log.log("结束录音，进入转写")
             Task { await session.finish() }
         case .transcribing, .correcting, .injecting:
@@ -885,16 +956,20 @@ final class AppModel {
 
         coordinator.onStartSession = { [weak self] in
             guard let self, let session = self.session else { return }
-            // 两个条件缺一不可，判据见 AppModel.remoteStartAllowed。
+            // 三个条件缺一不可，判据见 AppModel.voiceDeviceStartAllowed。
             // 基准集那条以前漏了，而注释却写着「与 ⌥D 的守卫保持一致」。
-            guard Self.remoteStartAllowed(
+            guard Self.voiceDeviceStartAllowed(
                 modelLoading: self.loadingModelName != nil,
-                benchRecording: self.benchIsRecording
+                benchRecording: self.benchIsRecording,
+                dictationIdle: session.state == .idle
             ) else {
                 AppLogger.shared.log(
                     "遥控器录音被拒：模型加载中=\(self.loadingModelName != nil) "
-                        + "基准集录制中=\(self.benchIsRecording)"
+                        + "基准集录制中=\(self.benchIsRecording) "
+                        + "听写状态=\(session.state)"
                 )
+                // 状态退回去，但不发任何回调——见 RemoteCoordinator.abandonSession。
+                self.remoteCoordinator?.abandonSession()
                 return
             }
             self.audioRouter?.select(.bluetooth)
@@ -946,7 +1021,17 @@ final class AppModel {
         hidListener.start()
         keySuppressor.start()
 
-        let bridge = XiaomiBluetoothBridge(delegate: self)
+        // 把鼠标桥当前占着的那台排除掉。遥控器桥的连接判据是「服务 UUID
+        // 匹配**或**名字匹配」，若某设备广播了 ATVV 服务 UUID 它就会去连
+        // ——Roadmap 的「双设备共存」隐患。这支鼠标不讲 ATVV，当前撞不上，
+        // 但两座桥都在跑的时候，把这条堵上的成本只有这几行。
+        let bridge = XiaomiBluetoothBridge(
+            delegate: self,
+            excludedIdentifiers: { [weak self] in
+                guard let identifier = self?.mouseBridge?.deviceIdentifier else { return [] }
+                return [identifier]
+            }
+        )
         bluetoothBridge = bridge
         bridge.start()
     }
@@ -957,6 +1042,160 @@ final class AppModel {
         bluetoothBridge?.stop()
         bluetoothBridge = nil
         remoteCoordinator = nil
+    }
+
+    // MARK: - 蓝牙鼠标（第三个音频源）
+
+    /// 本次启动该不该拉起鼠标桥。判据在 `MouseVoiceGate.shouldStart`。
+    nonisolated static var mouseEnabled: Bool {
+        MouseVoiceGate.shouldStart(
+            mouseEnabled: MouseVoiceGate.isEnabled,
+            bleScanEnabled: BLEScanGate.isEnabled
+        )
+    }
+
+    private func startMouse() {
+        guard Self.mouseEnabled else {
+            AppLogger.shared.log(
+                "鼠标音频源未启用（\(MouseVoiceGate.disableKey)=0 或 BLE 扫描诊断开着）"
+            )
+            return
+        }
+
+        let coordinator = MouseCoordinator(source: mouseSource)
+
+        coordinator.onStartSession = { [weak self] in
+            guard let self, let session = self.session else { return }
+            // **与遥控器同一套守卫，一条不少。** M6 那次的教训就是这里：
+            // ⌥D 有两条 guard 而遥控器只有一条，注释还写着「保持一致」。
+            guard Self.voiceDeviceStartAllowed(
+                modelLoading: self.loadingModelName != nil,
+                benchRecording: self.benchIsRecording,
+                dictationIdle: session.state == .idle
+            ) else {
+                AppLogger.shared.log(
+                    "鼠标录音被拒：模型加载中=\(self.loadingModelName != nil) "
+                        + "基准集录制中=\(self.benchIsRecording) "
+                        + "听写状态=\(session.state)"
+                )
+                // 状态退回去，但不发任何回调——见 MouseCoordinator.abandonSession。
+                self.mouseCoordinator?.abandonSession()
+                return
+            }
+            self.audioRouter?.select(.mouse)
+            // 鼠标也有键盘与 Consumer Control 两个 HID collection，按语音键时
+            // macOS 很可能把按键投递给前台应用（RC003 的 F5 自动重复是同一个
+            // 问题）。**键码还没抓到**，所以这一档是「除 Esc 外全吞」，
+            // 理由与取舍见 RemoteKeySuppressor 的文件头。
+            self.keySuppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
+            Task {
+                do {
+                    try await session.start()
+                    AppLogger.shared.log("鼠标语音键按下，开始录音")
+                } catch {
+                    AppLogger.shared.log("鼠标录音启动失败：\(error)")
+                }
+            }
+        }
+        coordinator.onFinishSession = { [weak self] in
+            self?.keySuppressor.endSuppressing()
+            guard let session = self?.session else { return }
+            AppLogger.shared.log("鼠标语音键松开，进入转写")
+            Task { await session.finish() }
+        }
+        mouseCoordinator = coordinator
+
+        // 鼠标桥没有 keepalive：这支设备的问题方向与 RC003 相反——
+        // RC003 是固件 60 秒切断需要续期，鼠标是 0x31 不会停需要我们喊停。
+        // 上限机制在 MouseVoiceSession，由桥自己每秒 tick。
+        let bridge = MouseBluetoothBridge(
+            delegate: self,
+            excludedIdentifiers: { [weak self] in
+                // 遥控器桥占着的那台一律排除。「不打断 RC003」这条约束在
+                // 代码里的第二个落点，第一个是名字禁止名单。
+                guard let identifier = self?.bluetoothBridge?.deviceIdentifier else { return [] }
+                return [identifier]
+            }
+        )
+        mouseBridge = bridge
+        bridge.start()
+    }
+
+    private func stopMouse() {
+        mouseBridge?.stop()
+        mouseBridge = nil
+        mouseCoordinator = nil
+    }
+
+    // MARK: - BLE 扫描诊断（开发期工具）
+
+    /// 扫描诊断是否可用。**开发期工具，默认隐藏**，理由同 `benchEnabled`：
+    /// 它会连一台与主功能无关的蓝牙设备，并把原始字节写到磁盘。
+    ///
+    /// 用途见 `BLEScanner` 的文件头——查清那支蓝牙鼠标的音频走什么协议。
+    nonisolated static var bleScanEnabled: Bool { BLEScanGate.isEnabled }
+
+    /// 延后几秒再开扫。
+    ///
+    /// **让遥控器桥先抢到 RC003。** 两个 `CBCentralManager` 同时扫描是允许
+    /// 的，但用户每天在用遥控器听写，把诊断工具排在主功能后面是免费的保险。
+    private func scheduleBLEScanStart() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            MainActor.assumeIsolated { self?.startBLEScan() }
+        }
+    }
+
+    func startBLEScan() {
+        guard Self.bleScanEnabled else { return }
+        if bleScanner?.isRunning == true {
+            AppLogger.shared.log("BLESCAN 已在扫描中")
+            return
+        }
+        let fileLog = bleScanFileLog ?? BLEScanFileLog()
+        bleScanFileLog = fileLog
+
+        let scanner = BLEScanner(
+            targetName: BLEScanGate.targetName,
+            // 遥控器当前占着的那台一律排除。这是「不打断 RC003」这条约束
+            // 在代码里的落点之一，另外两处在 BLEScanTargetMatcher。
+            excludedIdentifiers: { [weak self] in
+                guard let identifier = self?.bluetoothBridge?.deviceIdentifier else { return [] }
+                return [identifier]
+            },
+            fileLog: fileLog
+        )
+        bleScanner = scanner
+        scanner.start()
+
+        // GATT 与 HID 两条路一起看：macOS 会把 HID over GATT 从
+        // CoreBluetooth 里滤掉，只扫 GATT 有可能一无所获，而真机每跑一轮
+        // 都要用户坐在电脑前按键。理由详见 HIDReportProbe 的文件头。
+        let probe = HIDReportProbe(targetName: BLEScanGate.targetName, fileLog: fileLog)
+        hidProbe = probe
+
+        // **两条路写的是同一个 fileLog，所以撞到失控流上限时必须一起停。**
+        // 原来只有扫描器有守卫，而它 `stop()` 的只是自己——探针照样往同一个
+        // 文件里写。独立验收 2026-08-18 指出。
+        scanner.onRunawayStop = { [weak self] in
+            self?.hidProbe?.stop()
+            self?.hidProbe = nil
+        }
+        probe.onRunawayStop = { [weak self] in
+            self?.bleScanner?.stop()
+            self?.bleScanner = nil
+        }
+
+        probe.start()
+    }
+
+    func stopBLEScan() {
+        hidProbe?.stop()
+        hidProbe = nil
+        bleScanner?.stop()
+        bleScanner = nil
+        if let path = bleScanFileLog?.path {
+            AppLogger.shared.log("BLESCAN 原始包已写入 \(path)")
+        }
     }
 }
 
@@ -991,5 +1230,33 @@ extension AppModel: @MainActor XiaomiBluetoothBridgeDelegate {
     func bluetoothBridge(_ bridge: XiaomiBluetoothBridge, didUpdatePowerState state: RemotePowerState?) {
         // 本项目不使用电源状态，仅记录
         AppLogger.shared.log("遥控器电源状态：\(String(describing: state))")
+    }
+}
+
+// MARK: - MouseBluetoothBridgeDelegate
+
+extension AppModel: @MainActor MouseBluetoothBridgeDelegate {
+    func mouseBridge(_ bridge: MouseBluetoothBridge, didChange state: MouseBridgeState) {
+        mouseState = state
+    }
+
+    func mouseBridgeDidStartVoice(_ bridge: MouseBluetoothBridge) {
+        mouseCoordinator?.handleVoiceStart()
+    }
+
+    func mouseBridge(_ bridge: MouseBluetoothBridge, didStopVoice reason: MouseSessionEndReason) {
+        mouseCoordinator?.handleVoiceStop()
+    }
+
+    func mouseBridge(_ bridge: MouseBluetoothBridge, didReceiveAudio packet: Data) {
+        mouseCoordinator?.handleAudio(packet)
+    }
+
+    func mouseBridge(_ bridge: MouseBluetoothBridge, didUpdateBatteryLevel level: Int?) {
+        mouseBattery = level
+    }
+
+    func mouseBridgeDidDisconnect(_ bridge: MouseBluetoothBridge) {
+        mouseCoordinator?.handleDisconnected()
     }
 }

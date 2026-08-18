@@ -44,3 +44,9 @@ Bench/long-audio.txt
 Bench/.decode-sweep.json
 Bench/decode-sweep.txt
 Bench/decode-sweep-scaling.txt
+
+# 蓝牙鼠标抓包的离线解码产物（scripts/mouse-decode.sh）：抓包快照、裸 SBC
+# 码流、解出的 WAV、报告。都是用户的声音，且抓包一份就有几 MB。
+# 门控标记 .run-config.json 同 Bench/.run-config.json，跑完由 trap 删掉，
+# 但这中间它是未跟踪文件，一个 `git add -A` 就带进版本库了。
+MouseDecode/

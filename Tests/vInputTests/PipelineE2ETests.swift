@@ -217,7 +217,7 @@ struct PipelineE2ETests {
             fromPath: "\(Self.audioRoot)/short.wav"
         )
         let asInt16 = floats.map { Int16(max(-32_768, min(32_767, $0 * 32_768))) }
-        let roundTripped = BluetoothRemoteSource.normalize(asInt16)
+        let roundTripped = AudioFormat.normalize(asInt16)
 
         let text = try await makeTranscriber().transcribe(roundTripped)
 
@@ -234,7 +234,7 @@ struct PipelineE2ETests {
             fromPath: "\(Self.audioRoot)/short.wav"
         )
         let asInt16 = floats.map { Int16(max(-32_768, min(32_767, $0 * 32_768))) }
-        let roundTripped = BluetoothRemoteSource.normalize(asInt16)
+        let roundTripped = AudioFormat.normalize(asInt16)
 
         let transcriber = makeTranscriber()
         let direct = try await transcriber.transcribe(floats)
