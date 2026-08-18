@@ -160,7 +160,10 @@ struct BLEScanReportTests {
     func targetMatching() {
         #expect(BLEScanTargetMatcher.matches(name: "iMouse", target: "iMouse"))
         #expect(BLEScanTargetMatcher.matches(name: "  IMOUSE ", target: "imouse"))
-        #expect(BLEScanTargetMatcher.matches(name: "iMouse Pro", target: "iMouse"))
+        // 精确匹配：同前缀的别人的设备一律不连。真机上用户旁边就有一台
+        // iMouse2——诊断路径连错的后果比生产路径更重，它订阅全部特征并落盘。
+        #expect(!BLEScanTargetMatcher.matches(name: "iMouse Pro", target: "iMouse"))
+        #expect(!BLEScanTargetMatcher.matches(name: "iMouse2", target: "iMouse"))
         #expect(!BLEScanTargetMatcher.matches(name: "Magic Mouse", target: "iMouse"))
         #expect(!BLEScanTargetMatcher.matches(name: nil, target: "iMouse"))
         #expect(!BLEScanTargetMatcher.matches(name: "iMouse", target: ""))

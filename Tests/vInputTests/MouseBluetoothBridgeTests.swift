@@ -37,10 +37,26 @@ struct MouseBluetoothBridgeTests {
         }
     }
 
-    private func makeBridge() -> (MouseBluetoothBridge, FakeDelegate) {
+    /// **必须传 FakeKeyPoster。** 默认参数是 `SystemKeyPoster()`，而下面有
+    /// 用例会喂 `0x27`——不传的话 `swift test` 会真的往前台应用注入回车。
+    private func makeBridge() -> (MouseBluetoothBridge, FakeDelegate, FakeKeyPoster) {
         let delegate = FakeDelegate()
-        let bridge = MouseBluetoothBridge(delegate: delegate, targetName: "iMouse")
-        return (bridge, delegate)
+        let poster = FakeKeyPoster()
+        let bridge = MouseBluetoothBridge(
+            delegate: delegate, targetName: "iMouse", keyPoster: poster
+        )
+        return (bridge, delegate, poster)
+    }
+
+    /// 顺带把 KeyPoster 这个抽象真正用起来——它本来是「为了能测」抽出来的，
+    /// 但在独立验收指出之前，Tests 目录下零引用。
+    @Test("0x27 真的会触发一次回车注入，0x28 不会")
+    func enterKeyPostsExactlyOnce() {
+        let (bridge, _, poster) = makeBridge()
+        bridge.handleVoicePacket(controlFrame(code: 0x27))
+        #expect(poster.returnCount == 1)
+        bridge.handleVoicePacket(controlFrame(code: 0x28))
+        #expect(poster.returnCount == 1, "松开码不该再发一次回车")
     }
 
     private func controlFrame(code: UInt8) -> Data {
@@ -64,7 +80,7 @@ struct MouseBluetoothBridgeTests {
 
     @Test("语音键的一次完整按键走通开始与结束")
     func fullVoicePress() throws {
-        let (bridge, delegate) = makeBridge()
+        let (bridge, delegate, _) = makeBridge()
 
         bridge.handleVoicePacket(controlFrame(code: 0x51))
         #expect(delegate.events.isEmpty)   // 0x51 只是准备信号
@@ -84,14 +100,14 @@ struct MouseBluetoothBridgeTests {
     /// 0x31 / 0x23 / 0x27 开的会话到不了音频源，也就到不了转写与注入。
     @Test("没有会话时音频包不往下送")
     func dropsAudioWithoutSession() throws {
-        let (bridge, delegate) = makeBridge()
+        let (bridge, delegate, _) = makeBridge()
         bridge.handleVoicePacket(try audioPacket())
         #expect(delegate.audioPackets.isEmpty)
     }
 
     @Test("0x31 开的会话不启动听写，音频也不往下送")
     func unpairedSessionDeliversNothing() throws {
-        let (bridge, delegate) = makeBridge()
+        let (bridge, delegate, _) = makeBridge()
 
         bridge.handleVoicePacket(controlFrame(code: 0x31))
         bridge.handleVoicePacket(try audioPacket())
@@ -103,7 +119,7 @@ struct MouseBluetoothBridgeTests {
 
     @Test("其他功能键开的会话同样不往下送")
     func foreignKeySessionDeliversNothing() throws {
-        let (bridge, delegate) = makeBridge()
+        let (bridge, delegate, _) = makeBridge()
         for code: UInt8 in [0x23, 0x27] {
             bridge.handleVoicePacket(controlFrame(code: code))
             bridge.handleVoicePacket(try audioPacket())
@@ -116,7 +132,7 @@ struct MouseBluetoothBridgeTests {
     /// 是在猜，猜错会让「开始会话」凭空出现。
     @Test("布局不对的 17 字节帧不会开会话")
     func malformedControlFrameIsIgnored() {
-        let (bridge, delegate) = makeBridge()
+        let (bridge, delegate, _) = makeBridge()
         var bytes = [UInt8](controlFrame(code: 0x21))
         bytes[0] = 0x0B
         bridge.handleVoicePacket(Data(bytes))
@@ -125,7 +141,7 @@ struct MouseBluetoothBridgeTests {
 
     @Test("长度不认识的包不会开会话")
     func unknownLengthIsIgnored() {
-        let (bridge, delegate) = makeBridge()
+        let (bridge, delegate, _) = makeBridge()
         bridge.handleVoicePacket(Data(repeating: 0, count: 9))
         bridge.handleVoicePacket(Data(repeating: 0, count: 64))
         #expect(delegate.events.isEmpty)
@@ -138,7 +154,7 @@ struct MouseBluetoothBridgeTests {
     /// 这条测的是「状态机说停之后，桥真的不再往下送音频」。
     @Test("0x31 撞上限后桥进入静默，音频彻底断掉")
     func limitMutesBridge() throws {
-        let (bridge, delegate) = makeBridge()
+        let (bridge, delegate, _) = makeBridge()
         // 桥用真实时钟（handleVoicePacket 内部取 Date()），所以推进时刻
         // 要留一点余量，否则 elapsed 会差那么几微秒撞不到线。
         let after = Date().addingTimeInterval(MouseSessionLimits.unpaired + 1)
@@ -161,7 +177,7 @@ struct MouseBluetoothBridgeTests {
 
     @Test("听写撞上限时把已经录到的那段交出去再静默")
     func dictationLimitFinishesSession() throws {
-        let (bridge, delegate) = makeBridge()
+        let (bridge, delegate, _) = makeBridge()
         let after = Date().addingTimeInterval(MouseSessionLimits.dictation + 1)
 
         bridge.handleVoicePacket(controlFrame(code: 0x21))
@@ -184,7 +200,7 @@ struct MouseBluetoothBridgeTests {
     /// 下一次连上来的第一个包就会被当成上一次会话的一部分。
     @Test("断连收尾进行中的听写")
     func disconnectEndsSession() throws {
-        let (bridge, delegate) = makeBridge()
+        let (bridge, delegate, _) = makeBridge()
         bridge.handleVoicePacket(controlFrame(code: 0x21))
         #expect(bridge.session.acceptsAudio)
 

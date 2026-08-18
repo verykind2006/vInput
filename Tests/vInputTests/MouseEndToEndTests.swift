@@ -154,7 +154,10 @@ final class MouseWiringUnderTest {
         }
         self.coordinator = coordinator
         router.onFrame = { [unowned self] in self.routedSamples.append(contentsOf: $0) }
-        bridge = MouseBluetoothBridge(delegate: self, targetName: "iMouse")
+        // 传 FakeKeyPoster：默认的 SystemKeyPoster 会真的注入回车键。
+        bridge = MouseBluetoothBridge(
+            delegate: self, targetName: "iMouse", keyPoster: FakeKeyPoster()
+        )
     }
 }
 

@@ -192,6 +192,8 @@ enum MouseVoiceProtocol {
     /// 映射成回车的那个按键码。抽成常量而不是散在 switch 里，
     /// 是为了让「哪个键接了什么」一眼可查。
     static let enterKeyCode: UInt8 = 0x27
+    /// 回车键的松开码。实测与 `0x27` 成对，间隔 8–120 毫秒。
+    static let enterReleaseCode: UInt8 = 0x28
 
     /// 一个通知包属于哪一类。
     ///
@@ -251,6 +253,12 @@ enum MouseVoiceProtocol {
         // 用户 2026-08-18 指定：鼠标上那个多余的键映射成回车。
         // 实测按一下发 `0x27`、松开发 `0x28`，两次按键完全一致。
         case enterKeyCode: return .enterKey
+        // 回车键的松开码。**必须显式忽略**：落到 default 会被当成偶数结束码，
+        // 于是「按住语音键说话时按一下回车」= 说到一半被截断。
+        // 文档一直声称它「直接忽略」，但原实现只特判了 0x27——
+        // 独立验收 2026-08-18 指出这个矛盾。第三个键的 0x24 早就显式加进了
+        // 忽略名单，同样的处理没有回头补给 0x28。
+        case enterReleaseCode: return .ignored
         // 第三个键。2026-08-18 逐动作实测：短按发单个 `0x41`（无结束码、
         // 不送音频），长按发 `0x23` → `0x24`。用户要求它完全没有功能。
         case 0x41, 0x43, 0x23, 0x24: return .ignored

@@ -21,6 +21,18 @@ struct SystemKeyPoster: KeyPoster {
             AppLogger.shared.log("回车注入失败：建不出 CGEvent")
             return
         }
+        // **必须显式清零修饰键。**
+        //
+        // `CGEvent(keyboardEventSource: nil, ...)` 会继承当前的组合修饰键
+        // 状态：用户按着 Shift 或 Cmd 时，注入出去的就是 Shift+Return /
+        // Cmd+Return——在聊天应用里语义完全不同（一个换行、一个发送）。
+        // 而按鼠标上的回车键时，另一只手正搭在键盘上是常态。
+        //
+        // `ClipboardSink.postCommandV` 显式赋 `.maskCommand` 也是同一个
+        // 道理，只是它要的是「加上」，这里要的是「清空」。独立验收
+        // 2026-08-18 指出本文件自称抄袭那条路径却漏了这一步。
+        down.flags = []
+        up.flags = []
         down.post(tap: .cgSessionEventTap)
         up.post(tap: .cgSessionEventTap)
     }

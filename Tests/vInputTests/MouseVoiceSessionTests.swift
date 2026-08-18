@@ -135,6 +135,26 @@ struct MouseVoiceSessionTests {
         )
     }
 
+    /// **听写中按回车不该截断听写。**
+    ///
+    /// 原实现里 `0x28`（回车键松开）落到 default → 偶数 → `.stop` →
+    /// 结束正在进行的听写。既有测试恰好各覆盖一半（`.idle` 下的 0x28、
+    /// `.dictating` 下的 0x27），避开了这一格。
+    @Test("听写中按整个回车键（按下 + 松开）不打断听写")
+    func fullEnterPressDuringDictationKeepsSession() {
+        let session = MouseVoiceSession()
+        _ = session.handleControl(code: 0x21, at: t0)
+        #expect(session.isDictating)
+
+        #expect(session.handleControl(code: 0x27, at: at(1)) == [.pressEnter])
+        #expect(session.handleControl(code: 0x28, at: at(1.1)).isEmpty)
+        #expect(session.isDictating, "回车的松开码不该结束听写")
+
+        // 真正的结束码仍然管用。
+        #expect(session.handleControl(code: 0x22, at: at(2)).count == 1)
+        #expect(!session.isDictating)
+    }
+
     // MARK: - 第三个键：刻意无功能
 
     /// **不开会话是关键，不只是「不听写」。**

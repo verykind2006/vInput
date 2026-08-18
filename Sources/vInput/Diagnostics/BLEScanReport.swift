@@ -56,9 +56,16 @@ enum BLEScanTargetMatcher {
         let normalizedTarget = normalize(target)
         guard !normalizedTarget.isEmpty, let normalizedName = normalize(name), !normalizedName.isEmpty
         else { return false }
-        // 用包含而非相等：广播包里的 local name 常带后缀（"iMouse Pro"、
-        // "iMouse-1"），要求严格相等会在真机上白扫一轮。
-        return normalizedName.contains(normalizedTarget)
+        // **相等，不是包含**——与 `MouseTargetMatcher` 保持一致。
+        //
+        // 原来这里和那边都写的 `contains`，理由是「广播名常带后缀」。
+        // 真机推翻了它：用户旁边存在另一台 `iMouse2`，包含匹配会连上
+        // **别人的设备**、订阅它全部可通知特征、把原始字节写进
+        // `ble-scan-*.log`。那边已在 `8ab0554` 改成精确匹配，
+        // 诊断这份漏掉了——同一个 bug 修了一半，独立验收 2026-08-18 指出。
+        //
+        // 诊断路径的后果比生产路径更重：它订阅的是**全部**特征并落盘。
+        return normalizedName == normalizedTarget
     }
 
     static func isForbidden(name: String?) -> Bool {

@@ -99,7 +99,7 @@ struct MouseVoiceProtocolTests {
     func evenCodesAreStops() {
         #expect(MouseVoiceProtocol.classify(code: 0x22) == .stop(0x22))
         #expect(MouseVoiceProtocol.classify(code: 0x26) == .stop(0x26))
-        #expect(MouseVoiceProtocol.classify(code: 0x28) == .stop(0x28))
+        #expect(MouseVoiceProtocol.classify(code: 0x2A) == .stop(0x2A))
     }
 
     // MARK: - 长度分流
@@ -175,6 +175,22 @@ struct MouseThirdButtonTests {
         #expect(MouseVoiceProtocol.classify(code: 0x43) == .ignored)
         #expect(MouseVoiceProtocol.classify(code: 0x23) == .ignored)
         #expect(MouseVoiceProtocol.classify(code: 0x24) == .ignored)
+    }
+}
+
+/// 回车键的松开码必须被忽略，不能当成结束码。
+///
+/// 文档一直声称「配对的 0x28 直接忽略」，但原实现只特判了 0x27，
+/// 0x28 落到 default → 偶数 → `.stop` → 结束正在进行的听写。
+/// **于是「按住语音键说话时按一下回车」= 说到一半被截断。**
+/// 独立验收 2026-08-18 指出这个矛盾：两个既有测试恰好各覆盖一半
+/// （`.idle` 下的 0x28、`.dictating` 下的 0x27），避开了这一格。
+@Suite("回车键的松开码")
+struct MouseEnterReleaseTests {
+    @Test("0x28 被忽略，不是结束码")
+    func releaseIsIgnored() {
+        #expect(MouseVoiceProtocol.classify(code: 0x28) == .ignored)
+        #expect(MouseVoiceProtocol.enterReleaseCode == 0x28)
     }
 }
 
