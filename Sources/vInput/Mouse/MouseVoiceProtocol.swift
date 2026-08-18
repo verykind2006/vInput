@@ -117,6 +117,9 @@ enum MousePacketKind: Equatable {
 /// 一个 17 字节控制帧。
 struct MouseControlFrame: Equatable {
     let code: UInt8
+    /// 帧里带的电量百分比。每个控制帧都带，所以按一次键就能刷新一次，
+    /// 不必单独去读电池特征。
+    let battery: Int
     /// 帧里带的 6 字节地址。**只记录不校验**，理由见 `parseControlFrame`。
     let address: [UInt8]
 }
@@ -152,8 +155,22 @@ enum MouseVoiceProtocol {
     /// Loudness / 8 子带 / bitpool 12），每帧 128 样本 = 8 ms，一包 32 ms。
     static let audioPacketLength = 128
 
-    /// 帧的固定部分。抓包里 13/13 个控制帧逐字节相同，只有第 6 字节（码）变。
-    static let framePrefix: [UInt8] = [0x0A, 0x77, 0xFF, 0x34, 0x1B]
+    /// 帧的固定部分——**不含第 4 字节，那是电量**。
+    ///
+    /// 最初写成 `[0x0A, 0x77, 0xFF, 0x34, 0x1B]`，理由是「抓包里 13/13 个
+    /// 控制帧逐字节相同」。**13/13 是真的，但它证明不了任何事**：那 13 帧
+    /// 全来自同一次、40 秒内的抓包，电量当然没变。这是「对样本成立、对
+    /// 世界不成立」的典型。
+    ///
+    /// 2026-08-18 当天下午就被推翻：同一支鼠标发来的帧变成
+    /// `0A 77 FF 28 1B 27 …`，第 4 字节从 `0x34` 变成 `0x28`。
+    /// **`0x34` = 52，而上午读电池特征（`2A19`）正是 52%；`0x28` = 40。**
+    ///
+    /// 后果不是「少认一个键」而是**整个协议随电量下降而失效**，症状是
+    /// 所有帧突然都变成「不认识的 17 字节帧」——极难往电量上想。
+    static let framePrefix: [UInt8] = [0x0A, 0x77, 0xFF]
+    /// 电量之后、控制码之前的那一字节。抓包里恒为 `0x1B`。
+    static let frameBatterySuffix: UInt8 = 0x1B
     static let frameInfix: [UInt8] = [0x0A, 0x06, 0x07, 0x09]
     static let frameSuffix: UInt8 = 0x44
 
@@ -183,10 +200,17 @@ enum MouseVoiceProtocol {
     static func parseControlFrame(_ data: some DataProtocol) -> MouseControlFrame? {
         let bytes = [UInt8](data)
         guard bytes.count == controlFrameLength else { return nil }
-        guard Array(bytes[0..<5]) == framePrefix else { return nil }
+        guard Array(bytes[0..<3]) == framePrefix else { return nil }
+        // 第 4 字节是电量，0–100 之外说明这不是我们认识的帧。
+        guard bytes[3] <= 100 else { return nil }
+        guard bytes[4] == frameBatterySuffix else { return nil }
         guard Array(bytes[6..<10]) == frameInfix else { return nil }
         guard bytes[16] == frameSuffix else { return nil }
-        return MouseControlFrame(code: bytes[5], address: Array(bytes[10..<16]))
+        return MouseControlFrame(
+            code: bytes[5],
+            battery: Int(bytes[3]),
+            address: Array(bytes[10..<16])
+        )
     }
 
     /// 控制码 → 语义。

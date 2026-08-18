@@ -112,6 +112,57 @@ struct MouseVoiceProtocolTests {
     }
 }
 
+/// 第 4 字节是电量，不是固定签名。
+///
+/// 最初的实现把它写进 `framePrefix`，理由是「抓包里 13/13 个控制帧逐字节
+/// 相同」——**13/13 是真的，但那 13 帧全来自同一次 40 秒的抓包，电量当然
+/// 没变**。同一天下午真机就推翻了它：帧变成 `0A 77 FF 28 1B 27 …`，
+/// 而 `0x34` = 52 恰是上午电池特征的读数，`0x28` = 40。
+///
+/// 后果不是「少认一个键」，是**整个协议随电量下降而失效**，症状是所有帧
+/// 突然变成「不认识的 17 字节帧」——极难往电量上想。
+@Suite("控制帧的电量字节")
+struct MouseControlFrameBatteryTests {
+    private func frame(battery: UInt8, code: UInt8) -> Data {
+        Data([0x0A, 0x77, 0xFF, battery, 0x1B, code,
+              0x0A, 0x06, 0x07, 0x09,
+              0xC9, 0x00, 0xA9, 0x10, 0x04, 0xC5, 0x44])
+    }
+
+    @Test("电量变化不影响解析——这正是当初漏掉的那一维")
+    func parsesAcrossBatteryLevels() {
+        for battery in [UInt8(100), 52, 40, 7, 0] {
+            let parsed = MouseVoiceProtocol.parseControlFrame(frame(battery: battery, code: 0x27))
+            #expect(parsed?.code == 0x27, "电量 \(battery) 时解析失败")
+            #expect(parsed?.battery == Int(battery))
+        }
+    }
+
+    /// 两次真机实测的原样字节。
+    @Test("真机抓到的两种电量都认得")
+    func parsesRealCaptures() {
+        // 2026-08-18 上午，电量 52%
+        let morning = Data([0x0A, 0x77, 0xFF, 0x34, 0x1B, 0x51,
+                            0x0A, 0x06, 0x07, 0x09,
+                            0xC9, 0x00, 0xA9, 0x10, 0x04, 0xC5, 0x44])
+        #expect(MouseVoiceProtocol.parseControlFrame(morning)?.battery == 52)
+        // 同日下午，电量 40%，按的是那个多余的键
+        let afternoon = Data([0x0A, 0x77, 0xFF, 0x28, 0x1B, 0x27,
+                              0x0A, 0x06, 0x07, 0x09,
+                              0xC9, 0x00, 0xA9, 0x10, 0x04, 0xC5, 0x44])
+        let parsed = MouseVoiceProtocol.parseControlFrame(afternoon)
+        #expect(parsed?.code == 0x27)
+        #expect(parsed?.battery == 40)
+    }
+
+    /// 放宽了一个字节就得守住边界，否则「不认识的帧」这道防线会变松。
+    @Test("电量超出 0–100 一律不认")
+    func rejectsImpossibleBattery() {
+        #expect(MouseVoiceProtocol.parseControlFrame(frame(battery: 101, code: 0x21)) == nil)
+        #expect(MouseVoiceProtocol.parseControlFrame(frame(battery: 255, code: 0x21)) == nil)
+    }
+}
+
 @Suite("鼠标目标匹配与门控")
 struct MouseTargetMatcherTests {
 
