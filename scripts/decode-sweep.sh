@@ -26,8 +26,18 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 cd "$ROOT"
 
-AUDIO="/tmp/vinput-long-audio"          # 与 long-audio.sh 共用，避免重复合成
-NOISE="/tmp/vinput-decode-sweep-noise"
+# ── 中间产物为什么不放 /tmp ───────────────────────────────────────────
+# `/tmp` 会被系统定期清空，而这批合成音频是跨轮复用的缓存（同一批 wav
+# 给 long-audio.sh / decode-sweep.sh 共用，重新合成要几分钟）。M5 期间
+# `/tmp/vinput-bench` 被系统清掉过一次，端到端整片以 loadAudioFailed 失败，
+# **看着像代码坏了**——排查它花掉的时间比换个目录贵得多。
+#
+# 顺带解决另一件事：`decode-sweep.sh` 会把真人录音 `Bench/audio/punct-03.wav`
+# 补上静音再写出来，而 `/tmp` 的权限是 `drwxrwxrwt`（全局可读）。
+# `~/Library/Caches` 是当前用户私有的。
+CACHE_ROOT="$HOME/Library/Caches/vInput"
+AUDIO="$CACHE_ROOT/long-audio"          # 与 long-audio.sh 共用，避免重复合成
+NOISE="$CACHE_ROOT/decode-sweep-noise"
 mkdir -p "$AUDIO" "$NOISE"
 
 RUN_BENCH=1
