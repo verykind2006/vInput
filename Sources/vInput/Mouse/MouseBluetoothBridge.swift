@@ -325,6 +325,20 @@ final class MouseBluetoothBridge: NSObject {
     /// 不设成 private：这是整座桥里唯一不依赖 CoreBluetooth 运行时对象的
     /// 环节，而**真机验证要靠用户按鼠标上的键**。开放给测试直接喂字节，
     /// 换来的是「分流 + 状态机 + delegate 回调」这一整条链路在 CI 里跑得到。
+    /// 把控制码翻译成人话，只用于日志。
+    ///
+    /// 未知码显式标成「未知」而不是留空——发现新按键时，日志里那个「未知」
+    /// 就是线索。
+    static func describeSemantics(_ code: UInt8) -> String {
+        switch MouseVoiceProtocol.classify(code: code) {
+        case .wake: return "语音键按下，准备"
+        case .voiceStart: return "语音会话开始"
+        case .unpairedStart: return "长按持续开麦，无结束码"
+        case .otherStart(let value): return String(format: "其他按键开始 0x%02X", value)
+        case .stop(let value): return String(format: "结束 0x%02X", value)
+        }
+    }
+
     func handleVoicePacket(_ data: Data) {
         switch MouseVoiceProtocol.kind(ofLength: data.count) {
         case .control:
@@ -336,6 +350,16 @@ final class MouseBluetoothBridge: NSObject {
                 }
                 return
             }
+            // **每个控制码都记一行。**
+            //
+            // 之前只在会话开始/结束时打日志，于是「鼠标上另外那个键按下去
+            // 发的是什么码」在日志里查不到——而要给某个键接功能（比如把它
+            // 映射成回车），第一步就是知道它的码。
+            //
+            // 一行一个码不吵：按一次键最多产生两三帧（`0x51` → `0x21` →
+            // `0x22`），不像音频包那样每秒 33 个。
+            log(String(format: "控制码 0x%02X（%@）", frame.code,
+                       Self.describeSemantics(frame.code)))
             apply(session.handleControl(code: frame.code, at: Date()))
 
         case .audio:
