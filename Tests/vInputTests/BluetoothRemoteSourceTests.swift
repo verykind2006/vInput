@@ -6,40 +6,44 @@ import Testing
 struct BluetoothRemoteSourceTests {
 
     // MARK: - Int16 → Float 归一化
+    //
+    // 实现在 `AudioFormat.normalize`（M7 起有第二个 Int16 来源：SBC 解码器
+    // 的输出，两处各写一份早晚漂移）。判据留在这里，因为它约束的是
+    // 「蓝牙这条路送出去的样本」这件事。
 
     @Test("最大正值归一化到接近 1")
     func normalizesMaxPositive() {
-        let floats = BluetoothRemoteSource.normalize([32_767])
+        let floats = AudioFormat.normalize([32_767])
         #expect(abs(floats[0] - 1.0) < 0.001)
     }
 
     @Test("最小负值归一化到 -1")
     func normalizesMinNegative() {
-        let floats = BluetoothRemoteSource.normalize([-32_768])
+        let floats = AudioFormat.normalize([-32_768])
         #expect(abs(floats[0] - (-1.0)) < 0.001)
     }
 
     @Test("零仍是零")
     func zeroStaysZero() {
-        #expect(BluetoothRemoteSource.normalize([0]) == [0])
+        #expect(AudioFormat.normalize([0]) == [0])
     }
 
     @Test("输出全部落在 -1…1")
     func outputInRange() {
         let input: [Int16] = [-32_768, -16_384, 0, 16_384, 32_767]
-        let floats = BluetoothRemoteSource.normalize(input)
+        let floats = AudioFormat.normalize(input)
         #expect(floats.allSatisfy { $0 >= -1 && $0 <= 1 })
     }
 
     @Test("样本数不变")
     func preservesCount() {
         let input = [Int16](repeating: 100, count: 240)
-        #expect(BluetoothRemoteSource.normalize(input).count == 240)
+        #expect(AudioFormat.normalize(input).count == 240)
     }
 
     @Test("空输入返回空")
     func emptyInput() {
-        #expect(BluetoothRemoteSource.normalize([]).isEmpty)
+        #expect(AudioFormat.normalize([]).isEmpty)
     }
 
     // MARK: - AudioSource 行为

@@ -89,9 +89,9 @@ struct MouseDecodeTests {
             let frameCount = try Data(contentsOf: sbcURL).count / info.frameLength
             #expect(decoded.count == frameCount * info.samplesPerFrame)
 
-            // 归一化用生产的 BluetoothRemoteSource.normalize，不另写一份。
+            // 归一化用生产的 AudioFormat.normalize，不另写一份。
             // 本项目在「复刻一份看起来一样的管线」上栽过两次。
-            let samples = BluetoothRemoteSource.normalize(decoded)
+            let samples = AudioFormat.normalize(decoded)
 
             // 反算采样率：解出的样本数 ÷ 控制帧时间戳算出的时长。这是独立于
             // 码流头部的一道校验——头里写 16 kHz 而反算出 7 kHz，说明帧结构
