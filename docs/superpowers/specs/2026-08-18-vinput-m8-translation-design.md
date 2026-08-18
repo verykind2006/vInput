@@ -143,7 +143,7 @@ M4 的对应物是 `CorrectionPipeline`（纯）/ `Corrector`（协议）/
 | `Translator` | 协议：`translate(_:to:) async throws -> String` | 协议 |
 | `MLXTranslator` | 本地实现，复用 `OneShotLoader` | 脏 |
 | `GeminiTranslator` | 云端实现，key 从 Keychain 读 | 脏 |
-| `OutputLanguagePreference` | 菜单栏状态，跨启动保留（照 `CorrectionPreference`） | 纯 |
+| `TranslationPreference` | 输出语言、云端开关、模型目录，跨启动保留（照 `CorrectionPreference`） | 纯 |
 
 ---
 
