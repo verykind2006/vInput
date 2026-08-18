@@ -126,9 +126,9 @@ final class MouseBluetoothBridge: NSObject {
     /// 会话状态机。**桥不自己判会话**——判据全在这里，测试也全打在这里。
     let session = MouseVoiceSession()
 
-    /// 不认识的控制帧只报头几条。固件换协议时它会每秒刷几十行。
-    private var unknownFrameCount = 0
-    private static let unknownFrameLogLimit = 5
+    /// 不认识的帧的日志限流。**按时间窗，不按绝对条数**——理由与两个数的
+    /// 依据见 `MouseUnknownFrameLog`。
+    private var unknownFrames = MouseUnknownFrameLog()
 
     private(set) var state: MouseBridgeState = .stopped {
         didSet {
@@ -209,8 +209,22 @@ final class MouseBluetoothBridge: NSObject {
         tickTimer?.invalidate()
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
-            self.apply(self.session.tick(at: Date()))
+            let now = Date()
+            self.apply(self.session.tick(at: now))
+            // 不认识的帧停了之后，把最后一个窗口的账结掉。挂在 tick 上是因为
+            // 「压掉两千条然后设备不再发包」时，汇总等不到下一帧来触发。
+            if let summary = self.unknownFrames.flush(at: now) { self.log(summary) }
         }
+    }
+
+    /// 打一条「不认识的帧」的日志，经过限流。
+    ///
+    /// 汇总行排在原始内容之前：它结的是**上一个**窗口的账，按时间顺序
+    /// 就该先出现。
+    private func logUnknownFrame(_ message: @autoclosure () -> String) {
+        let decision = unknownFrames.record(at: Date())
+        if let summary = decision.summary { log(summary) }
+        if decision.shouldLog { log(message()) }
     }
 
     /// 把状态机的动作落到真实世界。
@@ -358,11 +372,10 @@ final class MouseBluetoothBridge: NSObject {
         switch MouseVoiceProtocol.kind(ofLength: data.count) {
         case .control:
             guard let frame = MouseVoiceProtocol.parseControlFrame(data) else {
-                unknownFrameCount += 1
-                if unknownFrameCount <= Self.unknownFrameLogLimit {
-                    log("不认识的 17 字节帧（固件可能换了协议）："
-                        + data.map { String(format: "%02X", $0) }.joined(separator: " "))
-                }
+                logUnknownFrame(
+                    "不认识的 17 字节帧（固件可能换了协议）："
+                        + data.map { String(format: "%02X", $0) }.joined(separator: " ")
+                )
                 return
             }
             // **每个控制码都记一行。**
@@ -389,10 +402,7 @@ final class MouseBluetoothBridge: NSObject {
         case .unknown(let length):
             // 原样报一次长度：固件改了包长时，「什么都没发生」和
             // 「包来了但没人认」在日志里必须分得开。
-            unknownFrameCount += 1
-            if unknownFrameCount <= Self.unknownFrameLogLimit {
-                log("语音特征来了 \(length) 字节的包，既不是控制帧也不是音频包")
-            }
+            logUnknownFrame("语音特征来了 \(length) 字节的包，既不是控制帧也不是音频包")
         }
     }
 }

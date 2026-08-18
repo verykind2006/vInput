@@ -153,6 +153,89 @@ enum MouseControlSemantics: Equatable {
     case stop(UInt8)
 }
 
+// MARK: - 不认识的帧的日志限流
+
+/// 「不认识的帧」这类日志的限流器：**按时间窗，不按绝对条数。**
+///
+/// # 为什么不能用「最多 5 条」
+///
+/// 原实现是一个只增不减的计数器加 `<= 5` 的判断。它在正常情况下没问题
+/// （偶尔一个杂包），但**失败模式是静默的**：固件升级或换一支同名设备之后，
+/// 帧解析可能从此全部失败，而日志只在最开始说 5 次，之后彻底安静。
+///
+/// 排查的人这时看到的是「日志里什么都没有」，最容易得出的结论恰恰是
+/// 「鼠标没连上 / 用户没按到键」——与真相（每秒几十帧全解不开）相反。
+/// **一个会把人引向反方向的日志比没有日志更糟。** 独立验收 2026-08-18 指出。
+///
+/// # 这两个数
+///
+/// 每 `window` 秒最多打 `burst` 条原始内容，外加至多一条汇总。
+/// 最坏情况是 6 行/分钟——用户会把整份 `vInput.log` 发回来，这个量级不会
+/// 把它冲垮；而「固件换了协议」这种事持续几分钟就足够看出来了。
+///
+/// 上限要压的是最坏情况：**不认识的分支也接住长度不对的音频包**，
+/// 而音频包是每秒 31 个（实测 31.25 包/秒）。不限流的话一分钟就是近 2000 行。
+struct MouseUnknownFrameLog {
+    /// 每个窗口最多打几条原始内容。
+    static let burst = 5
+    /// 窗口长度。
+    static let window: TimeInterval = 60
+
+    struct Decision: Equatable {
+        /// 这一条的原始内容要不要写进日志。
+        let shouldLog: Bool
+        /// 窗口翻页时结上一窗口的账。nil = 没有被压掉的东西，不必出声。
+        let summary: String?
+    }
+
+    private var windowStartedAt: Date?
+    private var loggedInWindow = 0
+    private var suppressedInWindow = 0
+    private var total = 0
+
+    mutating func record(at now: Date) -> Decision {
+        total += 1
+        var summary: String?
+        if let start = windowStartedAt, now.timeIntervalSince(start) < Self.window {
+            // 同一个窗口里
+        } else {
+            summary = closeWindow(at: now)
+            windowStartedAt = now
+            loggedInWindow = 0
+            suppressedInWindow = 0
+        }
+
+        if loggedInWindow < Self.burst {
+            loggedInWindow += 1
+            return Decision(shouldLog: true, summary: summary)
+        }
+        suppressedInWindow += 1
+        return Decision(shouldLog: false, summary: summary)
+    }
+
+    /// 流停了之后把最后一个窗口的账结掉。桥每秒 tick 一次，挂在那上面。
+    ///
+    /// **没有这一步，「5 条之后一片安静」会换个形式回来**：压掉两千条，
+    /// 然后设备不再发包，那份汇总就永远等不到下一帧来触发。
+    mutating func flush(at now: Date) -> String? {
+        guard let start = windowStartedAt, now.timeIntervalSince(start) >= Self.window
+        else { return nil }
+        let summary = closeWindow(at: now)
+        windowStartedAt = nil
+        loggedInWindow = 0
+        return summary
+    }
+
+    private mutating func closeWindow(at now: Date) -> String? {
+        guard suppressedInWindow > 0, let start = windowStartedAt else { return nil }
+        let elapsed = Int(now.timeIntervalSince(start))
+        let suppressed = suppressedInWindow
+        suppressedInWindow = 0
+        return "不认识的帧还在持续：过去 \(elapsed) 秒里另有 \(suppressed) 条没有打印"
+            + "（累计 \(total) 条）——固件或设备可能换了协议"
+    }
+}
+
 /// 鼠标语音协议的常量与帧解析。
 ///
 /// GATT：服务 `FFF1`，特征 `…CB8`（`writeWithoutResponse,write,notify`）。

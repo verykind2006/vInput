@@ -310,4 +310,68 @@ struct MouseTargetMatcherTests {
         #expect(!MouseVoiceGate.shouldStart(mouseEnabled: true, bleScanEnabled: true))
         #expect(!MouseVoiceGate.shouldStart(mouseEnabled: false, bleScanEnabled: false))
     }
+
+    // MARK: - 不认识的帧的日志限流
+
+    /// **失败模式是静默的。** 原实现是「最多 5 条，永不重置」：固件升级或
+    /// 换一支设备之后帧解析可能全部失败，而日志只在最开始说 5 次，之后
+    /// 彻底安静——排查的人看到的是「日志里什么都没有」，最容易得出的结论
+    /// 恰恰是「鼠标没连上 / 没按到键」，与真相（每秒几十帧全解不开）相反。
+    /// 独立验收 2026-08-18 指出（P7）。
+    @Test("同一个窗口里最多打前几条")
+    func limitsBurstWithinWindow() {
+        var log = MouseUnknownFrameLog()
+        let start = Date()
+        var logged = 0
+        for step in 0..<50 {
+            if log.record(at: start.addingTimeInterval(Double(step) * 0.03)).shouldLog {
+                logged += 1
+            }
+        }
+        #expect(logged == MouseUnknownFrameLog.burst)
+    }
+
+    /// 关键的一条：**窗口过去之后必须重新出声。**
+    @Test("过了窗口重新开口，并汇总被压掉的条数")
+    func resumesAfterWindow() {
+        var log = MouseUnknownFrameLog()
+        let start = Date()
+        for step in 0..<50 {
+            _ = log.record(at: start.addingTimeInterval(Double(step) * 0.03))
+        }
+
+        let next = log.record(at: start.addingTimeInterval(MouseUnknownFrameLog.window + 1))
+        #expect(next.shouldLog)
+        // 第一个窗口打了 burst 条，压掉 50 - burst 条，汇总里要说出来
+        #expect(next.summary?.contains("\(50 - MouseUnknownFrameLog.burst)") == true)
+        #expect(next.summary?.contains("51") == true)  // 累计
+    }
+
+    /// 流停了以后也要把最后一个窗口的账结掉——否则「5 条之后一片安静」
+    /// 换了个形式又回来了：压掉 2000 条，然后设备不再发包，汇总永远不打。
+    /// 桥每秒 tick 一次，`flush` 挂在那上面。
+    @Test("流停了之后 flush 把最后一个窗口的账结掉")
+    func flushReportsTrailingWindow() {
+        var log = MouseUnknownFrameLog()
+        let start = Date()
+        for step in 0..<50 {
+            _ = log.record(at: start.addingTimeInterval(Double(step) * 0.03))
+        }
+
+        let summary = log.flush(at: start.addingTimeInterval(MouseUnknownFrameLog.window + 1))
+        #expect(summary != nil)
+        // 结过账就不再重复报
+        #expect(log.flush(at: start.addingTimeInterval(MouseUnknownFrameLog.window * 3)) == nil)
+    }
+
+    /// 没有被压掉任何东西时不该产生噪音行。
+    @Test("没压掉东西就不产生汇总行")
+    func quietWhenNothingSuppressed() {
+        var log = MouseUnknownFrameLog()
+        let start = Date()
+        for step in 0..<MouseUnknownFrameLog.burst {
+            #expect(log.record(at: start.addingTimeInterval(Double(step))).summary == nil)
+        }
+        #expect(log.flush(at: start.addingTimeInterval(MouseUnknownFrameLog.window * 2)) == nil)
+    }
 }
