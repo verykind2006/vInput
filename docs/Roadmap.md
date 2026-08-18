@@ -12,7 +12,8 @@
 | M5 | 转写质量：基准集与度量 | ✅ 已合并 |
 | M6 | 稳固化（精简：只做可靠性） | ✅ 已合并 |
 | M7 | 蓝牙鼠标接入 | ✅ 已合并 |
-| M8 | 场景风格、润色与多语种输出 | 🔄 brainstorming |
+| — | **两处生产代码崩溃（RemoteKeySuppressor / SBCDecoder）** | ⚠️ **未修，优先级最高** |
+| M8 | 场景风格、润色与多语种输出 | 🔄 实施中 |
 | — | 输入设备收尾（遥控器关机键 → 退格、M7 结转两条） | ⬜ 未排期 |
 | M9 | 分发准备（设置界面、onboarding） | ⬜ |
 
@@ -778,6 +779,84 @@ CoreBluetooth，抄它会把上游的 GPL 义务和 ATVV 的形状一起带进�
 失败，看着像代码坏了。`scripts/bench.sh` 的 `/tmp/vinput-bench` 这次没动
 ——它的路径同时写在 `Sources/vInputBench/Bench.swift` 与 `PipelineE2ETests`
 里，要三处一起改，留给单独一轮。
+
+## ⚠️ 两处生产代码崩溃（2026-08-18 发现，未修，优先级高于任何新功能）
+
+M8 Task 5 的实施者在跑测试时发现 `./scripts/test.sh` **约 2/8 次崩溃**。
+它一度怀疑是自己引入的，查了崩溃报告——**不是**：同样的签名在
+2026-08-11 与 2026-08-18 的 17:01 / 17:42 / 17:43 / 18:14 / 18:16
+就已存在。基线连跑 5 次干净只是运气。
+
+`~/Library/Logs/DiagnosticReports/` 下 7 份 `.ips` 佐证。**两条签名都在
+生产代码里，不是测试脚手架。**
+
+### ① `RemoteKeySuppressor.handle` 野指针（SIGSEGV，5 次）
+
+```
+__CFMachPortPerform → eventTapMessageHandler → _XPostEventTapData
+  → processEventTapData
+  → @objc closure #1 in RemoteKeySuppressor.start()
+  → MainActor.assumeIsolated
+  → RemoteKeySuppressor.handle(type:event:)
+  → shouldSuppress(keyCode:) → Policy.suppresses(keyCode:)
+  → Set.contains  →  SIGSEGV / swift_retain 捡到野指针
+```
+
+两次的地址形态不同（一次 `0x0f3737b33f3737b8`，报「possible pointer
+authentication failure」；一次 `0x0000000d8c9b3468`），**都是读到了不该读
+的内存**，典型的释放后使用或跨线程撕裂。
+
+**两个候选成因，没定论，要查：**
+
+1. **`MainActor.assumeIsolated` 在 tap 回调里是断言不是切换。** 它不把执行
+   搬到主线程，只是声称「我已经在主线程」。若 tap 装在非主线程的 run loop
+   上，这句话是假的，随后触碰 MainActor 隔离的 `policy`（那个 `Set`）就是
+   跨线程数据竞争。**release 构建里这个断言根本不检查。**
+2. **对象析构了而 tap 还挂着。** 回调持有的 `self` 若是裸指针/`Unmanaged`，
+   析构后回调再触发就是释放后使用。
+
+**为什么在测试里最容易撞上**：测试会**真的装一个 CGEvent tap**。
+本会话早先已经发现同类问题——`swift test` 曾真的往前台应用注入 Return 键
+（默认 `SystemKeyPoster()`，没有替身）。当时 QA 的原话是「至今没造成伤害
+多半只是因为跑测试的进程没有辅助功能授权——那是运气不是设计」。
+**这两件事是同一个根：测试里跑了真的系统副作用。**
+
+**真机风险**：同一段代码在 app 里跑，遥控器/鼠标语音会话期间挂 tap。
+崩了就是整个 app 挂掉，正在说的那句话全丢。
+
+### ② `SBCDecoder.decodeFrame` 数组越界（SIGTRAP，2 次）
+
+```
+SBCDecoderTests.matchesFFmpeg(fixture:)
+  → SBCDecoder.decode<A>(_:)
+  → SBCDecoder.decodeFrame(_:at:info:into:)
+  → Array.subscript.getter → _checkSubscript → 越界陷阱
+```
+
+**输入是确定性的（固定 fixture），却间歇崩**——这本身就是线索：
+同一份输入每次结果该一样。指向**并发测试之间共享了可变状态**
+（Swift Testing 默认并行跑），或者解码器内部有跨调用残留的状态。
+
+**真机风险**：这是鼠标收音的解码路径（M7 从 FFmpeg n8.1 移植的 535 行）。
+越界在 app 里就是崩溃。**用户此前报过一次「无法使用鼠标收音」，
+当时没查出原因——不能排除是同一件事。**
+
+### 怎么查
+
+**不要在 M8 分支上修**，另开分支/worktree。建议顺序：
+
+1. 先让崩溃**可复现**：`./scripts/test.sh` 连跑 20 次统计频次，
+   分别单跑 `--filter RemoteKeySuppressor` 与 `--filter SBCDecoder`
+   看两条签名是否独立出现。
+2. `RemoteKeySuppressor`：查 tap 装在哪个 run loop、回调怎么持有 `self`、
+   `stop()` 有没有在析构前一定被调到。**顺带把「测试里装真 tap」这件事
+   一起解决**——它和「测试里注入真按键」是同一类问题。
+3. `SBCDecoder`：`.serialized` 跑一遍看还崩不崩，能定位是并发还是逻辑。
+
+**这两条的优先级高于任何新功能。** M6 那一轮的主题就是「说过的话不再
+无声消失」，而这是「说到一半整个 app 没了」。
+
+---
 
 ## 输入设备收尾（新增，2026-08-18 记，未排期）
 
