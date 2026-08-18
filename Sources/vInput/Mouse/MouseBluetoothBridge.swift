@@ -139,14 +139,20 @@ final class MouseBluetoothBridge: NSObject {
 
     var deviceIdentifier: UUID? { peripheral?.identifier }
 
+    /// 注入按键的实现。**可替换是为了能测**——真发 `CGEvent` 要辅助功能
+    /// 授权，测试进程拿不到（TCC 绑 app bundle）。
+    private let keyPoster: KeyPoster
+
     init(
         delegate: MouseBluetoothBridgeDelegate,
         targetName: String = MouseVoiceGate.targetName,
-        excludedIdentifiers: @escaping () -> Set<UUID> = { [] }
+        excludedIdentifiers: @escaping () -> Set<UUID> = { [] },
+        keyPoster: KeyPoster = SystemKeyPoster()
     ) {
         self.delegate = delegate
         self.targetName = targetName
         self.excludedIdentifiers = excludedIdentifiers
+        self.keyPoster = keyPoster
         super.init()
     }
 
@@ -214,6 +220,10 @@ final class MouseBluetoothBridge: NSObject {
     private func apply(_ actions: [MouseSessionAction]) {
         for action in actions {
             switch action {
+            case .pressEnter:
+                log("回车键按下，注入 Return")
+                keyPoster.postReturn()
+
             case .beginDictation:
                 log("语音键按下，开始录音")
                 delegate?.mouseBridgeDidStartVoice(self)
@@ -332,6 +342,7 @@ final class MouseBluetoothBridge: NSObject {
     static func describeSemantics(_ code: UInt8) -> String {
         switch MouseVoiceProtocol.classify(code: code) {
         case .wake: return "语音键按下，准备"
+        case .enterKey: return "回车键"
         case .voiceStart: return "语音会话开始"
         case .unpairedStart: return "长按持续开麦，无结束码"
         case .otherStart(let value): return String(format: "其他按键开始 0x%02X", value)

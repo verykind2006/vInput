@@ -132,7 +132,12 @@ enum MouseControlSemantics: Equatable {
     case voiceStart
     /// `0x31`。长按开麦，**没有配对的结束码**。
     case unpairedStart
-    /// 其他奇数开始码（实测 `0x23` / `0x27`，鼠标上别的 AI 功能键）。
+    /// `0x27`。鼠标上那个多余的按键，映射成回车。
+    ///
+    /// **它不开任何会话**——按一下就是一次回车，没有「按住」的语义，
+    /// 配对的 `0x28`（松开）直接忽略。
+    case enterKey
+    /// 其他奇数开始码（实测 `0x23`，鼠标上别的 AI 功能键）。
     case otherStart(UInt8)
     /// 任意偶数码 = 结束。
     case stop(UInt8)
@@ -173,6 +178,10 @@ enum MouseVoiceProtocol {
     static let frameBatterySuffix: UInt8 = 0x1B
     static let frameInfix: [UInt8] = [0x0A, 0x06, 0x07, 0x09]
     static let frameSuffix: UInt8 = 0x44
+
+    /// 映射成回车的那个按键码。抽成常量而不是散在 switch 里，
+    /// 是为了让「哪个键接了什么」一眼可查。
+    static let enterKeyCode: UInt8 = 0x27
 
     /// 一个通知包属于哪一类。
     ///
@@ -229,6 +238,9 @@ enum MouseVoiceProtocol {
         case 0x51: return .wake
         case 0x21: return .voiceStart
         case 0x31: return .unpairedStart
+        // 用户 2026-08-18 指定：鼠标上那个多余的键映射成回车。
+        // 实测按一下发 `0x27`、松开发 `0x28`，两次按键完全一致。
+        case enterKeyCode: return .enterKey
         default:
             return code % 2 == 1 ? .otherStart(code) : .stop(code)
         }

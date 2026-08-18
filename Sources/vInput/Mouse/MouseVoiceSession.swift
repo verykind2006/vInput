@@ -73,6 +73,8 @@ enum MouseSessionAction: Equatable {
     case stopReceiving(cooldown: TimeInterval)
     /// 冷却结束，恢复订阅。
     case resumeReceiving
+    /// 按一次回车。
+    case pressEnter
 }
 
 /// 会话时长上限与冷却时间。集中在一处，理由见文件头。
@@ -129,6 +131,12 @@ final class MouseVoiceSession {
 
         case .unpairedStart:
             return begin(.foreign(code: code, startedAt: now), code: code, at: now)
+
+        case .enterKey:
+            // **不动状态机。** 它不是会话，是一次即时按键。
+            // 正在听写时也照发——用户按它就是想换行/确认，
+            // 而听写与回车互不冲突。
+            return [.pressEnter]
 
         case .otherStart(let value):
             return begin(.foreign(code: value, startedAt: now), code: code, at: now)

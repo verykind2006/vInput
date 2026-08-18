@@ -91,7 +91,8 @@ struct MouseVoiceProtocolTests {
     @Test("其余奇数是开始码")
     func otherOddCodesAreStarts() {
         #expect(MouseVoiceProtocol.classify(code: 0x23) == .otherStart(0x23))
-        #expect(MouseVoiceProtocol.classify(code: 0x27) == .otherStart(0x27))
+        // 0x27 已单列为回车键，见下方 MouseEnterKeyTests。
+        #expect(MouseVoiceProtocol.classify(code: 0x25) == .otherStart(0x25))
     }
 
     @Test("偶数是结束码")
@@ -121,6 +122,44 @@ struct MouseVoiceProtocolTests {
 ///
 /// 后果不是「少认一个键」，是**整个协议随电量下降而失效**，症状是所有帧
 /// 突然变成「不认识的 17 字节帧」——极难往电量上想。
+/// 鼠标上那个多余的按键映射成回车（用户 2026-08-18 指定）。
+///
+/// 实测：按一下发 `0x27`、松开发 `0x28`，两次按键完全一致
+/// （日志 16:01:18 与 16:01:20）。
+@Suite("鼠标的回车键")
+struct MouseEnterKeyTests {
+    @Test("0x27 是回车键，不是普通开始码")
+    func classifiesEnterKey() {
+        #expect(MouseVoiceProtocol.classify(code: 0x27) == .enterKey)
+        #expect(MouseVoiceProtocol.enterKeyCode == 0x27)
+    }
+
+    /// **回车不开会话。** 它没有「按住」的语义，配对的 0x28 直接忽略——
+    /// 若走 otherStart 那条路，按一下回车会开一个 30 秒上限的空会话，
+    /// 期间菜单栏状态和互斥守卫都会被它占住。
+    @Test("回车不开会话，只发一次按键")
+    func enterDoesNotOpenSession() {
+        let session = MouseVoiceSession()
+        let now = Date()
+        #expect(session.handleControl(code: 0x27, at: now) == [.pressEnter])
+        #expect(!session.isDictating)
+        // 松开码落到空闲期，什么也不做。
+        #expect(session.handleControl(code: 0x28, at: now) == [])
+        #expect(!session.isDictating)
+    }
+
+    /// 正在听写时按它照发——用户按它就是想换行/确认，两件事不冲突。
+    @Test("听写期间按回车不打断听写")
+    func enterDuringDictationKeepsSession() {
+        let session = MouseVoiceSession()
+        let now = Date()
+        _ = session.handleControl(code: 0x21, at: now)
+        #expect(session.isDictating)
+        #expect(session.handleControl(code: 0x27, at: now) == [.pressEnter])
+        #expect(session.isDictating, "回车不该结束听写")
+    }
+}
+
 @Suite("控制帧的电量字节")
 struct MouseControlFrameBatteryTests {
     private func frame(battery: UInt8, code: UInt8) -> Data {
