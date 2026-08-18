@@ -340,6 +340,59 @@ struct BLEScanNotificationLog {
     }
 }
 
+// MARK: - 失控流自我保护
+
+/// 长时间不间断收流时让扫描器自己停下来。
+///
+/// **这条是 2026-08-18 那次事故直接逼出来的。** 鼠标的 `0x31`（长按开麦）
+/// 没有配对的结束码，触发后设备持续送流 **11 分钟**，把用户不知情的房间
+/// 环境音全写进了抓包文件，随后还被解码脚本解成 15 MB 的 WAV 转写了一遍。
+/// 用户是靠菜单栏的麦克风图标才发现的。
+///
+/// 教训比这支鼠标更普遍：**任何诊断工具在长时间无预期地接收数据时，都该
+/// 自己停下来并告警，而不是闷头记录。** 产品路径上的对策是
+/// `MouseVoiceSession` 的时长上限；`scripts/mouse-decode.sh` 已加（提交
+/// `b7ca232`）；扫描器本身这一条当时列成了待办，就是这里。
+///
+/// 判据是「连续流的时长」而不是「总包数」：诊断的正常用法是按几秒、松开、
+/// 再按几秒，包与包之间有明显的空档。空档超过 `gapEndsBurst` 就当新一段
+/// 开始，所以按十次也不会误伤；而一段不间断的流超过 `maxBurstDuration`
+/// 就一定不是有人按着键在说话。
+struct BLEScanStreamGuard {
+    /// 单段连续流的上限。与 `scripts/mouse-decode.sh` 取同一个数——
+    /// 同一支设备用同一个判据，日志与脚本对得上。
+    static let maxBurstDuration: TimeInterval = 90
+    /// 多长的空档算「这一段结束了」。音频包间隔实测 30 ms，
+    /// 2 秒比它大两个数量级，不会被抖动误判。
+    static let gapEndsBurst: TimeInterval = 2
+
+    private var burstStartedAt: Date?
+    private var lastPacketAt: Date?
+
+    /// 记一个包，返回「是否该停了」。
+    mutating func record(at now: Date) -> Bool {
+        if let last = lastPacketAt, now.timeIntervalSince(last) <= Self.gapEndsBurst {
+            // 同一段流的延续
+        } else {
+            burstStartedAt = now
+        }
+        lastPacketAt = now
+        guard let start = burstStartedAt else { return false }
+        return now.timeIntervalSince(start) >= Self.maxBurstDuration
+    }
+
+    /// 当前这一段流已经持续了多久。只用于日志。
+    func burstDuration(at now: Date) -> TimeInterval {
+        guard let start = burstStartedAt else { return 0 }
+        return now.timeIntervalSince(start)
+    }
+
+    mutating func reset() {
+        burstStartedAt = nil
+        lastPacketAt = nil
+    }
+}
+
 // MARK: - 原始包落盘
 
 /// 把每一个通知包的完整字节写进独立文件。

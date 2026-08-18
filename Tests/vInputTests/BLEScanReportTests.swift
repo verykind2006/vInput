@@ -388,3 +388,84 @@ struct BLEScanReportTests {
         #expect(BLEScanGate.targetName(environment: ["VINPUT_BLE_SCAN_NAME": "  "]) == "iMouse")
     }
 }
+
+@Suite("扫描器的失控流自我保护")
+struct BLEScanStreamGuardTests {
+    private let t0 = Date(timeIntervalSince1970: 2_000_000)
+
+    private func at(_ seconds: TimeInterval) -> Date { t0.addingTimeInterval(seconds) }
+
+    /// 2026-08-18：0x31 触发后设备持续送流 11 分钟，把用户不知情的房间
+    /// 环境音全写进了抓包文件。判据是「连续流的时长」，90 秒与
+    /// scripts/mouse-decode.sh 取同一个数。
+    @Test("不间断收流超过上限时报停")
+    func stopsRunawayStream() {
+        var guardian = BLEScanStreamGuard()
+        var stoppedAt: TimeInterval?
+
+        // 每 30 ms 一个包（实测的音频包间隔），一直发 11 分钟
+        for step in stride(from: 0.0, through: 660, by: 0.03) {
+            if guardian.record(at: at(step)) {
+                stoppedAt = step
+                break
+            }
+        }
+
+        #expect(stoppedAt != nil)
+        #expect((stoppedAt ?? 0) >= BLEScanStreamGuard.maxBurstDuration)
+        #expect((stoppedAt ?? 0) < BLEScanStreamGuard.maxBurstDuration + 1)
+    }
+
+    /// 诊断的正常用法是按几秒、松开、再按几秒。空档超过阈值就当新一段
+    /// 开始，所以按十次也不会误伤。
+    @Test("按十次每次五秒不会误伤")
+    func doesNotFireOnNormalUsage() {
+        var guardian = BLEScanStreamGuard()
+        var now: TimeInterval = 0
+
+        for _ in 0..<10 {
+            for step in stride(from: 0.0, through: 5, by: 0.03) {
+                let fired = guardian.record(at: at(now + step))
+                #expect(!fired)
+            }
+            now += 5 + 10   // 松开 10 秒
+        }
+    }
+
+    @Test("空档结束一段流，计时从头开始")
+    func gapResetsBurst() {
+        var guardian = BLEScanStreamGuard()
+
+        for step in stride(from: 0.0, through: 80, by: 0.5) {
+            let fired = guardian.record(at: at(step))
+            #expect(!fired)
+        }
+        // 一个超过阈值的空档
+        let resumeAt = 80 + BLEScanStreamGuard.gapEndsBurst + 1
+        let afterGap = guardian.record(at: at(resumeAt))
+        #expect(!afterGap)
+        // 若空档没有重置计时，这一下（距最初已 100 多秒）就会误报
+        let later = guardian.record(at: at(resumeAt + 20))
+        #expect(!later)
+    }
+
+    @Test("单个包不会触发")
+    func singlePacketIsFine() {
+        var guardian = BLEScanStreamGuard()
+        let fired = guardian.record(at: t0)
+        #expect(!fired)
+        #expect(guardian.burstDuration(at: t0) == 0)
+    }
+
+    @Test("reset 清掉当前这一段")
+    func resetClearsBurst() {
+        var guardian = BLEScanStreamGuard()
+        for step in stride(from: 0.0, through: 80, by: 0.5) {
+            _ = guardian.record(at: at(step))
+        }
+        guardian.reset()
+        let fired = guardian.record(at: at(80.5))
+        #expect(!fired)
+        #expect(guardian.burstDuration(at: at(80.5)) == 0)
+    }
+}

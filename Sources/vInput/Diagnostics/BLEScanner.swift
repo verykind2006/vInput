@@ -101,6 +101,8 @@ final class BLEScanner: NSObject {
     private var reportedExclusion = false
     private var running = false
     private var structureReported = false
+    /// 失控流自我保护。判据与理由见 `BLEScanStreamGuard`。
+    private var streamGuard = BLEScanStreamGuard()
 
     init(
         targetName: String = BLEScanGate.targetName,
@@ -171,6 +173,7 @@ final class BLEScanner: NSObject {
         announcedPeripherals = []
         pendingServiceCount = 0
         reportedExclusion = false
+        streamGuard.reset()
     }
 
     // MARK: - 私有
@@ -178,6 +181,20 @@ final class BLEScanner: NSObject {
     private func log(_ message: String) {
         AppLogger.shared.log("BLESCAN \(message)")
         fileLog?.write("BLESCAN \(message)")
+    }
+
+    /// 一段流不间断超过上限——不是有人按着键在说话。停掉并告警。
+    ///
+    /// **停整个扫描器，不只退订那一个特征。** 退订之后设备很可能继续发，
+    /// 而扫描器还连着；诊断工具在这种状态下继续跑没有任何收益，只有风险。
+    /// 用户要接着查就重新开一轮，那是他明确的动作。
+    private func stopRunawayStream(duration: TimeInterval) {
+        AppLogger.shared.log(
+            "BLESCAN ⚠️ 已连续收流 \(Int(duration)) 秒且没有结束信号，"
+                + "多半是误触了长按开麦（鼠标的 0x31 没有配对的结束码）。"
+                + "已自动退订并停止扫描，这段音频不再落盘。要接着查请重新开一轮。"
+        )
+        stop()
     }
 
     private func fingerprintSummary() -> String {
@@ -507,6 +524,14 @@ extension BLEScanner: CBPeripheralDelegate {
         if pendingReads.remove(characteristic.uuid) != nil {
             log("READ uuid=\(BLEScanFormatter.describeUUID(characteristic.uuid)) "
                 + "len=\(data.count) hex=\(BLEScanFormatter.hex(data))")
+            return
+        }
+
+        // 失控流自我保护：先判要不要停，再落盘。判在前面是因为一旦决定停，
+        // 这一个包就不该再写进文件——那正是我们要避免的东西。
+        let now = Date()
+        if streamGuard.record(at: now) {
+            stopRunawayStream(duration: streamGuard.burstDuration(at: now))
             return
         }
 
