@@ -93,6 +93,13 @@ enum MouseTargetMatcher {
 
 // MARK: - 帧
 
+/// 通知包的类别。
+enum MousePacketKind: Equatable {
+    case control
+    case audio
+    case unknown(Int)
+}
+
 /// 一个 17 字节控制帧。
 struct MouseControlFrame: Equatable {
     let code: UInt8
@@ -135,6 +142,19 @@ enum MouseVoiceProtocol {
     static let framePrefix: [UInt8] = [0x0A, 0x77, 0xFF, 0x34, 0x1B]
     static let frameInfix: [UInt8] = [0x0A, 0x06, 0x07, 0x09]
     static let frameSuffix: UInt8 = 0x44
+
+    /// 一个通知包属于哪一类。
+    ///
+    /// **控制帧与音频复用 `…CB8` 这一个特征，长度是唯一的分流依据。**
+    /// 第三类不是「忽略」而是「不认识」——固件改了包长时，
+    /// 「什么都没发生」与「包来了但没人认」在日志里必须分得开。
+    static func kind(ofLength length: Int) -> MousePacketKind {
+        switch length {
+        case controlFrameLength: return .control
+        case audioPacketLength: return .audio
+        default: return .unknown(length)
+        }
+    }
 
     /// 解析控制帧。**固定字节对不上就返回 nil。**
     ///
