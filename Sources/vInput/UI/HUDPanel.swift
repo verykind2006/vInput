@@ -31,10 +31,27 @@ final class HUDPanel {
         return CGPoint(x: x, y: y)
     }
 
+    /// 每次 `show()` 递增。淡出的收尾回调拿着自己那一代的号码，回来时对不上
+    /// 就不再 `orderOut`。
+    ///
+    /// **不加这个的话，兜底提示会刚亮起就被上一刻的淡出关掉。** 实际时序
+    /// （`DictationSession.finish()`）：
+    ///
+    /// 1. `transition(to: .idle)` → `AppModel.endHUD()`（此时 `notice` 还是
+    ///    nil）→ `hide()`，排下一个 0.2 秒后的 `orderOut`；
+    /// 2. 之后才 `await rescue?.rescue(...)`，通知那侧一次往返只要几十毫秒；
+    /// 3. `showHUDNotice` → `show()`。
+    ///
+    /// 第 1 步排的 `orderOut` 大概率落在第 3 步之后，最好的情况也是肉眼可见
+    /// 的一次闪烁。而这条提示恰恰是通知不可用时**唯一**告诉用户「文字没进去、
+    /// 已复制到剪贴板」的途径——它自己无声失效，正是 M6 要根治的那类问题。
+    private var showGeneration = 0
+
     func show() {
         if panel == nil { panel = makePanel() }
         guard let panel else { return }
 
+        showGeneration &+= 1
         reposition(panel)
         // orderFrontRegardless 而非 makeKeyAndOrderFront：
         // 后者会抢焦点，导致文字注入失败。
@@ -48,10 +65,14 @@ final class HUDPanel {
 
     func hide() {
         guard let panel else { return }
+        let generation = showGeneration
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.2
             panel.animator().alphaValue = 0
-        } completionHandler: { [weak panel] in
+        } completionHandler: { [weak self, weak panel] in
+            // 淡出期间又 show() 过就作废：那 0.2 秒里冒出来的新内容比这次
+            // 隐藏更新，关掉它等于把刚显示的东西吞了。
+            guard let self, self.showGeneration == generation else { return }
             panel?.orderOut(nil)
         }
     }

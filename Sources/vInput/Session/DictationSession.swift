@@ -25,6 +25,10 @@ final class DictationSession {
     var onText: ((String) -> Void)?
     /// 预览更新时回调，供 HUD 显示。
     var onPreview: ((PreviewText) -> Void)?
+    /// 校正跑完后回调，携带给 HUD 的标注（nil 表示正常改动过，无需提示）。
+    ///
+    /// **校正关闭时一次都不回调**——没开的东西不该提示「未校正」。
+    var onCorrection: ((CorrectionAnnotation?) -> Void)?
 
     private let audioSource: AudioSource
     private let transcriber: Transcriber
@@ -38,6 +42,9 @@ final class DictationSession {
     /// 而本仓库不重建会话（`AppModel` 里的 session 只构造一次，
     /// 换 Whisper 模型走的是 `SwitchableTranscriber.switchTo`）。
     private var correctionPipeline: CorrectionPipeline?
+    /// 注入失败时的兜底：写剪贴板 + 发通知。可为 nil——缺席时行为与从前
+    /// 完全一致（报错、回 idle），只是文字又会蒸发。
+    private let rescue: TextRescuing?
 
     private var buffer = AudioBuffer(sampleRate: AudioFormat.sampleRate)
     private var targetToken: String?
@@ -47,13 +54,22 @@ final class DictationSession {
     /// 供测试断言保留的样本数。
     var retainedSampleCount: Int { retainedSamples.count }
 
+    /// 现在有没有东西可以重试。菜单栏据此决定重试项是可点还是灰的。
+    ///
+    /// **必须与 `retry()` 的前置条件是同一份表达式。** 两处各写一份的话，
+    /// 迟早出现「菜单项可点但什么都不发生」或者「有东西可重试却是灰的」
+    /// ——后者等于这个入口不存在，而它本来就是为了修「入口不存在」
+    /// （`Transcriber.swift:17`：全仓只有测试在调 retry()）。
+    var canRetry: Bool { state == .idle && !retainedSamples.isEmpty }
+
     init(
         audioSource: AudioSource,
         transcriber: Transcriber,
         sink: TextSink,
         targetGuard: TargetAppGuard,
         previewEngine: PreviewEngine? = nil,
-        correctionPipeline: CorrectionPipeline? = nil
+        correctionPipeline: CorrectionPipeline? = nil,
+        rescue: TextRescuing? = nil
     ) {
         self.audioSource = audioSource
         self.transcriber = transcriber
@@ -61,6 +77,7 @@ final class DictationSession {
         self.targetGuard = targetGuard
         self.previewEngine = previewEngine
         self.correctionPipeline = correctionPipeline
+        self.rescue = rescue
 
         audioSource.onFrame = { [weak self] samples in
             self?.buffer.append(samples)
@@ -164,7 +181,7 @@ final class DictationSession {
 
     /// 用上一次失败时保留的音频重新走一遍。
     func retry() async {
-        guard state == .idle, !retainedSamples.isEmpty else { return }
+        guard canRetry else { return }
         let samples = retainedSamples
         await process(samples)
     }
@@ -217,7 +234,9 @@ final class DictationSession {
         let finalText: String
         if let correctionPipeline {
             transition(to: .correcting)
-            finalText = await correctionPipeline.correct(trimmed)
+            let result = await correctionPipeline.correct(trimmed)
+            finalText = result.text
+            onCorrection?(result.annotation)
         } else {
             finalText = trimmed
         }
@@ -242,6 +261,12 @@ final class DictationSession {
         case .success:
             onText?(finalText)
         case .failure(let error):
+            // 规则二（注入失败）与规则三（目标应用改变）此前都到此为止，
+            // 文本直接蒸发。现在先把它救进剪贴板并通知用户，再报错。
+            //
+            // 顺序上兜底在 onError 之前：`AppModel` 在 onError 里只是把错误
+            // 写到菜单栏，而用户看到提示时文字必须已经在剪贴板里了。
+            await rescue?.rescue(finalText, error: error)
             onError?(error)
         }
     }

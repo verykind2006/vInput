@@ -33,3 +33,14 @@ Bench/reports/
 # 一个 `git add -A` 就带进版本库了。
 Bench/prompt-sweep*.txt
 Bench/.prompt-sweep.json
+
+# 长音频截断对照的门控标记与报告（同上，跑一轮好几分钟，期间是未跟踪文件）
+Bench/.long-audio.json
+Bench/long-audio.txt
+
+# 解码参数三维对照（scripts/decode-sweep.sh）。跑一轮近一小时，期间标记文件
+# 是未跟踪状态。**结论不靠这个文件传递**——它每轮被覆盖，带时间戳的副本在
+# 已忽略的 Bench/reports/ 里；进版本库的是 docs/Roadmap.md 里的对照表。
+Bench/.decode-sweep.json
+Bench/decode-sweep.txt
+Bench/decode-sweep-scaling.txt

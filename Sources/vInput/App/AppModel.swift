@@ -24,6 +24,12 @@ final class AppModel {
     /// 正在加载模型。首次使用某模型时 Core ML 要编译到神经引擎，
     /// 实测可达 40–125 秒，期间必须让用户看到进度而不是以为卡死。
     private(set) var loadingModelName: String?
+    /// 上一次转写失败后音频还留着，菜单栏的「重试上次转写」据此点亮。
+    ///
+    /// 真实判据在 `DictationSession.canRetry`，这里是它的可观察镜像：
+    /// @Observable 只跟踪自身的存储属性，菜单直接读 session 的话点完不会
+    /// 刷新（与 `correctionEnabled` 同一个坑，见那里的注释）。
+    private(set) var canRetry: Bool = false
 
     /// 校正是否启用，菜单据此显示「校正：开 / 关」。
     ///
@@ -77,6 +83,18 @@ final class AppModel {
     /// 录音开始时刻，用于 HUD 的时长显示。
     private var recordingStartedAt: Date?
     private var hudTimer: Timer?
+    /// 附注的收起计时器，见 `hudNoticeLinger`。
+    private var hudNoticeTimer: Timer?
+    /// 通知投递（含未授权时退回 HUD）。在 `bootstrap` 里建，因为退路要拿到
+    /// 已经接好线的 HUD。
+    private var notificationPresenter: NotificationPresenter?
+
+    /// 会话结束后 HUD 为附注多停留的时长。
+    ///
+    /// 附注（「文字未输入，已复制」「本次未校正」）**产生的时刻就是面板
+    /// 该关掉的时刻**——不多停这几秒，等于把它画上去再立刻擦掉。
+    /// 4 秒是「扫一眼够、挡住屏幕又不烦人」的折中，需要真机上按感觉调。
+    private static let hudNoticeLinger: TimeInterval = 4
 
     /// 默认快捷键：Option + D。
     private let hotkeyCode = UInt32(kVK_ANSI_D)
@@ -97,6 +115,11 @@ final class AppModel {
     /// 正在录当前这条。菜单要显示它：点一下菜单就关了，没有这个状态的话
     /// 用户看不出录音到底起没起来，只能靠日志。
     private(set) var benchIsRecording = false
+
+    /// 上一次 `onStateChange` 看到的状态。用来判「这次是不是从 idle 出来的」，
+    /// 因为 HUD 只该在进入非 idle 的**那一刻**打开一次——重复调 `beginHUD`
+    /// 会把已经计的时长和刚产生的校正标注一起清掉。
+    private var lastSessionState: DictationSession.State = .idle
 
     /// 录制专用的音频源。
     ///
@@ -147,19 +170,72 @@ final class AppModel {
     /// 正常收尾，已经录进去的部分照常写成当前这条的 WAV，不白录。
     private func benchWindowDidClose() {
         guard benchIsRecording else { return }
-        AppLogger.shared.log("录制窗口关闭时仍在录音，已停止并写出当前这条")
+        // **先做再记，而且记的是结果。** 原先是无条件先打「已停止并写出」
+        // 再调用——被 guard 挡下时日志照样说停了，而麦克风还开着。
+        // 排查时日志是唯一线索，它谎报一次就够让人走错方向。
         toggleBenchRecording()
+        if benchIsRecording {
+            AppLogger.shared.log("录制窗口关闭，但停止失败，仍在录音")
+        } else {
+            AppLogger.shared.log("录制窗口关闭时仍在录音，已停止并写出当前这条")
+        }
+    }
+
+    /// `toggleBenchRecording` 该做什么。
+    ///
+    /// 抽成纯函数是为了能测：真要走进那个方法得先让 `benchIsRecording`
+    /// 为真，而那需要真启动麦克风——测试进程拿不到麦克风权限（TCC 绑 app
+    /// bundle）。判断本身与硬件无关，抽出来就钉得住。
+    enum BenchToggleAction: Equatable {
+        case stop
+        case start
+        /// 听写占着麦克风，不能**开始**录制。
+        case rejectBusy
+    }
+
+    /// **停止永远允许，忙碌只拦开始。**
+    ///
+    /// 原先的实现把忙碌 guard 写在停止分支前面，于是连「停止」都被拦下。
+    /// 失效链：录制中按遥控器语音键（那条路径当时漏查 `benchIsRecording`，
+    /// 见 `startRemote`）→ 听写非 idle → 关掉录制窗口 → 停止被拦 →
+    /// 麦克风一直开着、`benchIsRecording` 卡在 true、⌥D 从此被永久拒绝，
+    /// 而窗口已经关了，**没有任何 UI 能清掉这个状态**。
+    ///
+    /// 停止本身永远是安全的：只是关掉麦克风、写出已录到的部分。
+    static func benchToggleAction(
+        isRecording: Bool,
+        dictationIdle: Bool
+    ) -> BenchToggleAction {
+        if isRecording { return .stop }
+        return dictationIdle ? .start : .rejectBusy
+    }
+
+    /// 遥控器语音键是否可以开始一次听写。
+    ///
+    /// 抽出来的理由同上，外加一条：这两个条件必须**同时**存在。
+    /// 原先这里只查了模型加载，注释却写着「与 ⌥D 的守卫保持一致」——
+    /// ⌥D 有两条，这里只有一条。漏掉的后果不是「多录一次」，是两个
+    /// `AVAudioEngine` 抢同一支麦克风。
+    static func remoteStartAllowed(
+        modelLoading: Bool,
+        benchRecording: Bool
+    ) -> Bool {
+        !modelLoading && !benchRecording
     }
 
     /// 开始/结束录当前这条。
     func toggleBenchRecording() {
         guard let bench = benchSession, let entry = bench.current else { return }
 
-        // 听写进行中不许录基准集：同一支麦克风、两个引擎，同时开会打架。
-        // session 尚未初始化（bootstrap 之前）时视为空闲。
-        guard (session?.state ?? .idle) == .idle else {
+        switch Self.benchToggleAction(
+            isRecording: benchIsRecording,
+            dictationIdle: (session?.state ?? .idle) == .idle
+        ) {
+        case .rejectBusy:
             AppLogger.shared.log("听写进行中，基准集录制已忽略")
             return
+        case .stop, .start:
+            break
         }
 
         if benchIsRecording {
@@ -259,6 +335,15 @@ final class AppModel {
             .bluetooth: bluetoothSource,
         ])
         self.audioRouter = router
+
+        // 通知拿不到授权时退回 HUD 提示。这条退路不是补丁：通知权限是个
+        // 新弹窗，用户划掉或拒掉之后剪贴板兜底就会静默失效——而它兜的正是
+        // 「说的话没落地也没留下副本」那类问题。
+        let presenter = NotificationPresenter(notifier: SystemNotifier()) { [weak self] notice in
+            self?.showHUDNotice(notice)
+        }
+        notificationPresenter = presenter
+
         let session = DictationSession(
             audioSource: router,
             transcriber: transcriber,
@@ -266,7 +351,8 @@ final class AppModel {
                 typing: TypingSink(),
                 clipboard: ClipboardSink()
             ),
-            targetGuard: TargetAppGuard()
+            targetGuard: TargetAppGuard(),
+            rescue: TextRescue(clipboard: ClipboardSink(), presenter: presenter)
         )
 
         session.onStateChange = { [weak self] state in
@@ -283,9 +369,28 @@ final class AppModel {
             }
             self.hudModel.phase = state
             self.cancelHotkey.update(for: state)
+            // 每次状态变化都同步，而不是只在回到 idle 时同步：新会话一
+            // 开始 `retainedSamples` 就被清掉，菜单项必须立刻跟着灰掉，
+            // 否则录音途中点它是「点得动但什么都不发生」。
+            self.canRetry = self.session?.canRetry ?? false
 
-            if state == .listening {
-                self.beginHUD()
+            // **从 idle 进入任何非 idle 状态都要开 HUD，不能只认 .listening。**
+            //
+            // 重试走的是 .idle → .transcribing → …（`retry()` 不经过
+            // .listening），只认 .listening 的话：菜单点重试 → 转写成功 →
+            // 面板从未 orderFront → 用户什么都看不到，随后 endHUD 还会排一个
+            // 停留计时器去收一个从没显示过的面板。**③ 的未校正标注在 ②
+            // 这条路上等于不存在。** 独立验收 2026-08-17 指出。
+            //
+            // 判「上一个状态是不是 idle」而不是每次都调：beginHUD 会重置
+            // 计时器与附注，在 .listening → .transcribing 上重复调用会把
+            // 已经计的时长和刚产生的标注一起清掉。
+            let wasIdle = self.lastSessionState == .idle
+            self.lastSessionState = state
+            if state != .idle, wasIdle {
+                // 重试没有在录音：波形与时长计时器都不该跑，跑了显示的是
+                // 上一次的能量和一个从零开始的假时长。
+                self.beginHUD(recording: state == .listening)
             } else if state == .idle {
                 self.endHUD()
             }
@@ -301,6 +406,12 @@ final class AppModel {
         }
         session.onPreview = { [weak self] preview in
             self?.hudModel.preview = preview
+        }
+        // 标注在 .correcting 与 .injecting 之间产生，那时 HUD 还开着；
+        // 真正让它被看见的是 endHUD 的停留（见 hudNoticeLinger）——
+        // 这两步之间只隔几十毫秒，不停留等于没显示。
+        session.onCorrection = { [weak self] annotation in
+            self?.hudModel.notice = annotation?.hudLabel
         }
         self.session = session
         // 会话与全部回调就绪后再挂校正，让上次启动保存的开关状态生效。
@@ -341,6 +452,11 @@ final class AppModel {
             phase = .error("快捷键注册失败：\(error)")
         }
 
+        // 把通知授权弹窗提前到启动时问掉。**不能等到第一次注入失败再问**：
+        // 那一刻用户人在别的应用里、手上还有一句话要救，是最不该被打断的
+        // 时机，而弹窗本身还会抢焦点，反过来把注入目标搅得更乱。
+        Task { await presenter.primeAuthorization() }
+
         // 预览引擎依赖已加载的模型，异步挂载。
         Task { await warmUpAndAttachPreview() }
 
@@ -354,13 +470,27 @@ final class AppModel {
 
     // MARK: - HUD
 
-    private func beginHUD() {
+    /// - Parameter recording: 本次是否真的在录音。重试（`retry()`）没有录音，
+    ///   此时不启动波形与时长计时器——跑了只会显示上一次的能量和一个从零
+    ///   开始的假时长。
+    private func beginHUD(recording: Bool = true) {
         hudModel.preview = .empty
         hudModel.energy = []
         hudModel.elapsed = 0
         hudModel.previewDegraded = false
-        recordingStartedAt = Date()
+        // 上一轮的附注与它的收起计时器必须一起清掉：不清计时器的话，
+        // 它会在新会话进行到一半时把面板关掉。
+        hudModel.notice = nil
+        hudNoticeTimer?.invalidate()
+        hudNoticeTimer = nil
+        recordingStartedAt = recording ? Date() : nil
         hud.show()
+
+        guard recording else {
+            hudTimer?.invalidate()
+            hudTimer = nil
+            return
+        }
 
         // 20 fps：波形要这个频率才不卡顿。时长只显示到秒，顺带一起更新。
         // 能量直接从 previewProcessor 读，不等流式转写的状态回调——
@@ -379,7 +509,12 @@ final class AppModel {
         hudTimer?.invalidate()
         hudTimer = nil
         recordingStartedAt = nil
-        hud.hide()
+        // 有附注就让面板多停一会儿，没有就照旧立刻收起。
+        if hudModel.notice == nil {
+            hud.hide()
+        } else {
+            scheduleHUDNoticeHide()
+        }
 
         // 记录本次录音的能量分布。真机反馈「预览要 20-30 秒才出字」，
         // 而流式转写的静音阈值是 0.3——若真人对着麦克风说话的能量普遍
@@ -393,6 +528,32 @@ final class AppModel {
                 + "超阈值(0.3) \(energy.aboveThreshold) 个 "
                 + "(\(energy.aboveThreshold * 100 / energy.count)%)"
             )
+        }
+    }
+
+    /// 把一行附注显示在 HUD 上，并让面板停留几秒。
+    ///
+    /// 会话已经结束、面板已经收起时也要能用——通知投递不出去这条退路正是
+    /// 在那之后触发的，所以这里主动 `show()`。
+    func showHUDNotice(_ text: String) {
+        hudModel.notice = text
+        hud.show()
+        scheduleHUDNoticeHide()
+    }
+
+    private func scheduleHUDNoticeHide() {
+        hudNoticeTimer?.invalidate()
+        hudNoticeTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.hudNoticeLinger, repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // 这几秒里用户又开始说话了就别收：新会话的 beginHUD 已经把
+                // 面板重新点亮，这时候关掉等于把正在用的 HUD 关了。
+                guard (self.session?.state ?? .idle) == .idle else { return }
+                self.hudModel.notice = nil
+                self.hud.hide()
+            }
         }
     }
 
@@ -672,6 +833,20 @@ final class AppModel {
         }
     }
 
+    /// 用上一次转写失败时保留的音频再走一遍（M6 ②）。
+    ///
+    /// **入口放菜单栏**，理由是状态一直可见、不占用新的全局快捷键（与现有
+    /// ⌥D 及其他应用有冲突风险）、也不依赖通知权限——放通知按钮里的话，
+    /// 通知被划掉入口就没了。
+    func retryLastTranscription() {
+        guard let session, session.canRetry else {
+            AppLogger.shared.log("重试被拒：当前没有可重试的音频")
+            return
+        }
+        AppLogger.shared.log("用户从菜单栏发起重试，保留样本 \(session.retainedSampleCount) 个")
+        Task { await session.retry() }
+    }
+
     private func handleMissingPermission() {
         switch permissionStatus {
         case .microphoneMissing:
@@ -710,8 +885,18 @@ final class AppModel {
 
         coordinator.onStartSession = { [weak self] in
             guard let self, let session = self.session else { return }
-            // 模型加载中不接受录音请求，与 ⌥D 的守卫保持一致
-            guard self.loadingModelName == nil else { return }
+            // 两个条件缺一不可，判据见 AppModel.remoteStartAllowed。
+            // 基准集那条以前漏了，而注释却写着「与 ⌥D 的守卫保持一致」。
+            guard Self.remoteStartAllowed(
+                modelLoading: self.loadingModelName != nil,
+                benchRecording: self.benchIsRecording
+            ) else {
+                AppLogger.shared.log(
+                    "遥控器录音被拒：模型加载中=\(self.loadingModelName != nil) "
+                        + "基准集录制中=\(self.benchIsRecording)"
+                )
+                return
+            }
             self.audioRouter?.select(.bluetooth)
             // RC003 的语音键同时是 HID 按键，按住期间 macOS 会持续把它
             // 投递给前台应用（实测为 Page Up 自动重复）。录音期间吞掉。

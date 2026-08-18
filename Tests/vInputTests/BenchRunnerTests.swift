@@ -47,6 +47,8 @@ struct BenchRunnerTests {
         var missing: [String] = []
         var totalCER = 0.0
         var counted = 0
+        // 中文语境里写成半角的标点总数。报告头单列一行，见下面 M6 ⑤ 的注释。
+        var totalHalfWidth = 0
         var categoryStats: [BenchCategory: (cer: Double, count: Int)] = [:]
         let startedAt = Date()
 
@@ -77,10 +79,18 @@ struct BenchRunnerTests {
                 ? ""
                 : "  术语=\(String(format: "%.2f", BenchMetrics.termHitRate(terms: terms, in: output)))"
 
+            // 全半角单独一格：CER 排除标点、标点数只数个数，两者合起来正好
+            // 把「中文语境写成半角」这件事完全屏蔽掉（M6 ⑤）。写成
+            // 「实际/参考」的形式，因为参考文本上它恒为 0，一眼能看出差距。
+            let halfWidth = BenchMetrics.halfWidthPunctuationInChinese(output)
+            totalHalfWidth += halfWidth
+            let referenceHalfWidth = BenchMetrics.halfWidthPunctuationInChinese(entry.text)
+
             let mark = cer == 0 ? "✅" : "❌"
             lines.append("""
                 \(mark) \(entry.id)  CER=\(String(format: "%.3f", cer))  \
-                标点=\(BenchMetrics.punctuationCount(output))\(hitNote)
+                标点=\(BenchMetrics.punctuationCount(output))  \
+                半角=\(halfWidth)/\(referenceHalfWidth)\(hitNote)
                    参考：\(entry.text)
                    实际：\(output)
                 """)
@@ -124,7 +134,11 @@ struct BenchRunnerTests {
         // 而模型在应用里是常驻的，加载只发生一次。
         report += "转写耗时：\(String(format: "%.1f", elapsed)) 秒\n"
         report += "样本：\(counted) / \(manifest.entries.count)\n\n"
-        report += "总体 CER：\(String(format: "%.4f", totalCER / Double(counted)))\n\n"
+        report += "总体 CER：\(String(format: "%.4f", totalCER / Double(counted)))\n"
+        // 单列一行而不是只写在逐条里：这一格的用途是「跨两份报告看它有没有
+        // 变大」，埋在二十几条里翻不出来。标准文本上它恒为 0，所以这个数
+        // 就是差距本身。
+        report += "中文语境半角标点：\(totalHalfWidth)（标准文本为 0）\n\n"
         for category in BenchCategory.allCases {
             guard let stat = categoryStats[category], stat.count > 0 else { continue }
             report += "\(category.rawValue)：CER=\(String(format: "%.4f", stat.cer / Double(stat.count)))"

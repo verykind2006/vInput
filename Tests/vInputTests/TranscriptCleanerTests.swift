@@ -100,6 +100,55 @@ struct TranscriptCleanerTests {
         #expect(TranscriptCleaner.clean("正文。请不吝点赞订阅转发") == "正文。")
     }
 
+    /// 独立验收（2026-08-17）在真机日志里找到两种形态，把上面那条按字面
+    /// 列举的规则先后击穿。按字面往上补只会被下一个错字再击穿一次，
+    /// 所以改成锚在「不吝」「打赏支持」这两个口语里几乎只出现在这句套话里
+    /// 的词上，整句连坐。
+    @Test("频道套话的两种真实变形都要删干净")
+    func removesChannelPromoVariants() {
+        // ASR 在「点赞」与「订阅」之间多听出一个「讨」，`\s*` 吃不掉它。
+        #expect(
+            TranscriptCleaner.clean("请不吝点赞 讨订阅 转发 打赏支持明镜与点点栏目") == ""
+        )
+        // 开头压根不是「请不吝点赞」——旧规则的锚点整个不存在。
+        #expect(TranscriptCleaner.clean("用转发 打赏支持明镜与点点栏目。") == "")
+        // 跟在正文后面时只吃掉套话那一句，正文的句号留着。
+        #expect(
+            TranscriptCleaner.clean("今天下午三点开会。请不吝点赞 讨订阅 转发")
+                == "今天下午三点开会。"
+        )
+    }
+
+    /// M6 关掉 VAD 分块之后，这条规则从「第二道」变成了这一类幻觉的
+    /// **最后一道**：独立验收实测，只差分块开关的两个变体在 `noise45` 上
+    /// 分别是 0/4 与 4/4，说明分块本身在超 30 秒底噪上压着它。
+    @Test("套话末尾还跟着谢谢观看时，两条规则要能接力")
+    func removesChannelPromoFollowedByThanks() {
+        #expect(TranscriptCleaner.clean("正文。请不吝点赞 讨订阅 谢谢观看") == "正文。")
+    }
+
+    /// 阈值定在 2 就是为了这一类：用户真话最多蹭到一个促销词。
+    /// 定成 1 的话下面每一条都会被误删。
+    @Test("只命中一个促销词的真话不被删")
+    func singlePromoTokenIsKept() {
+        for text in [
+            "这个作者不错，我准备打赏支持一下。",
+            "我准备打赏支持一下他，然后再看看后面的更新怎么样。",
+            "记得帮我点赞。",
+            "这个栏目做得挺用心的。",
+            "你把这条转发给他。",
+        ] {
+            #expect(TranscriptCleaner.clean(text) == text, "被误删了：\(text)")
+        }
+    }
+
+    /// 促销词只在**末句**里数。前文提到过不算。
+    @Test("促销词在前文、末句正常时不删")
+    func promoTokensInEarlierSentenceAreIgnored() {
+        let text = "我让他点赞订阅了。后来那个功能就跑通了。"
+        #expect(TranscriptCleaner.clean(text) == text)
+    }
+
     @Test("普通文本完全不受影响")
     func plainTextUnchanged() {
         let text = "我们来测试一下这个功能这个功能跑了一下午基本的功能框架就已经出来了"
