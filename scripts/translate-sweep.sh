@@ -20,6 +20,11 @@
 #                    撞上限的表现是「静默返回半截译文、成功返回不报错」，
 #                    把它调到必然撞上限、看报告里「疑似截断」是不是大面积
 #                    亮起来，是证明那条判据不是空判据的唯一办法。
+#   --corpus PATH    换一份语料跑。默认 Bench/manifest.json（26 条标准文本，
+#                    **一个 ASCII 数字都没有**）。Bench/translate-digits.json
+#                    是补的数字语料，纯文本无录音，专门喂「数字丢失」那一列。
+#                    路径可以是相对仓库根的。文件读不到会让整轮报错，
+#                    不会悄悄退回 manifest。
 #   --variant NAME   提示词变体：english-language-name（生产默认）或
 #                    chinese-language-name（对照）。名字写错会让整轮不跑，
 #                    不会悄悄退回默认值——退回默认值就会写出一份标着
@@ -30,7 +35,7 @@ ROOT="${0:A:h:h}"
 cd "$ROOT"
 
 usage() {
-  print -u2 "用法：$0 <模型目录名> [语言码…] [--limit N] [--max-tokens N] [--variant NAME]"
+  print -u2 "用法：$0 <模型目录名> [语言码…] [--limit N] [--max-tokens N] [--variant NAME] [--corpus PATH]"
   print -u2 "可用模型："
   ls "$ROOT/Models" 2>/dev/null | sed 's/^/  /' >&2 || print -u2 "  （Models/ 不存在）"
   exit 1
@@ -52,11 +57,13 @@ LANGS=()
 LIMIT=""
 MAX_TOKENS=""
 VARIANT=""
+CORPUS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --limit)       LIMIT="$2"; shift 2 ;;
     --max-tokens)  MAX_TOKENS="$2"; shift 2 ;;
     --variant)     VARIANT="$2"; shift 2 ;;
+    --corpus)      CORPUS="$2"; shift 2 ;;
     -h|--help)     usage ;;
     -*)            print -u2 "未知选项：$1"; usage ;;
     *)             LANGS+=("$1"); shift ;;
@@ -73,6 +80,16 @@ FIELDS="\"modelDirectory\":\"$MODEL\",\"targets\":[$TARGETS]"
 [[ -n "$LIMIT" ]]      && FIELDS="$FIELDS,\"limit\":$LIMIT"
 [[ -n "$MAX_TOKENS" ]] && FIELDS="$FIELDS,\"maxTokens\":$MAX_TOKENS"
 [[ -n "$VARIANT" ]]    && FIELDS="$FIELDS,\"promptVariant\":\"$VARIANT\""
+if [[ -n "$CORPUS" ]]; then
+  # 存进标记文件的必须是绝对路径：测试进程的 cwd 不是仓库根（M4 踩过），
+  # 相对路径会变成「文件不存在」。
+  [[ "$CORPUS" != /* ]] && CORPUS="$ROOT/$CORPUS"
+  if [[ ! -f "$CORPUS" ]]; then
+    print -u2 "语料文件不存在：$CORPUS"
+    exit 1
+  fi
+  FIELDS="$FIELDS,\"corpus\":\"$CORPUS\""
+fi
 
 MARKER="$ROOT/Bench/.translate-sweep.json"
 print "{$FIELDS}" > "$MARKER"

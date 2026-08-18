@@ -140,6 +140,9 @@ private extension BenchCategory {
         case .punctuation: "长句标点"
         case .homophone: "同音陷阱"
         case .colloquial: "口语日常"
+        // 这一类不进 manifest.json、录音界面永远列不到它（见 BenchCategory.digits）。
+        // 写在这里只是为了让这个 switch 保持穷尽。
+        case .digits: "数字金额"
         }
     }
 }

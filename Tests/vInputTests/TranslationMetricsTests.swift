@@ -64,6 +64,31 @@ struct TranslationMetricsTests {
         #expect(TranslationMetrics.digitsIn("no numbers here").isEmpty)
     }
 
+    /// **中文数字不算数字。** `Character.isNumber` 对「三」「两」「百」「十」
+    /// 「零」「①」「Ⅲ」全返回 true，用它做判据会让每个中文数字都被记成
+    /// 「原文里的阿拉伯数字」，而译文里它们理应是 `three` 这样的英文词、
+    /// 匹配不上，于是全部记成丢失。
+    ///
+    /// 这不是假想：2026-08-18 用 `isNumber` 版本跑 qwen2.5-7b × 英文 ×
+    /// 26 条，汇总写的是「数字丢失 17 / 原文共 17 个」，而那 26 条里
+    /// 一个 ASCII 数字都没有。这条用例就是那次的回归。
+    @Test("中文数字不被当成阿拉伯数字")
+    func chineseNumeralsAreNotDigits() {
+        #expect(TranslationMetrics.digitsIn("今天开会讨论了三个议题第一个是数据库").isEmpty)
+        #expect(TranslationMetrics.digitsIn("两百五十件，十天到货").isEmpty)
+        #expect(TranslationMetrics.digitsIn("第①项和第Ⅲ项").isEmpty)
+        // 混排时只抽 ASCII 的那部分。
+        #expect(TranslationMetrics.digitsIn("第三批一共 250 件") == ["250"])
+    }
+
+    /// 承接上一条：中文数字译成英文词不该被记成丢数字。
+    @Test("中文数字译成英文词不算丢失")
+    func chineseNumeralTranslationIsNotLoss() {
+        #expect(TranslationMetrics.lostDigits(
+            source: "今天开会讨论了三个议题",
+            translation: "We discussed three topics in today's meeting.").isEmpty)
+    }
+
     /// 原文已经带阿拉伯数字时，译文丢一个就是丢一个。
     @Test("原文的阿拉伯数字丢失能被发现")
     func detectsLostDigits() {

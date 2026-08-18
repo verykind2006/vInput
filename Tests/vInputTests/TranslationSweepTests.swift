@@ -18,6 +18,13 @@ struct TranslationSweepConfig {
     let limit: Int?
     let promptVariant: TranslationPrompt.Variant
     let maxTokens: Int
+    /// 换一份语料跑。nil＝用 `Bench/manifest.json` 那 26 条。
+    ///
+    /// 存在的理由是 `Bench/translate-digits.json`：那 26 条里一个 ASCII
+    /// 数字都没有，`lostDigits` 的分母恒为 0（见 `BenchCategory.digits`）。
+    /// 用「换语料」而不是「往 manifest 里加条目」，是因为 manifest 的每一条
+    /// 都假设有对应录音。
+    let corpus: URL?
 
     private struct Raw: Decodable {
         let modelDirectory: String
@@ -25,6 +32,7 @@ struct TranslationSweepConfig {
         let limit: Int?
         let promptVariant: String?
         let maxTokens: Int?
+        let corpus: String?
     }
 
     static func load(from url: URL) -> TranslationSweepConfig? {
@@ -54,8 +62,21 @@ struct TranslationSweepConfig {
             targets: targets,
             limit: raw.limit,
             promptVariant: variant,
-            maxTokens: raw.maxTokens ?? MLXTranslator.defaultMaxTokens
+            maxTokens: raw.maxTokens ?? MLXTranslator.defaultMaxTokens,
+            corpus: raw.corpus.map { URL(fileURLWithPath: $0) }
         )
+    }
+
+    /// 本轮要跑的语料。
+    ///
+    /// **换语料失败要抛，不能悄悄退回 manifest。** 退回去会跑出一份标着
+    /// 「数字语料」、实际跑的是没有数字的那 26 条的报告，而那份报告里
+    /// 「数字丢失」那一列会写「分母为 0」——看起来和「数字语料里一个数字
+    /// 都没考到」一模一样。与未知提示词变体同一条理由。
+    func loadCorpus() throws -> BenchManifest {
+        guard let corpus else { return try BenchManifest.loadFromRepository() }
+        let data = try Data(contentsOf: corpus)
+        return try JSONDecoder().decode(BenchManifest.self, from: data)
     }
 
     /// 仓库根：本文件在 `Tests/vInputTests/` 下，退三级
@@ -302,6 +323,55 @@ struct TranslationSweepGateTests {
         #expect(try #require(TranslationSweepConfig.load(from: with)).maxTokens == 32)
     }
 
+    /// `corpus` 缺省是 nil（用 manifest.json），给了就解析成路径。
+    @Test("corpus 缺省为 nil，给了就解析")
+    func parsesCorpus() throws {
+        let without = try marker(#"{"modelDirectory":"/tmp/q","targets":["en"]}"#)
+        let with = try marker(
+            #"{"modelDirectory":"/tmp/q","targets":["en"],"corpus":"/tmp/digits.json"}"#)
+        defer {
+            try? FileManager.default.removeItem(at: without.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: with.deletingLastPathComponent())
+        }
+
+        #expect(try #require(TranslationSweepConfig.load(from: without)).corpus == nil)
+        #expect(
+            try #require(TranslationSweepConfig.load(from: with)).corpus?.path == "/tmp/digits.json")
+    }
+
+    /// 语料文件读不到要抛，不能悄悄退回 manifest.json——那会写出一份标着
+    /// 「数字语料」、实际跑的是没有数字的那 26 条的报告。
+    @Test("语料文件不存在时抛错而不是退回 manifest")
+    func missingCorpusThrows() throws {
+        let url = try marker(
+            #"{"modelDirectory":"/tmp/q","targets":["en"],"corpus":"/nonexistent/x.json"}"#)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let config = try #require(TranslationSweepConfig.load(from: url))
+        #expect(throws: (any Error).self) { try config.loadCorpus() }
+    }
+
+    /// 仓库自带的数字语料要能解析，而且**真的带 ASCII 数字**。
+    ///
+    /// 后半句才是重点：这份语料存在的全部意义就是让 `lostDigits` 的分母
+    /// 非空，如果哪天有人把它改成没有数字的句子，那一列会静静地退回
+    /// 「分母为 0」，而报告照样跑得出来。
+    @Test("仓库里的数字语料可解析且分母非空")
+    func repositoryDigitsCorpusHasDigits() throws {
+        let url = TranslationSweepConfig.markerURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("translate-digits.json")
+        let manifest = try JSONDecoder().decode(
+            BenchManifest.self, from: try Data(contentsOf: url))
+        #expect(manifest.entries.count >= 8, "数字语料只有 \(manifest.entries.count) 条")
+        for entry in manifest.entries {
+            #expect(
+                !TranslationMetrics.digitsIn(entry.text).isEmpty,
+                "\(entry.id) 里没有 ASCII 数字，它在这份语料里读不出任何东西")
+            #expect(entry.category == .digits)
+        }
+    }
+
     /// `markerURL` 从 `#filePath` 回溯三级到仓库根。
     ///
     /// **不只比对字符串**——比对路径尾巴的话，回溯层数少一级、多一级都
@@ -379,7 +449,7 @@ struct TranslationSweepTests {
     @Test("跑全部语言并输出报告")
     func sweep() async throws {
         let config = try #require(TranslationSweepConfig.current)
-        let manifest = try BenchManifest.loadFromRepository()
+        let manifest = try config.loadCorpus()
         let entries = config.entries(from: manifest)
         #expect(!entries.isEmpty, "本轮一条样本都没有，报告里不会有任何东西")
 
@@ -405,6 +475,7 @@ struct TranslationSweepTests {
             "maxTokens：\(config.maxTokens)"
                 + (config.maxTokens == MLXTranslator.defaultMaxTokens ? "（生产默认值）" : "（**已改**）"),
             "语言：\(config.targets.map(\.rawValue).joined(separator: " "))",
+            "语料：\(config.corpus?.lastPathComponent ?? "manifest.json")",
             "样本：\(entries.count) 条标准文本"
                 + (config.limit == nil ? "（全量）" : "（limit=\(config.limit!)，共 \(manifest.entries.count) 条）"),
             "模型加载：\(Self.f(loadElapsed)) 秒",

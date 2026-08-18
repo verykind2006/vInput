@@ -61,8 +61,25 @@ enum TranslationMetrics {
     }
 
     /// 文本里出现的阿拉伯数字串，按出现顺序。
+    ///
+    /// **判据是 ASCII 的 0–9，不能用 `Character.isNumber`。** 后者对
+    /// 「三」「两」「百」「十」「零」「①」「Ⅲ」全部返回 true（Swift 标准库
+    /// 的文档里就把「三」列为 number），于是 `lostDigits` 会把每一个中文
+    /// 数字都当成「原文里的阿拉伯数字」，而译文里它们理应变成
+    /// `three`/`two` 这样的英文词、永远匹配不上——**每一条都记成丢失**。
+    ///
+    /// 2026-08-18 Task 4 实测：qwen2.5-7b × 英文 × 26 条标准文本，
+    /// 用 `isNumber` 版本跑出来的汇总是「数字丢失 17 / 原文共 17 个」，
+    /// 逐条标记全是 `丢数字一`、`丢数字三,一,二,三,一` 这样的中文数字，
+    /// 而这 26 条里**一个 ASCII 数字都没有**（`grep -c '[0-9]'` 为 0）。
+    /// 也就是说那一列 100% 是假阳性，而它看起来像「模型把数字全译丢了」——
+    /// 一个看着很像真的数。改判据后同一批素材的分母回到 0，
+    /// 报告会如实写「分母为 0，这一列读不出任何东西」。
+    ///
+    /// 中文数字译成 `three` 是**正确行为**，本来就不该由这条指标管；
+    /// 要考数字必须给带 ASCII 数字的素材（`Bench/translate-digits.json`）。
     static func digitsIn(_ text: String) -> [String] {
-        text.split(whereSeparator: { !$0.isNumber })
+        text.split(whereSeparator: { !($0.isASCII && $0.isNumber) })
             .map(String.init)
             .filter { !$0.isEmpty }
     }
