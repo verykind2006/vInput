@@ -39,6 +39,15 @@ macOS 本地语音输入工具。按快捷键或小米蓝牙遥控器的语音�
 - `Sources/vInput/Audio/Vendored/RemoteDeviceTypes.swift`
 - `Sources/vInput/Audio/Vendored/XiaomiBluetoothBridge.swift`
 
+SBC 音频解码移植自 [FFmpeg](https://github.com/FFmpeg/FFmpeg) 的 `libavcodec`
+（LGPL-2.1-or-later，tag n8.1），涉及以下文件：
+
+- `Sources/vInput/Audio/Vendored/SBCDecoder.swift`
+  （`sbcdec.c` / `sbcdec_data.h` / `sbc.c` / `sbc.h`）
+
+LGPL-2.1-or-later 允许按 LGPL-3.0 使用，LGPL-3.0 又允许并入 GPL-3.0 作品，
+因此该文件在本仓库内按 GPL-3.0-only 分发；上游版权与许可证声明保留在文件头部。
+
 各文件头部记录了相对上游的适配。
 
 remote-mic-app 最初 fork 自 [nijez/open-voice-bridge](https://github.com/nijez/open-voice-bridge)。

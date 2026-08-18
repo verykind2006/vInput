@@ -35,12 +35,15 @@
 # 半字节在前，四种组合全试过）得到的样本 55–62% 撞满量程、直流偏置
 # +13000，反算采样率 6974–7243 Hz，全是噪音。
 #
-# ── 为什么这里用 ffmpeg ─────────────────────────────────────────────
-# 这是**离线实验**脚本，用一个已知正确的解码器当标尺，先把「码流是什么」
-# 这件事钉死。产品里不能这么干：应用不该依赖 homebrew 的 ffmpeg。
-# M7 下一步要把 SBC 解码做进 Swift，那时 synthesis filterbank 的
-# proto filter 系数表必须从规范或 libsbc/ffmpeg 抄准——凭印象写出来的表
-# 会解出「能听但发闷」的音频，正是本项目最怕的那种静默失败。
+# ── 为什么这里还留着 ffmpeg ─────────────────────────────────────────
+# 产品已经不需要它了：`Sources/vInput/Audio/Vendored/SBCDecoder.swift`
+# 是 Swift 实现的 SBC 解码器，应用不再依赖 homebrew 的 ffmpeg。
+#
+# 这里保留 ffmpeg 是**当标尺**：`MouseDecodeTests` 用 SBCDecoder 解同一份
+# 裸码流，再与 ffmpeg 解出的 WAV 逐样本比对，要求完全相同。合成滤波器带的
+# proto filter 系数表写错了不会崩、不会报错，只会解出「能听但发闷」的音频，
+# 正是本项目最怕的那种静默失败——只有逐样本判据抓得住它。
+# 不装 ffmpeg 也能跑的那一份判据在 `SBCDecoderTests` 里（夹具已进版本库）。
 set -euo pipefail
 
 ROOT="${0:A:h:h}"
@@ -144,6 +147,9 @@ for number, (code, duration, packets) in enumerate(spans, start=1):
     frames = len(stream) // 32
     candidates.append({
         "label": f"{name}  包={len(packets)} 帧={frames}",
+        # 裸码流的路径：MouseDecodeTests 用生产的 SBCDecoder 解它，
+        # 再与下面这个 ffmpeg 解出的 WAV 逐样本比对。
+        "sbcPath": os.path.join(out, "sbc", name + ".sbc"),
         "wavPath": os.path.join(out, "wav", name + ".wav"),
         "durationSeconds": round(duration, 3),
     })
