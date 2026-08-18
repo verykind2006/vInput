@@ -365,7 +365,25 @@ struct BLEScanNotificationLog {
 /// 再按几秒，包与包之间有明显的空档。空档超过 `gapEndsBurst` 就当新一段
 /// 开始，所以按十次也不会误伤；而一段不间断的流超过 `maxBurstDuration`
 /// 就一定不是有人按着键在说话。
+///
+/// # 为什么还要一道总量上限
+///
+/// **只有单段上限挡不住无限累积。** 空档一超过 2 秒，单段计时就归零，
+/// 于是「89 秒 + 松 3 秒 + 89 秒 + 松 3 秒 …」可以一直落盘，每一段都差
+/// 一点点撞线。11 分钟那次事故完全可能以这个形状重演，而单段那道守卫
+/// 从头到尾一声不吭。独立验收 2026-08-18 指出。
+///
+/// 所以再加一道：一轮扫描累计落盘的流时长超过 `maxTotalDuration` 就停。
+/// 两道各管一种形状——单段管「一直不松手」，总量管「反复接近上限」。
 struct BLEScanStreamGuard {
+    /// 该停了的原因。两档分开报，因为日志要说清是哪一道拦的。
+    enum Stop: Equatable {
+        /// 单段连续流超过 `maxBurstDuration`。
+        case burst(duration: TimeInterval)
+        /// 本轮累计流时长超过 `maxTotalDuration`。
+        case total(duration: TimeInterval, bursts: Int)
+    }
+
     /// 单段连续流的上限。与 `scripts/mouse-decode.sh` 取同一个数——
     /// 同一支设备用同一个判据，日志与脚本对得上。
     static let maxBurstDuration: TimeInterval = 90
@@ -373,19 +391,59 @@ struct BLEScanStreamGuard {
     /// 2 秒比它大两个数量级，不会被抖动误判。
     static let gapEndsBurst: TimeInterval = 2
 
+    /// **一轮扫描累计落盘的流时长上限。**
+    ///
+    /// 定 180 秒的理由，三条：
+    ///
+    /// 1. **必须严格大于单段上限**，否则单段那一道永远轮不到触发，
+    ///    变成死代码（有测试钉住这条关系）。
+    /// 2. **要比任何真实的诊断用法宽出一个数量级。** 一轮抓包的用法是
+    ///    「按几秒、松开、看日志、再按几秒」，实测的按键会话是 0.09–0.35 秒
+    ///    （其他功能键）到几秒（语音键）；按十次也就几十秒。180 秒
+    ///    相当于把语音键按满两次 90 秒上限——正常人不会这么用诊断工具。
+    /// 3. **要把最坏情况压到与事故同一个量级以下。** 事故那次是 11 分钟
+    ///    （660 秒）。180 秒是它的 27%，且是在**两道守卫都被绕过**的前提下
+    ///    才可能达到的值。
+    ///
+    /// 与单段上限一样，这个数宁可小：一轮诊断被提前掐断的代价是重开一轮
+    /// （用户明确的动作），而收多了的代价是不知情的音频落在磁盘上。
+    static let maxTotalDuration: TimeInterval = 180
+
     private var burstStartedAt: Date?
     private var lastPacketAt: Date?
+    /// 本轮累计的流时长。**只累加同一段内相邻包之间的间隔**，
+    /// 段与段之间的空档不算——它统计的是「有多少秒的流真的落了盘」。
+    private(set) var totalStreamDuration: TimeInterval = 0
+    /// 本轮一共分了几段。只用于日志：「三段共 180 秒」比「180 秒」更能
+    /// 说明这是反复触发而不是一次长按。
+    private(set) var burstCount = 0
+    /// 已经报过停。**报过就一直报**——「触发后彻底停止落盘」这个保证
+    /// 留在守卫自己身上，不依赖外壳记得去 stop()。
+    private var stopped: Stop?
 
-    /// 记一个包，返回「是否该停了」。
-    mutating func record(at now: Date) -> Bool {
+    /// 记一个包，返回「该停了吗」。nil = 可以继续。
+    mutating func record(at now: Date) -> Stop? {
+        if let stopped { return stopped }
+
         if let last = lastPacketAt, now.timeIntervalSince(last) <= Self.gapEndsBurst {
-            // 同一段流的延续
+            // 同一段流的延续。间隔计进总量——正常间隔 30 ms，
+            // 至多把 2 秒的空档算进来，方向上偏保守（宁可早停）。
+            totalStreamDuration += now.timeIntervalSince(last)
         } else {
             burstStartedAt = now
+            burstCount += 1
         }
         lastPacketAt = now
-        guard let start = burstStartedAt else { return false }
-        return now.timeIntervalSince(start) >= Self.maxBurstDuration
+
+        if totalStreamDuration >= Self.maxTotalDuration {
+            stopped = .total(duration: totalStreamDuration, bursts: burstCount)
+            return stopped
+        }
+        guard let start = burstStartedAt,
+              now.timeIntervalSince(start) >= Self.maxBurstDuration
+        else { return nil }
+        stopped = .burst(duration: now.timeIntervalSince(start))
+        return stopped
     }
 
     /// 当前这一段流已经持续了多久。只用于日志。
@@ -397,6 +455,9 @@ struct BLEScanStreamGuard {
     mutating func reset() {
         burstStartedAt = nil
         lastPacketAt = nil
+        totalStreamDuration = 0
+        burstCount = 0
+        stopped = nil
     }
 }
 

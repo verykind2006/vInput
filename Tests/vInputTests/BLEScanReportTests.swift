@@ -408,7 +408,7 @@ struct BLEScanStreamGuardTests {
 
         // 每 30 ms 一个包（实测的音频包间隔），一直发 11 分钟
         for step in stride(from: 0.0, through: 660, by: 0.03) {
-            if guardian.record(at: at(step)) {
+            if case .burst = guardian.record(at: at(step)) {
                 stoppedAt = step
                 break
             }
@@ -429,7 +429,7 @@ struct BLEScanStreamGuardTests {
         for _ in 0..<10 {
             for step in stride(from: 0.0, through: 5, by: 0.03) {
                 let fired = guardian.record(at: at(now + step))
-                #expect(!fired)
+                #expect(fired == nil)
             }
             now += 5 + 10   // 松开 10 秒
         }
@@ -441,22 +441,22 @@ struct BLEScanStreamGuardTests {
 
         for step in stride(from: 0.0, through: 80, by: 0.5) {
             let fired = guardian.record(at: at(step))
-            #expect(!fired)
+            #expect(fired == nil)
         }
         // 一个超过阈值的空档
         let resumeAt = 80 + BLEScanStreamGuard.gapEndsBurst + 1
         let afterGap = guardian.record(at: at(resumeAt))
-        #expect(!afterGap)
+        #expect(afterGap == nil)
         // 若空档没有重置计时，这一下（距最初已 100 多秒）就会误报
         let later = guardian.record(at: at(resumeAt + 20))
-        #expect(!later)
+        #expect(later == nil)
     }
 
     @Test("单个包不会触发")
     func singlePacketIsFine() {
         var guardian = BLEScanStreamGuard()
         let fired = guardian.record(at: t0)
-        #expect(!fired)
+        #expect(fired == nil)
         #expect(guardian.burstDuration(at: t0) == 0)
     }
 
@@ -468,7 +468,78 @@ struct BLEScanStreamGuardTests {
         }
         guardian.reset()
         let fired = guardian.record(at: at(80.5))
-        #expect(!fired)
+        #expect(fired == nil)
         #expect(guardian.burstDuration(at: at(80.5)) == 0)
+    }
+
+    // MARK: - 总量上限
+
+    /// **只有单段上限挡不住无限累积。**
+    ///
+    /// 原实现只有 `burstStartedAt` / `lastPacketAt` 两个字段，空档超过 2 秒
+    /// 就归零——于是「89 秒 + 松 3 秒 + 89 秒 + 松 3 秒 …」可以一直落盘，
+    /// 每一段都差一点点撞线。11 分钟那次事故完全可能以这个形状重演。
+    /// 独立验收 2026-08-18 指出（P3）。
+    @Test("差一点撞线的段无限重复，总量上限会兜住")
+    func totalCapCatchesRepeatedNearMissBursts() {
+        var guardian = BLEScanStreamGuard()
+        var now: TimeInterval = 0
+        var stop: BLEScanStreamGuard.Stop?
+
+        // 每段 89 秒（差 1 秒撞不到单段上限），松 3 秒（超过 2 秒的分段阈值）
+        outer: for _ in 0..<20 {
+            for step in stride(from: 0.0, through: BLEScanStreamGuard.maxBurstDuration - 1, by: 0.03) {
+                if let fired = guardian.record(at: at(now + step)) {
+                    stop = fired
+                    break outer
+                }
+            }
+            now += BLEScanStreamGuard.maxBurstDuration - 1 + 3
+        }
+
+        guard case .total(let duration, let bursts)? = stop else {
+            Issue.record("总量上限没有触发，落盘可以无限累积")
+            return
+        }
+        #expect(duration >= BLEScanStreamGuard.maxTotalDuration)
+        #expect(bursts >= 2)
+    }
+
+    /// 总量上限必须严格大于单段上限，否则单段那一档变成死代码。
+    @Test("总量上限大于单段上限")
+    func totalCapIsLooserThanBurstCap() {
+        #expect(BLEScanStreamGuard.maxTotalDuration > BLEScanStreamGuard.maxBurstDuration)
+    }
+
+    /// 一轮诊断的正常用法（按十次、每次五秒）离总量上限还很远。
+    @Test("正常用法离总量上限还很远")
+    func normalUsageIsFarFromTotalCap() {
+        var guardian = BLEScanStreamGuard()
+        var now: TimeInterval = 0
+        for _ in 0..<10 {
+            for step in stride(from: 0.0, through: 5, by: 0.03) {
+                #expect(guardian.record(at: at(now + step)) == nil)
+            }
+            now += 15
+        }
+        #expect(guardian.totalStreamDuration < BLEScanStreamGuard.maxTotalDuration / 2)
+    }
+
+    /// **触发之后必须彻底停止落盘。** 判据留在守卫自己身上，而不是依赖
+    /// 外壳记得去 stop()——外壳那条路要经过 CoreBluetooth，测不到。
+    @Test("触发之后一直报停")
+    func stopIsLatched() {
+        var guardian = BLEScanStreamGuard()
+        var stoppedAt: TimeInterval?
+        for step in stride(from: 0.0, through: 200, by: 0.03) where stoppedAt == nil {
+            if guardian.record(at: at(step)) != nil { stoppedAt = step }
+        }
+        #expect(stoppedAt != nil)
+
+        // 之后哪怕隔很久再来一个包，也不该再放行
+        #expect(guardian.record(at: at(5000)) != nil)
+        // reset 之后才重新开始
+        guardian.reset()
+        #expect(guardian.record(at: at(5001)) == nil)
     }
 }

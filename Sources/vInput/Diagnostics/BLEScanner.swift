@@ -104,6 +104,13 @@ final class BLEScanner: NSObject {
     /// 失控流自我保护。判据与理由见 `BLEScanStreamGuard`。
     private var streamGuard = BLEScanStreamGuard()
 
+    /// 撞到上限时顺带把 HID 探针也停掉。
+    ///
+    /// **两条诊断路径写的是同一个文件**（`AppModel.startBLEScan` 把同一个
+    /// `BLEScanFileLog` 传给两边），只停自己等于没停：GATT 这边掐断之后，
+    /// 探针照样在往那个文件里写。由 `AppModel` 接线，反向同理。
+    var onRunawayStop: (() -> Void)?
+
     init(
         targetName: String = BLEScanGate.targetName,
         excludedIdentifiers: @escaping () -> Set<UUID> = { [] },
@@ -183,18 +190,42 @@ final class BLEScanner: NSObject {
         fileLog?.write("BLESCAN \(message)")
     }
 
-    /// 一段流不间断超过上限——不是有人按着键在说话。停掉并告警。
+    /// 收流超过上限——不是有人按着键在说话。停掉并告警。
     ///
     /// **停整个扫描器，不只退订那一个特征。** 退订之后设备很可能继续发，
     /// 而扫描器还连着；诊断工具在这种状态下继续跑没有任何收益，只有风险。
     /// 用户要接着查就重新开一轮，那是他明确的动作。
-    private func stopRunawayStream(duration: TimeInterval) {
-        AppLogger.shared.log(
-            "BLESCAN ⚠️ 已连续收流 \(Int(duration)) 秒且没有结束信号，"
-                + "多半是误触了长按开麦（鼠标的 0x31 没有配对的结束码）。"
-                + "已自动退订并停止扫描，这段音频不再落盘。要接着查请重新开一轮。"
-        )
+    ///
+    /// # 文案里那句「已经落盘」不能省
+    ///
+    /// 原文案是「这段音频不再落盘」。**那句话只对触发的那一个包成立**：
+    /// 单段上限是 90 秒，触发之前的约 2800 个包（每包 32 ms）早就一个不少
+    /// 地写进了 `ble-scan-*.log`。用户读到「不再落盘」会以为磁盘上是干净的，
+    /// 而真相相反——这正是本项目最该避免的那种日志。
+    /// 独立验收 2026-08-18 指出。
+    private func stopRunawayStream(_ reason: BLEScanStreamGuard.Stop) {
+        let cause: String
+        switch reason {
+        case .burst(let duration):
+            cause = "已连续收流 \(Int(duration)) 秒且没有结束信号，"
+                + "多半是误触了长按开麦（鼠标的 0x31 没有配对的结束码）"
+        case .total(let duration, let bursts):
+            cause = "本轮累计收流已达 \(Int(duration)) 秒（分 \(bursts) 段），"
+                + "触及总量上限——每段都差一点撞线的流同样会把音频一段段写满磁盘"
+        }
+        AppLogger.shared.log("BLESCAN ⚠️ \(cause)。已自动退订并停止扫描。")
+        if let fileLog {
+            AppLogger.shared.log(
+                "BLESCAN ⚠️ 停下来**之前**收到的包已经写进了 \(fileLog.path)"
+                    + "（这道守卫只挡得住此刻起的新包）。不想留就删掉那个文件。"
+                    + "要接着查请重新开一轮。"
+            )
+        } else {
+            AppLogger.shared.log("BLESCAN ⚠️ 要接着查请重新开一轮。")
+        }
         stop()
+        // HID 探针也要停：两条路写的是同一个文件，只停一条等于没停。
+        onRunawayStop?()
     }
 
     private func fingerprintSummary() -> String {
@@ -528,10 +559,12 @@ extension BLEScanner: CBPeripheralDelegate {
         }
 
         // 失控流自我保护：先判要不要停，再落盘。判在前面是因为一旦决定停，
-        // 这一个包就不该再写进文件——那正是我们要避免的东西。
+        // 这一个包就不该再写进文件。**但要认清它的边界**：挡住的只是从此刻
+        // 起的包，在它之前收到的（单段最多 90 秒、累计最多 180 秒）已经在
+        // 盘上了——告警文案必须如实说出这一点，见 stopRunawayStream。
         let now = Date()
-        if streamGuard.record(at: now) {
-            stopRunawayStream(duration: streamGuard.burstDuration(at: now))
+        if let reason = streamGuard.record(at: now) {
+            stopRunawayStream(reason)
             return
         }
 
