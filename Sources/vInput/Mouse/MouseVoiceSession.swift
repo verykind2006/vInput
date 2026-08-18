@@ -183,7 +183,14 @@ final class MouseVoiceSession {
     func tick(at now: Date) -> [MouseSessionAction] {
         switch phase {
         case .idle:
-            return []
+            // 没有会话却持续来音频包：设备在自说自话。这是 B1 的兜底，
+            // 也覆盖「退订恢复后设备还在发陈旧流」那一档。
+            guard let since = orphanAudioStartedAt,
+                  now.timeIntervalSince(since) >= MouseSessionLimits.unpaired
+            else { return [] }
+            orphanAudioStartedAt = nil
+            let cooldown = enterMuted(at: now)
+            return [.stopReceiving(cooldown: cooldown)]
 
         case .dictating(let startedAt):
             let elapsed = now.timeIntervalSince(startedAt)
@@ -212,6 +219,24 @@ final class MouseVoiceSession {
         }
     }
 
+    /// 没有任何会话时，音频包**仍然在来**的起始时刻。
+    ///
+    /// **B1 的补丁。** 原先静默收掉非听写会话后 `phase` 打回 `.idle`，
+    /// 而 `noteAudioPacket()` 只在 `.foreign` 下记账——于是设备晚于宽限期
+    /// 才开始送流时，记账永远不再发生、`tick` 在 `.idle` 恒返回空，
+    /// **再没有任何东西会退订那个特征**。独立验收用出货代码实测：
+    /// 送流起始 4 秒后，600 秒仍未退订，全程零日志、菜单栏仍显示已连接
+    /// ——正好回到 2026-08-18 那次 11 分钟事故的状态。
+    ///
+    /// 根因是标定样本选错了维度：`silentForeignGrace = 3 秒` 来自
+    /// `0x23`/`0x27`（首包延迟 0.04 秒），而它要保护的 `0x31` **在抓包里
+    /// 一个控制帧都没有**，首包延迟从未被观测过。
+    ///
+    /// 所以这道防线不能依赖「会话」这个概念：**只要音频还在来，就该有人
+    /// 计时**。它同时堵住「陈旧流」那一档——退订恢复后设备若还在发，
+    /// 这里照样兜得住。
+    private var orphanAudioStartedAt: Date?
+
     /// 当前这次非听写会话有没有真的收到过音频包。
     ///
     /// 桥每收到一个音频包就调 `noteAudioPacket()`——**在 `acceptsAudio`
@@ -220,8 +245,20 @@ final class MouseVoiceSession {
     private var foreignSawAudio = false
 
     /// 收到一个音频包。只做记账，不改状态。
-    func noteAudioPacket() {
-        if case .foreign = phase { foreignSawAudio = true }
+    ///
+    /// **必须在 `acceptsAudio` 那道过滤之前调**，否则非听写会话的音频被
+    /// 丢掉，会话永远不知道「其实有流」。
+    func noteAudioPacket(at now: Date = Date()) {
+        switch phase {
+        case .foreign:
+            foreignSawAudio = true
+            orphanAudioStartedAt = nil
+        case .idle:
+            // 没有会话却在收音频——B1 那条路径。开始计时。
+            if orphanAudioStartedAt == nil { orphanAudioStartedAt = now }
+        case .dictating, .muted:
+            orphanAudioStartedAt = nil
+        }
     }
 
     /// 连接断开。会话一律作废。
@@ -254,6 +291,20 @@ final class MouseVoiceSession {
             // 否则旧会话的计时点会被新会话顶掉，上限从此永远撞不到。
             actions.append(.endDictation(.superseded(code)))
         }
+
+        // **B2 的补丁：非听写会话之间重发开始码，不刷新计时点。**
+        //
+        // 上面那段注释写对了风险，却只对 `.dictating` 做了处理。独立验收
+        // 用出货代码实测：`0x31` 全程送流 + 每 29 秒重发一次，600 秒仍未
+        // 退订——因为每次 `begin` 都把 `startedAt` 推到当下，30 秒的上限
+        // 永远撞不到。`0x31` 会不会重发？**它的触发动作至今未知**，
+        // 这一维不能靠「应该不会」过关。
+        if case .foreign(_, let existingStart) = phase, case .foreign(let newCode, _) = next {
+            phase = .foreign(code: newCode, startedAt: existingStart)
+            if case .dictating = next { actions.append(.beginDictation) }
+            return actions
+        }
+
         phase = next
         resetAudioAccounting()
         if case .dictating = next { actions.append(.beginDictation) }

@@ -73,6 +73,68 @@ struct MouseVoiceSessionTests {
         #expect(session.tick(at: at(MouseSessionLimits.unpaired)).count == 1)
     }
 
+    // MARK: - 0x31 保护的两条绕过路径（独立验收 2026-08-18 实测出来的）
+
+    /// **B1：设备晚于宽限期才开始送流。**
+    ///
+    /// 原实现在 3 秒宽限期到时把 `phase` 打回 `.idle`，而记账只在
+    /// `.foreign` 下发生——于是此后再来的音频包永远不被记账，`tick` 在
+    /// `.idle` 恒返回空，**再没有任何东西会退订那个特征**。独立验收用
+    /// 出货代码实测：送流起始 4 秒后，600 秒仍未退订。
+    ///
+    /// 根因是标定样本选错了维度：3 秒来自 `0x23`/`0x27`（首包延迟 0.04 秒），
+    /// 而 `0x31` 在抓包里**一个控制帧都没有**，首包延迟从未被观测过。
+    @Test("0x31 静默几秒后才送流，保护仍然生效")
+    func lateStreamingStillTriggersProtection() {
+        let session = MouseVoiceSession()
+        _ = session.handleControl(code: 0x31, at: t0)
+
+        // 宽限期到，会话被静默收掉——这一步本身是对的。
+        #expect(
+            session.tick(at: at(MouseVoiceSession.silentForeignGrace))
+                == [.closedSilentForeign(code: 0x31)]
+        )
+
+        // 设备此后才开始送流。原实现从这里起就彻底失去兜底。
+        let streamStart = MouseVoiceSession.silentForeignGrace + 2
+        session.noteAudioPacket(at: at(streamStart))
+        session.noteAudioPacket(at: at(streamStart + 1))
+
+        #expect(session.tick(at: at(streamStart + MouseSessionLimits.unpaired - 1)).isEmpty)
+        #expect(
+            session.tick(at: at(streamStart + MouseSessionLimits.unpaired))
+                == [.stopReceiving(cooldown: MouseSessionLimits.initialCooldown)],
+            "晚到的流必须照样被退订，否则麦克风无限期开着且零日志"
+        )
+    }
+
+    /// **B2：开始码被重发，计时点被无限刷新。**
+    ///
+    /// 实测：全程送流 + 每 29 秒重发一次 `0x31`，600 秒仍未退订。
+    /// 这个风险原注释写对了（「旧会话的计时点会被新会话顶掉」），
+    /// 但只对 `.dictating` 做了处理。
+    ///
+    /// `0x31` 会不会重发？**它的触发动作至今未知**——这一维不能靠
+    /// 「应该不会」过关。
+    @Test("0x31 反复重发不会把上限推走")
+    func repeatedStartCodeDoesNotResetLimit() {
+        let session = MouseVoiceSession()
+        _ = session.handleControl(code: 0x31, at: t0)
+        session.noteAudioPacket(at: t0)
+
+        // 每 10 秒重发一次，全程送流。
+        for second in stride(from: 10.0, to: MouseSessionLimits.unpaired, by: 10) {
+            _ = session.handleControl(code: 0x31, at: at(second))
+            session.noteAudioPacket(at: at(second))
+        }
+
+        #expect(
+            session.tick(at: at(MouseSessionLimits.unpaired))
+                == [.stopReceiving(cooldown: MouseSessionLimits.initialCooldown)],
+            "计时点必须锚在第一次开始码上，否则重发能无限推走上限"
+        )
+    }
+
     // MARK: - 第三个键：刻意无功能
 
     /// **不开会话是关键，不只是「不听写」。**
