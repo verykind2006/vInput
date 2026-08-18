@@ -76,6 +76,47 @@ struct TranslationPromptTests {
         #expect(en != de)
         #expect(en.replacingOccurrences(of: "English", with: "German") == de)
     }
+
+    /// 缺省变体就是生产用的那个，换句话说：加变体这件事没有顺手改掉生产提示词。
+    @Test("不传变体时用英文语言名")
+    func defaultVariantIsEnglishName() {
+        #expect(
+            TranslationPrompt.user(for: "同一句", target: .spanish)
+                == TranslationPrompt.user(
+                    for: "同一句", target: .spanish, variant: .englishLanguageName))
+    }
+
+    /// 两个变体**只差语言名**——对照实验的全部效力都押在这一条上。
+    ///
+    /// 正文一旦跟着漂移，测出来的差异就分不清来自「语言名换成中文」还是
+    /// 来自「顺手把某条规则也改了」，那份对照表就是废的。
+    ///
+    /// **`en != zh` 不是凑数的**（同上面 `differsOnlyByLanguage` 的理由）：
+    /// 只留 `replacingOccurrences` 的比对，一个把 `variant` 参数整个忽略掉的
+    /// 实现会让两串完全相同、替换是空操作，断言恒真。
+    ///
+    /// 轴心挑 `.spanish`：`Spanish` 不作为固定文案出现在提示词里，而
+    /// `.english` 会——`English` 被替换后连 `Chinese text` 那句都不受影响，
+    /// 但目标语言名与固定文案撞车的风险不必去试。
+    @Test("提示词变体只换语言名")
+    func variantsDifferOnlyByLanguageName() {
+        let en = TranslationPrompt.user(for: "同一句", target: .spanish)
+        let zh = TranslationPrompt.user(
+            for: "同一句", target: .spanish, variant: .chineseLanguageName)
+        #expect(en != zh)
+        #expect(en.replacingOccurrences(of: "Spanish", with: "西班牙文") == zh)
+    }
+
+    /// 中文变体里不能残留英文语言名，否则「换成中文」只换了一半。
+    @Test("中文变体不再出现英文语言名")
+    func chineseVariantDropsEnglishName() {
+        let zh = TranslationPrompt.user(
+            for: "同一句", target: .german, variant: .chineseLanguageName)
+        #expect(zh.contains("德文"))
+        #expect(!zh.contains("German"))
+        // 源语言名 Chinese 是固定文案，仍然在——变体换的是**目标**语言名。
+        #expect(zh.contains("Chinese text"))
+    }
 }
 
 /// 没有加载成本的实现（云端、测试替身）不写 `isReady` 也该天然就绪。

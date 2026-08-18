@@ -15,7 +15,34 @@ actor MLXTranslator: Translator {
     /// 解决，它的注释里记着 M4 那次「校正永不生效」的实测。
     private let loader: OneShotLoader<ModelContainer>
 
-    /// - Parameter modelDirectory: 本地模型目录。
+    /// 提示词变体。生产路径不传，永远是 `.englishLanguageName`；
+    /// 只有 Task 3 的对照装置会换它，理由见 `TranslationPrompt.Variant`。
+    private let promptVariant: TranslationPrompt.Variant
+
+    /// 单次推理的 token 上限。
+    private let maxTokens: Int
+
+    /// `maxTokens` 的默认值。**仍是暂定值，等 Task 4 的实测回填。**
+    ///
+    /// 512 没有任何实测支撑——它既不是测出来的译文长度，也不是测出来的
+    /// 耗时上限，就是个先让代码跑起来的数。校正层那个 96 不能照抄：它限的
+    /// 是极短的替换清单，而译文可能比原文长不少。往大了拍的代价是超时——
+    /// maxTokens 只限单次推理长度，限不住耗时，真正的时间闸门在流水线那一侧。
+    ///
+    /// 暴露成 `static` 是为了让扫描装置的默认值跟着它走：两处各写一个 512，
+    /// 有一天会对不上，而对不上的表现是「扫描测出来的截断率和线上不一样」，
+    /// 看不出根因。
+    static let defaultMaxTokens = 512
+
+    /// - Parameters:
+    ///   - modelDirectory: 本地模型目录。
+    ///   - promptVariant: 提示词变体，生产路径不要传。
+    ///   - maxTokens: 单次推理的 token 上限。
+    ///
+    /// **`maxTokens` 可调是为了让「撞上限」这件事测得出来。** 撞上限的表现
+    /// 是「静默返回半截译文、成功返回不报错」，和取消半途而废的表现一模一样
+    /// （见下面 `translate` 里记的实测），事后分不开。把它调小到必然撞上限、
+    /// 看截断判据是不是全都亮起来，是唯一能证明那条判据不是空判据的办法。
     ///
     /// **刻意不提供「按 Hugging Face 标识符下载」的重载**，与
     /// `MLXCorrector` 在这一点上不同（它的 `modelDirectory` 可为 nil）。
@@ -25,7 +52,13 @@ actor MLXTranslator: Translator {
     /// 什么（见 `scripts/default-model.sh` 开头记的 2026-08-17 F1）。
     /// 一个「不给就联网」的默认值在这里同样无法在日志里暴露自己，
     /// 所以从一开始就要求显式给目录。
-    init(modelDirectory: URL) {
+    init(
+        modelDirectory: URL,
+        promptVariant: TranslationPrompt.Variant = .englishLanguageName,
+        maxTokens: Int = MLXTranslator.defaultMaxTokens
+    ) {
+        self.promptVariant = promptVariant
+        self.maxTokens = maxTokens
         loader = OneShotLoader {
             do {
                 return try await loadModelContainer(directory: modelDirectory)
@@ -55,17 +88,10 @@ actor MLXTranslator: Translator {
         // 翻译要的是确定性，不是创造力。同一句话每次该得到同样的结果，
         // 否则 Task 3 的对照装置测出来的差异分不清是模型差异还是采样噪声。
         parameters.temperature = 0
-        // **暂定值，Task 4 实测后回填。**
-        //
-        // 512 没有任何实测支撑——它既不是测出来的译文长度，也不是测出来的
-        // 耗时上限，就是个先让代码跑起来的数。计划原文写的「由第 0 步的实测
-        // 长度定」在任务重排后失效了：第 0 步（Task 3/4 的对照装置）要用本
-        // 文件才跑得起来，现在排在本任务**之后**。
-        //
-        // 校正层那个 96 不能照抄：它限的是极短的替换清单，而译文可能比原文
-        // 长不少。往大了拍的代价是超时——maxTokens 只限单次推理长度，限不住
-        // 耗时，真正的时间闸门在流水线那一侧。
-        parameters.maxTokens = 512
+        // 上限的取值与理由见 `defaultMaxTokens`。计划原文写的「由第 0 步的
+        // 实测长度定」在任务重排后失效了：第 0 步（Task 3/4 的对照装置）要用
+        // 本文件才跑得起来，现在排在本任务**之后**。
+        parameters.maxTokens = maxTokens
 
         // **每次新建 ChatSession。** 它内部持有对话历史（`Generator.messages`），
         // 复用会让上一句转写污染下一句的翻译。
@@ -103,7 +129,7 @@ actor MLXTranslator: Translator {
         var output = ""
         do {
             for try await chunk in session.streamResponse(
-                to: TranslationPrompt.user(for: text, target: target)
+                to: TranslationPrompt.user(for: text, target: target, variant: promptVariant)
             ) {
                 try Task.checkCancellation()
                 output += chunk

@@ -50,3 +50,10 @@ Bench/decode-sweep-scaling.txt
 # 门控标记 .run-config.json 同 Bench/.run-config.json，跑完由 trap 删掉，
 # 但这中间它是未跟踪文件，一个 `git add -A` 就带进版本库了。
 MouseDecode/
+
+# 翻译对照（scripts/translate-sweep.sh）。`.translate-sweep.json` 是门控标记
+# （同 `.run-config.json`），跑完由 trap 删掉，但全量一轮 26×6=156 次推理要
+# 几十分钟——这期间它是未跟踪文件，一个 `git add -A` 就带进版本库了，
+# 而它里面是本机绝对路径。报告是产物，每轮被覆盖。
+Bench/.translate-sweep.json
+Bench/translate-sweep.txt
