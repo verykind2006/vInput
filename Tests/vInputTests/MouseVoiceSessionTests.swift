@@ -73,6 +73,37 @@ struct MouseVoiceSessionTests {
         #expect(session.tick(at: at(MouseSessionLimits.unpaired)).count == 1)
     }
 
+    // MARK: - 第三个键：刻意无功能
+
+    /// **不开会话是关键，不只是「不听写」。**
+    ///
+    /// 走 otherStart 的话会开一个会话：即使不听写、音频也被丢掉，长按超过
+    /// 30 秒仍会撞上限、退订特征、冷却 10 秒——鼠标停摆而用户不知道为什么。
+    /// 对一个用户明说「位置特别不好，容易误碰」的键，这正是最该避免的后果。
+    @Test("第三个键长按再久也不开会话、不撞上限")
+    func thirdButtonNeverOpensSession() {
+        let session = MouseVoiceSession()
+        #expect(session.handleControl(code: 0x23, at: t0).isEmpty)
+        #expect(!session.isDictating)
+        #expect(session.tick(at: at(MouseSessionLimits.unpaired * 3)).isEmpty)
+        #expect(session.handleControl(code: 0x24, at: at(MouseSessionLimits.unpaired * 3)).isEmpty)
+        // 之后语音键照常可用——没被冷却挡住。
+        #expect(
+            session.handleControl(code: 0x21, at: at(MouseSessionLimits.unpaired * 3 + 1))
+                == [.beginDictation]
+        )
+    }
+
+    @Test("误碰第三个键不打断正在进行的听写")
+    func thirdButtonDoesNotDisturbDictation() {
+        let session = MouseVoiceSession()
+        _ = session.handleControl(code: 0x21, at: t0)
+        #expect(session.isDictating)
+        #expect(session.handleControl(code: 0x41, at: at(1)).isEmpty)
+        #expect(session.handleControl(code: 0x23, at: at(2)).isEmpty)
+        #expect(session.isDictating, "误碰第三个键不该打断听写")
+    }
+
     // MARK: - 只按了一下的按键，不该被当成送流
 
     /// 2026-08-18 实测：鼠标上还有一个键发 `0x43`，**只发开始码、不送音频、
@@ -85,14 +116,14 @@ struct MouseVoiceSessionTests {
     @Test("只发开始码、不送音频的按键被静默收掉，不退订不冷却")
     func silentForeignSessionClosesWithoutMuting() {
         let session = MouseVoiceSession()
-        _ = session.handleControl(code: 0x43, at: t0)
+        _ = session.handleControl(code: 0x45, at: t0)
 
         // 宽限期内不动。
         #expect(session.tick(at: at(MouseVoiceSession.silentForeignGrace - 1)).isEmpty)
         // 宽限期到，静默收掉——**不是** stopReceiving。
         #expect(
             session.tick(at: at(MouseVoiceSession.silentForeignGrace))
-                == [.closedSilentForeign(code: 0x43)]
+                == [.closedSilentForeign(code: 0x45)]
         )
         // 关键：没进静默期，下一次按语音键照常能开始。
         #expect(
@@ -106,7 +137,7 @@ struct MouseVoiceSessionTests {
     @Test("送过音频的非听写会话仍然走退订 + 冷却")
     func streamingForeignSessionStillMutes() {
         let session = MouseVoiceSession()
-        _ = session.handleControl(code: 0x43, at: t0)
+        _ = session.handleControl(code: 0x45, at: t0)
         session.noteAudioPacket()
 
         #expect(session.tick(at: at(MouseVoiceSession.silentForeignGrace + 1)).isEmpty)

@@ -346,6 +346,7 @@ final class MouseBluetoothBridge: NSObject {
         switch MouseVoiceProtocol.classify(code: code) {
         case .wake: return "语音键按下，准备"
         case .enterKey: return "回车键"
+        case .ignored: return "第三个键，刻意无功能"
         case .voiceStart: return "语音会话开始"
         case .unpairedStart: return "长按持续开麦，无结束码"
         case .otherStart(let value): return String(format: "其他按键开始 0x%02X", value)

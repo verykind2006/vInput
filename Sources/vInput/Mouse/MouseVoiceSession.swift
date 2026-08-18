@@ -135,6 +135,10 @@ final class MouseVoiceSession {
         case .unpairedStart:
             return begin(.foreign(code: code, startedAt: now), code: code, at: now)
 
+        case .ignored:
+            // 不动状态机、不起计时器、不产出任何动作。
+            return []
+
         case .enterKey:
             // **不动状态机。** 它不是会话，是一次即时按键。
             // 正在听写时也照发——用户按它就是想换行/确认，

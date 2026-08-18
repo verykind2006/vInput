@@ -90,7 +90,7 @@ struct MouseVoiceProtocolTests {
 
     @Test("其余奇数是开始码")
     func otherOddCodesAreStarts() {
-        #expect(MouseVoiceProtocol.classify(code: 0x23) == .otherStart(0x23))
+        #expect(MouseVoiceProtocol.classify(code: 0x25) == .otherStart(0x25))
         // 0x27 已单列为回车键，见下方 MouseEnterKeyTests。
         #expect(MouseVoiceProtocol.classify(code: 0x25) == .otherStart(0x25))
     }
@@ -98,7 +98,7 @@ struct MouseVoiceProtocolTests {
     @Test("偶数是结束码")
     func evenCodesAreStops() {
         #expect(MouseVoiceProtocol.classify(code: 0x22) == .stop(0x22))
-        #expect(MouseVoiceProtocol.classify(code: 0x24) == .stop(0x24))
+        #expect(MouseVoiceProtocol.classify(code: 0x26) == .stop(0x26))
         #expect(MouseVoiceProtocol.classify(code: 0x28) == .stop(0x28))
     }
 
@@ -157,6 +157,24 @@ struct MouseEnterKeyTests {
         #expect(session.isDictating)
         #expect(session.handleControl(code: 0x27, at: now) == [.pressEnter])
         #expect(session.isDictating, "回车不该结束听写")
+    }
+}
+
+/// 第三个键刻意没有任何功能。
+///
+/// 用户 2026-08-18：「那个键的位置特别不好，容易误碰到，所以暂时不要让
+/// 这个键有任何的功能。」
+///
+/// 逐动作实测：短按发单个 `0x41`（无结束码、不送音频），
+/// 长按发 `0x23` → `0x24`。会话层的行为在 MouseVoiceSessionTests 里测。
+@Suite("第三个键：刻意无功能")
+struct MouseThirdButtonTests {
+    @Test("它的四个码全部被忽略")
+    func classifiesAsIgnored() {
+        #expect(MouseVoiceProtocol.classify(code: 0x41) == .ignored)
+        #expect(MouseVoiceProtocol.classify(code: 0x43) == .ignored)
+        #expect(MouseVoiceProtocol.classify(code: 0x23) == .ignored)
+        #expect(MouseVoiceProtocol.classify(code: 0x24) == .ignored)
     }
 }
 
