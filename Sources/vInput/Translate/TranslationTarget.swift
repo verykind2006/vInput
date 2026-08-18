@@ -73,3 +73,65 @@ enum TranslationTarget: String, CaseIterable, Sendable, Equatable {
         }
     }
 }
+
+/// 这一档语言在 M8 第 0 步实测里的质量。**菜单要靠它说清六种并不一样稳。**
+///
+/// 用户 2026-08-19 的决定是「六种全上，但要标出差异」，理由是让用户自己
+/// 判断什么场合用哪种。做成带值的枚举而不是一句写死的说明文字，是为了让
+/// 「加一种语言却没给它定级」被机械地抓到：
+///
+/// - `TranslationTarget.quality` 是**穷尽 switch**，加一格编译不过；
+/// - 而「随手标成 measured 编个数」由 `TranslationTargetTests` 那条
+///   「实测过的正好是这三种、数值逐个钉死」拦下——第 0 步只测了
+///   英/西/德三种，第四个 `measured` 一定是编的。
+enum TranslationQuality: Equatable, Sendable {
+    /// 中文＝不翻译，无所谓质量。
+    case notApplicable
+    /// 实测过。`termRetention` 是**技术术语与代码标识符原样保留的比例**，
+    /// 1.0 表示一个都没被译走。
+    case measured(termRetention: Double)
+    /// 没有实测数据。**不许编一个数糊上去。**
+    case unmeasured
+}
+
+extension TranslationTarget {
+    /// 实测质量。数字来自 M8 第 0 步，`Bench/reports/m8-step0/`（已 gitignore，
+    /// 报告在开发机上）：英文术语保留 1.00 且零残留汉字，西语 0.92、德语 0.89
+    /// ——即每十个技术术语约有一个被译走或译错。
+    ///
+    /// **葡/法/意没有测过，所以是 `unmeasured`，不是「大概和西语差不多」。**
+    /// 本仓库栽过的那一类错误里有一半是「断言了没量过的事」。
+    var quality: TranslationQuality {
+        switch self {
+        case .chinese: .notApplicable
+        case .english: .measured(termRetention: 1.00)
+        case .spanish: .measured(termRetention: 0.92)
+        case .german: .measured(termRetention: 0.89)
+        // 三种一起列：它们的取值来源相同（都没测），分开写只是重复。
+        // 加一种新语言时这里同样编译不过，人被迫回来定级。
+        case .portuguese, .french, .italian: .unmeasured
+        }
+    }
+
+    /// 菜单项上的那一行字。
+    ///
+    /// **提示做在每一个菜单项上，而不是一次性弹窗**：弹窗切走再切回来就
+    /// 看不到了，而用户挑语言的那一刻正是他需要这个差异的时刻。
+    ///
+    /// 计算放在这里而不是拼在 SwiftUI 视图里，是本仓库既有的分工
+    /// （见 `HUDViewModel`：「全部计算做成纯函数，视图只负责画」）——
+    /// 拼在视图里就没有任何测试守得住它。
+    var menuLabel: String {
+        switch quality {
+        case .notApplicable:
+            // 「中文」单看是个语言名，看不出选它等于关掉翻译。
+            "\(displayName)（不翻译）"
+        case .measured(let retention):
+            // 两位小数：实测值本身就是两位（1.00 / 0.92 / 0.89），
+            // 多印几位是在假装精度。
+            "\(displayName) · 术语保留 \(String(format: "%.2f", retention))"
+        case .unmeasured:
+            "\(displayName) · 未实测"
+        }
+    }
+}

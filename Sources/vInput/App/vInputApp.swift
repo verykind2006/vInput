@@ -100,6 +100,7 @@ private struct MenuContent: View {
         Divider()
         modelMenu
         correctionMenu
+        outputLanguageMenu
 
         // 基准集录制。开发期工具，VINPUT_BENCH=1 才显示。
         if AppModel.benchEnabled {
@@ -167,6 +168,37 @@ private struct MenuContent: View {
             Button("指定校正模型…") {
                 if let url = presentCorrectionModelFolderPanel() {
                     model.selectCorrectionModel(directory: url)
+                }
+            }
+        }
+    }
+
+    /// 输出语言子菜单。
+    ///
+    /// 六种拉丁字母语种全列（用户 2026-08-19 的决定），但**每一项都带实测
+    /// 质量**——第 0 步实测英文术语保留 1.00、西语 0.92、德语 0.89，葡/法/意
+    /// 没测过。文案由 `TranslationTarget.menuLabel` 算出，不在视图里拼：
+    /// 拼在这里就没有任何测试守得住它（与 `HUDViewModel` 同一条分工）。
+    ///
+    /// 标题在缺模型目录时带后缀。只写语言名的话它恰好在骗人——用户看到
+    /// 「输出语言：西班牙文」，得到的却是中文。
+    @ViewBuilder
+    private var outputLanguageMenu: some View {
+        Menu(
+            AppModel.outputLanguageMenuTitle(
+                target: model.outputLanguage,
+                modelMissing: model.translationModelMissing
+            )
+        ) {
+            ForEach(TranslationTarget.allCases, id: \.rawValue) { target in
+                Button {
+                    model.selectOutputLanguage(target)
+                } label: {
+                    if target == model.outputLanguage {
+                        Label(target.menuLabel, systemImage: "checkmark")
+                    } else {
+                        Text(target.menuLabel)
+                    }
                 }
             }
         }

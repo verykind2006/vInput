@@ -19,6 +19,16 @@ enum TranslationAnnotation: Equatable, Sendable {
     /// 选了云端但没配 API key。**单列而不是并进 failed**：
     /// 这一条用户有明确的动作可做（去配 key），其余没有。
     case missingAPIKey
+    /// 选了外语，但一个本地翻译模型目录都没有，翻译层根本没挂上。
+    ///
+    /// **不能用 `failed` 顶替**：什么都没试过，谈不上失败，而「翻译失败」
+    /// 会让用户去重说一遍——重说一百遍也没用。也不能用 `missingAPIKey`：
+    /// 那是云端那条路，要做的动作完全不同（配 key vs 指定本地目录）。
+    ///
+    /// **产生者是 `AppModel.applyTranslationPreference`，不是流水线**：
+    /// 这种情形下流水线压根不会被构造出来（见 `TranslationAttachment`）。
+    /// 文案仍放在这里，是为了让「翻译没生效时 HUD 说什么」只有一处措辞。
+    case missingLocalModel
     /// 闸门拦下。
     case rejected(TranslationRejection)
 
@@ -31,7 +41,7 @@ enum TranslationAnnotation: Equatable, Sendable {
     /// （`TranslationAnnotationLabelTests` 的样本表同样靠一个穷尽 switch
     /// 守着，加一格时那边也编译不过，逼人把新格子放进覆盖列表。）
     ///
-    /// **五种文案都说了「中文原文」**：这五条路径注入的都是中文，而用户
+    /// **每一种文案都说了「中文原文」**：这些路径注入的都是中文，而用户
     /// 选的是外语，屏幕上出现中文本身就是他要解释的那件事。不说清楚的话
     /// 他只会以为翻译开关没生效。
     var hudLabel: String {
@@ -40,6 +50,9 @@ enum TranslationAnnotation: Equatable, Sendable {
         case .timedOut: "翻译超时，已注入中文原文"
         case .failed: "翻译失败，已注入中文原文"
         case .missingAPIKey: "云端翻译未配置 API key，已注入中文原文"
+        // 用「将」不用「已」：这一条在用户点菜单选语言的那一刻就说出来，
+        // 那时还没有哪一次听写发生过。
+        case .missingLocalModel: "没有可用的翻译模型目录，将注入中文原文"
         // **委托给 `TranslationRejection.hudLabel`，不另写一套。**
         // 闸门那边已经按四种成因各写了一句（「译文里还有中文」「译文没说完」
         // …），这里再写一套的话，改一处忘另一处是迟早的事，而表现是

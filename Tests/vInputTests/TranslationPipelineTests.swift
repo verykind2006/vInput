@@ -308,7 +308,7 @@ struct TranslationAnnotationLabelTests {
     ]
 
     private static let annotations: [TranslationAnnotation] =
-        [.modelLoading, .timedOut, .failed("boom"), .missingAPIKey]
+        [.modelLoading, .timedOut, .failed("boom"), .missingAPIKey, .missingLocalModel]
         + rejections.map { .rejected($0) }
 
     /// 只为编译期存在：两个 switch 都不写 `default`，任一枚举加一格就编译不过。
@@ -320,7 +320,8 @@ struct TranslationAnnotationLabelTests {
         }
         for annotation in annotations {
             switch annotation {
-            case .modelLoading, .timedOut, .failed, .missingAPIKey, .rejected: break
+            case .modelLoading, .timedOut, .failed, .missingAPIKey, .missingLocalModel, .rejected:
+                break
             }
         }
     }

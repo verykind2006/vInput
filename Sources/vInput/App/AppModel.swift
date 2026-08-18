@@ -41,9 +41,29 @@ final class AppModel {
     /// 同样是 UserDefaults 的可观察镜像，理由同上。
     private(set) var correctionModelName: String?
 
+    /// 当前输出语言，菜单据此显示。
+    ///
+    /// 真实存储在 UserDefaults（需跨启动保留），这里是它的可观察镜像：
+    /// @Observable 只跟踪自身的存储属性，若菜单直接读 UserDefaults，
+    /// 点完标题不会刷新（与 `correctionEnabled` 同一个坑）。
+    private(set) var outputLanguage: TranslationTarget = .chinese
+
+    /// 选了外语，却一个可用的翻译模型目录都没有。
+    ///
+    /// **这个状态必须能被看见。** 没有它的话，用户在菜单里选完「西班牙文」
+    /// 之后什么都不会发生，而菜单上还写着「输出语言：西班牙文」——用户
+    /// 看到的只有「没变化」，无从判断是哪一种（M6 ③ 修掉的正是这一类）。
+    /// 菜单标题据此加后缀，切换语言的那一刻另有一次 HUD 提示。
+    ///
+    /// **做成常驻后缀而不是只弹一次**：弹窗切走再切回来就看不到了，
+    /// 而「为什么没翻译」是个会反复被问起的问题。
+    private(set) var translationModelMissing: Bool = false
+
     private let permissions = Permissions()
     /// 校正偏好。开关状态与模型目录都要跨启动保留。
     private let correctionPreference = CorrectionPreference()
+    /// 翻译偏好。输出语言、云端开关、模型目录都要跨启动保留。
+    private let translationPreference = TranslationPreference()
     /// 「校正能不能开」的判定。全部规则都在它那边，这里只负责把结果
     /// 翻译成弹面板与错误提示。
     private let correctionActivation: CorrectionActivation
@@ -58,6 +78,16 @@ final class AppModel {
     /// `DictationSession` 只在 idle 时接受挂载。不记住这件事的话，
     /// 那次改动就永远丢失了——而菜单已经显示成新状态，等于在骗人。
     private var correctionApplyPending = false
+    /// 当前生效的翻译流水线。目标是中文（不翻译）时为 nil。
+    ///
+    /// **摘掉而不是挂一个空转的**：不摘的话每次听写都要多走一次
+    /// `requiresTranslation` 判断和一次 actor 跳转，而那是白付的。
+    ///
+    /// **它今天还没有被接到注入路径上**——`DictationSession` 尚无翻译步骤，
+    /// 那一步（连同 HUD 的「正在翻译」与标注回调）是下一步的事。本轮负责的是
+    /// 「按偏好决定挂什么、并且在挂不上时说清楚」，判断本身由
+    /// `translationAttachment` 承担且已被单测钉住。
+    private var translationPipeline: TranslationPipeline?
     private let hotkey = HotkeyRegistrar()
     private var session: DictationSession?
     private var transcriber: SwitchableTranscriber?
@@ -442,6 +472,10 @@ final class AppModel {
         self.session = session
         // 会话与全部回调就绪后再挂校正，让上次启动保存的开关状态生效。
         applyCorrectionPreference()
+        // 翻译同理，且**必须排在校正之后**：翻译没配自己的模型目录时要退回
+        // 校正层的目录，而校正的启动自检可能刚把一个失效目录判掉。顺序反了
+        // 的话翻译会拿到一个已经确认无效的路径。
+        applyTranslationPreference()
 
         // 分叉点收敛到路由器：无论音频来自内置麦还是蓝牙遥控器，
         // 都经由同一处流向预览处理器。这是 M2「分叉在 AudioSource 之后」
@@ -764,6 +798,151 @@ final class AppModel {
             log.log("指定校正模型被拒：目录缺少 \(missing.joined(separator: "、"))")
         case .needsModelSelection:
             break
+        }
+    }
+
+    // MARK: - 翻译
+
+    /// 按当前偏好，翻译层该挂什么。
+    ///
+    /// 抽成纯函数的理由与 `benchToggleAction` / `voiceDeviceStartAllowed`
+    /// 一样：`AppModel` 在测试进程里起不来（init 就要真快捷键、真 CGEvent
+    /// tap），判断留在方法体里就没有任何东西守得住它——而这里要守的恰恰是
+    /// **四种组合都不能错**的那张表。
+    enum TranslationAttachment: Equatable {
+        /// 不翻译，摘掉流水线。
+        case detach
+        /// 挂本地 MLX 翻译，用这个模型目录。
+        case local(directory: URL)
+        /// 要翻译、且选了云端，而云端后端还没实现。
+        ///
+        /// 单列一格是为了让「先判语言、再判后端」这条顺序**有牙口**：
+        /// 没有这一格的话，把两个判断对调不会改变任何返回值，
+        /// 「云端开着但输出语言是中文时一个字节都不出站」就没有任何
+        /// 测试守着。云端实现落地后，这一格换成真正的云端后端即可，
+        /// 位置不变。
+        case cloudNotImplemented
+        /// 要翻译，但一个模型目录都没有。**不许静默**：调用方要日志 + HUD。
+        case unconfigured
+    }
+
+    /// - Parameters:
+    ///   - target: 输出语言。中文＝不翻译。
+    ///   - usesCloudBackend: 云端开关。**只管翻译**，转写与校正永远在本机。
+    ///   - translationModelDirectory: `translation.modelDirectory`，通常没配。
+    ///   - correctionModelDirectory: 校正层的模型目录，翻译没配时拿它顶上。
+    ///
+    /// ## 判断顺序：先语言，后后端
+    ///
+    /// 这两个开关是正交的，四种组合都必须成立：
+    ///
+    /// | 语言 | 云端 | 行为 | 出站 |
+    /// |---|---|---|---|
+    /// | 中文 | 关 | 翻译层完全不参与 | 零 |
+    /// | 中文 | **开** | **同上** | **零** |
+    /// | 外语 | 关 | 本地 `MLXTranslator` | 零 |
+    /// | 外语 | 开 | 云端（未实现） | 有 |
+    ///
+    /// **第二行最容易漏**：用户可能为某次需要打开过云端、之后忘了关。
+    /// 只要输出语言是中文，就不该有任何东西出站，也不该弹任何与云端有关的
+    /// 提示——所以云端开关的读取必须排在语言 guard **之后**，一格都不能提前。
+    ///
+    /// ## 模型目录退回校正层，不能静默不翻译
+    ///
+    /// `translation.modelDirectory` 默认是 nil，而今天**没有任何入口会去设它**
+    /// （菜单里只有校正模型选择器）。照着「没配就 return」写的话，用户选完
+    /// 「西班牙文」什么都不会发生、也没有任何提示——正是本仓库反复栽的那类
+    /// 「静默不工作」。
+    ///
+    /// 退回校正层的目录是有依据的：M8 第 0 步实测把翻译后端定成了
+    /// `qwen3-4b-instruct-2507-4bit`，**正是校正层现在用的同一个模型**。
+    /// 这也正是 `ModelContainerRegistry` 能生效的前提——同一个目录 → 同一个键
+    /// → 同一份权重，在 16 GB 的目标机上省下一次加载和一份 2 GB 常驻。
+    ///
+    /// 两个都没配时返回 `.unconfigured`，由调用方记日志并提示，绝不静默。
+    nonisolated static func translationAttachment(
+        target: TranslationTarget,
+        usesCloudBackend: Bool,
+        translationModelDirectory: URL?,
+        correctionModelDirectory: URL?
+    ) -> TranslationAttachment {
+        // 先判语言。**云端开关在这一行之后才允许被读到。**
+        guard target.requiresTranslation else { return .detach }
+        // 到这里才轮到后端选择。
+        if usesCloudBackend { return .cloudNotImplemented }
+        guard let directory = translationModelDirectory ?? correctionModelDirectory else {
+            return .unconfigured
+        }
+        return .local(directory: directory)
+    }
+
+    /// 「输出语言：…」这一行菜单标题。
+    ///
+    /// 缺目录时带后缀，因为那时选中的语言**根本没生效**，而标题只写语言名
+    /// 的话它恰好在骗人——用户看到「输出语言：西班牙文」，得到的却是中文。
+    nonisolated static func outputLanguageMenuTitle(
+        target: TranslationTarget,
+        modelMissing: Bool
+    ) -> String {
+        let title = "输出语言：\(target.displayName)"
+        return modelMissing ? "\(title)（缺模型目录）" : title
+    }
+
+    /// 按当前偏好挂（或摘掉）翻译流水线。
+    private func applyTranslationPreference() {
+        // 镜像只在这一处更新，`bootstrap` 与 `selectOutputLanguage` 都经由
+        // 本方法——两处各写一份的话，迟早有一条路径忘了同步，而表现是
+        // 「菜单标题停在旧语言」。
+        outputLanguage = translationPreference.outputLanguage
+
+        let attachment = Self.translationAttachment(
+            target: translationPreference.outputLanguage,
+            usesCloudBackend: translationPreference.usesCloudBackend,
+            translationModelDirectory: translationPreference.modelDirectory,
+            correctionModelDirectory: correctionPreference.modelDirectory
+        )
+        translationModelMissing = attachment == .unconfigured
+
+        let log = AppLogger.shared
+        switch attachment {
+        case .detach:
+            translationPipeline = nil
+        case .local(let directory):
+            let pipeline = TranslationPipeline(
+                // **闸门与超时都用默认值。** 两个数各自有实测支撑
+                // （闸门 1.1、超时 8 秒）且各自有测试守着，在调用点硬写一个
+                // 数等于绕过那两条守卫，而且不会有人发现。
+                translator: MLXTranslator(modelDirectory: directory)
+            )
+            translationPipeline = pipeline
+            log.log("翻译已启用：目标=\(outputLanguage.rawValue) 模型目录=\(directory.path)")
+            // 与校正同一个道理：加载一次要几十秒，注入路径上一秒都不能等。
+            // 用 detached 而非 `Task {}`，后者继承 MainActor，加载的同步段
+            // 会卡住主线程上的 UI。共用登记处命中时这一次几乎是白捡的。
+            Task.detached(priority: .utility) { try? await pipeline.prepareTranslator() }
+        case .cloudNotImplemented:
+            translationPipeline = nil
+            log.log("翻译未启用：偏好选了云端后端，而云端后端尚未实现，本次不翻译")
+        case .unconfigured:
+            translationPipeline = nil
+            // **说清楚查过哪两个位置**，只说「没配」的话用户不知道去哪儿配。
+            log.log(
+                "翻译未启用：目标=\(outputLanguage.rawValue)，但没有可用的模型目录"
+                + "（translation.modelDirectory 未指定，校正模型目录也未指定），"
+                + "请在「校正」菜单里指定本地模型目录"
+            )
+        }
+    }
+
+    /// 切换输出语言。改动立即生效并跨启动保留。
+    func selectOutputLanguage(_ target: TranslationTarget) {
+        translationPreference.outputLanguage = target
+        applyTranslationPreference()
+        // 菜单标题上的后缀是常驻提示，但用户刚点完菜单、菜单当场就关了，
+        // HUD 才是他这一刻会看到的东西。文案取自 `TranslationAnnotation`，
+        // 不另写一句——「翻译为什么没生效」只该有一处措辞。
+        if translationModelMissing {
+            showHUDNotice(TranslationAnnotation.missingLocalModel.hudLabel)
         }
     }
 
