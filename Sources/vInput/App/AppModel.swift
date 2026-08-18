@@ -116,6 +116,11 @@ final class AppModel {
     /// 用户看不出录音到底起没起来，只能靠日志。
     private(set) var benchIsRecording = false
 
+    /// 上一次 `onStateChange` 看到的状态。用来判「这次是不是从 idle 出来的」，
+    /// 因为 HUD 只该在进入非 idle 的**那一刻**打开一次——重复调 `beginHUD`
+    /// 会把已经计的时长和刚产生的校正标注一起清掉。
+    private var lastSessionState: DictationSession.State = .idle
+
     /// 录制专用的音频源。
     ///
     /// **不复用听写那一路。** `AppModel` 里的 `SystemMicSource` 是
@@ -369,8 +374,23 @@ final class AppModel {
             // 否则录音途中点它是「点得动但什么都不发生」。
             self.canRetry = self.session?.canRetry ?? false
 
-            if state == .listening {
-                self.beginHUD()
+            // **从 idle 进入任何非 idle 状态都要开 HUD，不能只认 .listening。**
+            //
+            // 重试走的是 .idle → .transcribing → …（`retry()` 不经过
+            // .listening），只认 .listening 的话：菜单点重试 → 转写成功 →
+            // 面板从未 orderFront → 用户什么都看不到，随后 endHUD 还会排一个
+            // 停留计时器去收一个从没显示过的面板。**③ 的未校正标注在 ②
+            // 这条路上等于不存在。** 独立验收 2026-08-17 指出。
+            //
+            // 判「上一个状态是不是 idle」而不是每次都调：beginHUD 会重置
+            // 计时器与附注，在 .listening → .transcribing 上重复调用会把
+            // 已经计的时长和刚产生的标注一起清掉。
+            let wasIdle = self.lastSessionState == .idle
+            self.lastSessionState = state
+            if state != .idle, wasIdle {
+                // 重试没有在录音：波形与时长计时器都不该跑，跑了显示的是
+                // 上一次的能量和一个从零开始的假时长。
+                self.beginHUD(recording: state == .listening)
             } else if state == .idle {
                 self.endHUD()
             }
@@ -450,7 +470,10 @@ final class AppModel {
 
     // MARK: - HUD
 
-    private func beginHUD() {
+    /// - Parameter recording: 本次是否真的在录音。重试（`retry()`）没有录音，
+    ///   此时不启动波形与时长计时器——跑了只会显示上一次的能量和一个从零
+    ///   开始的假时长。
+    private func beginHUD(recording: Bool = true) {
         hudModel.preview = .empty
         hudModel.energy = []
         hudModel.elapsed = 0
@@ -460,8 +483,14 @@ final class AppModel {
         hudModel.notice = nil
         hudNoticeTimer?.invalidate()
         hudNoticeTimer = nil
-        recordingStartedAt = Date()
+        recordingStartedAt = recording ? Date() : nil
         hud.show()
+
+        guard recording else {
+            hudTimer?.invalidate()
+            hudTimer = nil
+            return
+        }
 
         // 20 fps：波形要这个频率才不卡顿。时长只显示到秒，顺带一起更新。
         // 能量直接从 previewProcessor 读，不等流式转写的状态回调——
