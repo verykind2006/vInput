@@ -52,6 +52,35 @@ enum MouseBridgeState: Equatable {
     case reconnecting
 }
 
+extension MouseBridgeState {
+    /// 菜单栏那一行。
+    ///
+    /// **`.muted` 必须能被看见。** 2026-08-18 那次 11 分钟环境音，用户是靠
+    /// 菜单栏的麦克风图标才发现的；反过来，我们主动掐断一段流之后如果
+    /// 什么都不显示，用户只会觉得「语音键突然不好使了」，然后去重启应用。
+    func menuLabel(battery: Int?) -> String {
+        switch self {
+        case .stopped:
+            return "鼠标：未启用"
+        case .bluetoothUnavailable(let reason):
+            return "鼠标：\(reason)"
+        case .searching:
+            return "鼠标：搜索中…"
+        case .connecting, .discovering:
+            return "鼠标：连接中…"
+        case .reconnecting:
+            return "鼠标：重连中…"
+        case .muted(let cooldown):
+            return "鼠标：已超时静音，\(Int(cooldown)) 秒后恢复"
+        case .ready:
+            if let battery {
+                return "鼠标：已连接（电量 \(battery)%）"
+            }
+            return "鼠标：已连接"
+        }
+    }
+}
+
 protocol MouseBluetoothBridgeDelegate: AnyObject {
     func mouseBridge(_ bridge: MouseBluetoothBridge, didChange state: MouseBridgeState)
     func mouseBridgeDidStartVoice(_ bridge: MouseBluetoothBridge)

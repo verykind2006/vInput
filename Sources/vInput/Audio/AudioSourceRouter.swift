@@ -3,7 +3,7 @@ import Foundation
 /// 在多个音频源之间路由。
 ///
 /// 自身实现 `AudioSource`，因此 `DictationSession` 完全不知道音频来自
-/// 内置麦还是蓝牙遥控器——会话层一行不改。
+/// 内置麦、蓝牙遥控器还是蓝牙鼠标——会话层一行不改。
 ///
 /// **为什么不让 `DictationSession` 支持换源：** 音频源在会话构造时就接管了
 /// `onFrame`，中途替换要处理正在录音、缓冲区归属等边界。M2 给
@@ -15,7 +15,13 @@ import Foundation
 final class AudioSourceRouter: AudioSource {
     enum Kind: Hashable {
         case microphone
+        /// 小米遥控器 RC003（ATVV 协议，ADPCM）。
         case bluetooth
+        /// 蓝牙鼠标 iMouse（厂商 GATT，SBC）。
+        ///
+        /// **第三个源是 M7 加的，路由器本身一行没改**——M3 把「音频从哪来」
+        /// 的全部差异吸收在 `AudioSource` 之后，这里只多一个 case。
+        case mouse
     }
 
     var onFrame: (([Float]) -> Void)?

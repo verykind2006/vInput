@@ -10,20 +10,62 @@ import Foundation
 /// ——表现为「遥控器录音后没有文字」，而 ⌥D 一切正常。
 ///
 /// 用 CGEvent tap 拦截并吞掉，只在语音会话期间生效，影响范围限于说话那几秒。
+///
+/// # 两种策略，因为两台设备的已知程度不同
+///
+/// M7 接入蓝牙鼠标时遇到同一个问题，但**鼠标语音键的键码没抓到**——上一轮
+/// 扫描的 HID 报文只按 report ID 汇总了，没有逐 usage 展开。等用户再按一轮
+/// 键来定这个数，会把整个里程碑卡在一次真机往返上。
+///
+/// 所以策略做成两档：
+///
+/// - `.only(...)`：只吞名单里的键。用于 RC003，F5 是实测得出的。
+/// - `.allExcept(...)`：吞掉除逃生口以外的所有键。用于鼠标——键码未知时，
+///   「漏抑制」的后果是输入框被按键垃圾填满、注入的文字被淹没
+///   （M3 在 RC003 上实测过的现象），而「多抑制」的后果只是说话那几秒里
+///   键盘不响应。前者是功能坏掉，后者是几秒钟的不便，不对称。
+///
+/// **逃生口必须留。** `Esc` 是录音期间唯一的取消键
+/// （`CancelHotkeyController` 只在 `.listening` 期间注册它），连它一起吞掉
+/// 等于把用户关在一次录音里。鼠标按键本身不是键盘事件，这个 tap 只挂
+/// `keyDown`/`keyUp`，所以点击与滚轮全程不受影响。
+///
+/// 会话期间每个按下沿都记日志（含键码与是否被抑制）。**鼠标那个键码就靠
+/// 这条日志实测出来**——拿到之后应当把鼠标也收窄成 `.only(...)`。
 @MainActor
 final class RemoteKeySuppressor {
-    /// 需要吞掉的键码。
+    /// 抑制策略。
+    enum Policy: Equatable, Sendable {
+        /// 只吞名单里的键。
+        case only(Set<Int64>)
+        /// 吞掉除名单以外的所有键。名单是逃生口。
+        case allExcept(Set<Int64>)
+
+        func suppresses(keyCode: Int64) -> Bool {
+            switch self {
+            case .only(let codes): return codes.contains(keyCode)
+            case .allExcept(let codes): return !codes.contains(keyCode)
+            }
+        }
+    }
+
+    /// RC003 的策略。
     ///
     /// **F5 是真机实测得出的，不是推断。** 会话期间的按键日志显示语音键
     /// 产生 `keyCode=96`（F5）。这也说得通：F5 在 macOS 上是系统听写键，
     /// 遥控器把语音键映射到它是自然的选择。
     ///
     /// 只列实测到的键。多抑制一个键就多吞掉一次用户的真实按键——录音期间
-    /// 想翻页是完全正常的操作。会话期间所有按键都记日志，若日后发现遗漏
-    /// 可据此补充。
-    private(set) var suppressedKeyCodes: Set<Int64> = [
-        Int64(kVK_F5),
-    ]
+    /// 想翻页是完全正常的操作。
+    // nonisolated：它被用作 `beginSuppressing` 的默认参数值，
+    // 而默认参数在调用方的隔离域里求值。
+    nonisolated static let remotePolicy = Policy.only([Int64(kVK_F5)])
+
+    /// 蓝牙鼠标的策略。键码未知，先无条件抑制，只放行 `Esc`。
+    nonisolated static let mousePolicy = Policy.allExcept([Int64(kVK_Escape)])
+
+    /// 当前生效的策略。未在会话中时不生效（见 `isActive`）。
+    private(set) var policy: Policy = RemoteKeySuppressor.remotePolicy
 
     /// 仅在语音会话进行中吞键。平时完全不干预用户的键盘。
     private var isActive = false
@@ -84,8 +126,11 @@ final class RemoteKeySuppressor {
     /// 若 tap 尚未建立（通常是启动时还没拿到辅助功能权限）则在此重试——
     /// 开发期每次重新打包都会因签名变化而重置 TCC 授权，用户补授权后
     /// 不必重启应用。
-    func beginSuppressing() {
+    /// - Parameter policy: 本次会话用哪一档。默认是 RC003 那档，
+    ///   这样遥控器那条路径的调用点一个字都不用改。
+    func beginSuppressing(policy: Policy = RemoteKeySuppressor.remotePolicy) {
         if eventTap == nil { start() }
+        self.policy = policy
         isActive = true
     }
 
@@ -98,7 +143,7 @@ final class RemoteKeySuppressor {
     ///
     /// 只在会话进行中吞键：平时用户按 F5 是他自己的意思，不该被我们截走。
     func shouldSuppress(keyCode: Int64) -> Bool {
-        isActive && suppressedKeyCodes.contains(keyCode)
+        isActive && policy.suppresses(keyCode: keyCode)
     }
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -115,8 +160,10 @@ final class RemoteKeySuppressor {
 
         // 只在按下沿记录，否则自动重复会把日志刷爆
         if type == .keyDown, !isRepeat {
+            // 鼠标那条路走的是「无条件抑制」，键码未知——这行日志就是把它
+            // 实测出来的唯一途径。拿到之后应当收窄成 .only(...)。
             AppLogger.shared.log(
-                "会话期间按键 keyCode=\(keyCode) 抑制=\(suppressedKeyCodes.contains(keyCode))"
+                "会话期间按键 keyCode=\(keyCode) 抑制=\(policy.suppresses(keyCode: keyCode))"
             )
         }
 

@@ -189,3 +189,42 @@ struct MouseBluetoothBridgeTests {
         #expect(delegate.audioPackets.isEmpty)
     }
 }
+
+@Suite("鼠标连接状态的菜单文案")
+struct MouseBridgeStateTests {
+
+    @Test("每种状态都有一句人话，没有一句是 case 名字")
+    func everyStateHasLabel() {
+        let states: [MouseBridgeState] = [
+            .stopped,
+            .bluetoothUnavailable("蓝牙已关闭"),
+            .searching,
+            .connecting,
+            .discovering,
+            .reconnecting,
+            .muted(10),
+            .ready("iMouse"),
+        ]
+        for state in states {
+            let label = state.menuLabel(battery: nil)
+            #expect(label.hasPrefix("鼠标："))
+            #expect(!label.contains("MouseBridgeState"))
+            #expect(label.count > 3)
+        }
+    }
+
+    @Test("已连接时显示电量")
+    func showsBattery() {
+        #expect(MouseBridgeState.ready("iMouse").menuLabel(battery: 73) == "鼠标：已连接（电量 73%）")
+        #expect(MouseBridgeState.ready("iMouse").menuLabel(battery: nil) == "鼠标：已连接")
+    }
+
+    /// 主动掐断一段流之后什么都不显示的话，用户只会觉得「语音键突然不好使
+    /// 了」然后去重启应用。2026-08-18 那次他也是靠菜单栏才发现的。
+    @Test("超时静音要写明还要等多久")
+    func mutedStateIsVisible() {
+        let label = MouseBridgeState.muted(40).menuLabel(battery: nil)
+        #expect(label.contains("静音"))
+        #expect(label.contains("40"))
+    }
+}

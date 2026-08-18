@@ -77,6 +77,10 @@ private struct MenuContent: View {
     var body: some View {
         Text(statusText)
         Text(model.remoteState.menuLabel(battery: model.remoteBattery))
+        // 鼠标那一行只在功能启用时显示：关掉时多一行「未启用」只是噪音。
+        if AppModel.mouseEnabled {
+            Text(model.mouseState.menuLabel(battery: model.mouseBattery))
+        }
 
         if !model.lastText.isEmpty {
             Divider()

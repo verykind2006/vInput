@@ -59,34 +59,54 @@ struct BenchRecordingGuardTests {
         }
     }
 
-    // MARK: - 遥控器那条路的两个条件
+    // MARK: - 蓝牙设备那条路的三个条件
 
     /// 原先这里只查了模型加载，注释却写着「与 ⌥D 的守卫保持一致」。
     /// ⌥D 有两条 guard，这里只有一条——于是录制中按遥控器语音键会放行，
     /// 两个 AVAudioEngine 抢同一支麦克风，并触发上面那条停止被拦的死锁。
-    @Test("基准集录制中，遥控器不许开始听写")
+    @Test("基准集录制中，蓝牙设备不许开始听写")
     func remoteRejectedWhileBenchRecording() {
         #expect(
-            AppModel.remoteStartAllowed(modelLoading: false, benchRecording: true) == false
+            AppModel.voiceDeviceStartAllowed(
+                modelLoading: false, benchRecording: true, dictationIdle: true
+            ) == false
         )
     }
 
-    @Test("模型加载中，遥控器不许开始听写")
+    @Test("模型加载中，蓝牙设备不许开始听写")
     func remoteRejectedWhileModelLoading() {
         #expect(
-            AppModel.remoteStartAllowed(modelLoading: true, benchRecording: false) == false
+            AppModel.voiceDeviceStartAllowed(
+                modelLoading: true, benchRecording: false, dictationIdle: true
+            ) == false
         )
     }
 
-    @Test("两个条件都不成立时才放行")
-    func remoteAllowedOnlyWhenBothClear() {
+    /// M7 加的第三条：音频源从两个变成三个，遥控器正在录时按鼠标语音键
+    /// （或反过来）必须被拒。DictationSession 自己有 guard 但它是静默的，
+    /// 而这边的按键抑制、路由选择、HUD 都已经按「开始了」走过一遍。
+    @Test("听写进行中，另一台蓝牙设备不许再开一次")
+    func remoteRejectedWhileDictating() {
         #expect(
-            AppModel.remoteStartAllowed(modelLoading: false, benchRecording: false) == true
+            AppModel.voiceDeviceStartAllowed(
+                modelLoading: false, benchRecording: false, dictationIdle: false
+            ) == false
         )
-        // 两个同时成立也必须拒——写出来是因为「或」写成「与」时，
-        // 上面两条单独看都还是绿的。
+    }
+
+    @Test("三个条件都不成立时才放行")
+    func remoteAllowedOnlyWhenAllClear() {
         #expect(
-            AppModel.remoteStartAllowed(modelLoading: true, benchRecording: true) == false
+            AppModel.voiceDeviceStartAllowed(
+                modelLoading: false, benchRecording: false, dictationIdle: true
+            ) == true
+        )
+        // 同时成立也必须拒——写出来是因为「或」写成「与」时，
+        // 上面几条单独看都还是绿的。
+        #expect(
+            AppModel.voiceDeviceStartAllowed(
+                modelLoading: true, benchRecording: true, dictationIdle: false
+            ) == false
         )
     }
 }
