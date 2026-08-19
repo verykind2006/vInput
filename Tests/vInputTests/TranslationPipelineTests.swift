@@ -3,56 +3,6 @@ import Testing
 
 @testable import vInput
 
-/// 可编程的假翻译器。**不复刻生产逻辑**，只按剧本回答。
-///
-/// 记 `callCount` 与 `prepareCallCount` 是有用的：本流水线好几条规则是
-/// 「**不**去调翻译器」（目标是中文、空文本、模型未就绪时不等加载），
-/// 而「没调」这件事只有计数看得见——光看返回值，一个把原文原样返回的
-/// 翻译器与「根本没调」分不开。
-private actor FakeTranslator: Translator {
-    enum Behavior: Sendable {
-        case succeed(String)
-        case fail(TranslatorError)
-        /// 抛一个**不是** `TranslatorError` 的错误，走兜底那条 catch。
-        case failOther
-        case hang
-    }
-
-    /// 兜底 catch 的素材。云端实现漏出 URLError 就是这个形态。
-    struct OtherError: Error {}
-
-    private let behavior: Behavior
-    private let ready: Bool
-    private let prepareError: TranslatorError?
-    private(set) var callCount = 0
-    private(set) var prepareCallCount = 0
-
-    init(_ behavior: Behavior, ready: Bool = true, prepareError: TranslatorError? = nil) {
-        self.behavior = behavior
-        self.ready = ready
-        self.prepareError = prepareError
-    }
-
-    var isReady: Bool { get async { ready } }
-
-    func prepare() async throws {
-        prepareCallCount += 1
-        if let prepareError { throw prepareError }
-    }
-
-    func translate(_ text: String, to target: TranslationTarget) async throws -> String {
-        callCount += 1
-        switch behavior {
-        case .succeed(let output): return output
-        case .fail(let error): throw error
-        case .failOther: throw OtherError()
-        case .hang:
-            try await Task.sleep(for: .seconds(600))
-            return ""
-        }
-    }
-}
-
 @Suite("翻译流水线")
 struct TranslationPipelineTests {
     /// 全部用例共用的中文原文。以句号收尾（截断判据的前置条件），

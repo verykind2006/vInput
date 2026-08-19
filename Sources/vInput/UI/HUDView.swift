@@ -100,7 +100,7 @@ struct HUDView: View {
     private var placeholder: String {
         switch model.phase {
         case .listening: "开始说话…"
-        case .transcribing, .correcting, .injecting: "正在整理…"
+        case .transcribing, .correcting, .translating, .injecting: "正在整理…"
         case .idle: ""
         }
     }
@@ -152,7 +152,7 @@ struct HUDView: View {
         switch model.phase {
         case .idle: .secondary
         case .listening: .red
-        case .transcribing, .correcting, .injecting: .orange
+        case .transcribing, .correcting, .translating, .injecting: .orange
         }
     }
 }

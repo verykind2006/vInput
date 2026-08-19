@@ -82,12 +82,14 @@ final class AppModel {
     ///
     /// **摘掉而不是挂一个空转的**：不摘的话每次听写都要多走一次
     /// `requiresTranslation` 判断和一次 actor 跳转，而那是白付的。
-    ///
-    /// **它今天还没有被接到注入路径上**——`DictationSession` 尚无翻译步骤，
-    /// 那一步（连同 HUD 的「正在翻译」与标注回调）是下一步的事。本轮负责的是
-    /// 「按偏好决定挂什么、并且在挂不上时说清楚」，判断本身由
-    /// `translationAttachment` 承担且已被单测钉住。
     private var translationPipeline: TranslationPipeline?
+    /// 上一次挂载翻译流水线被会话拒绝（当时不在 idle）。
+    ///
+    /// 与 `correctionApplyPending` 一模一样的理由：`DictationSession` 只在
+    /// idle 时接受挂载（为什么这么定见 `attachTranslation`），而用户在录音中
+    /// 或转写那几秒里从菜单换语言是很自然的动作。不记住这件事的话，那次改动
+    /// 就永远丢失了——而菜单已经写着新语言，等于在骗人。
+    private var translationApplyPending = false
     private let hotkey = HotkeyRegistrar()
     private var session: DictationSession?
     private var transcriber: SwitchableTranscriber?
@@ -412,10 +414,14 @@ final class AppModel {
                 self.phase = .idle
                 // 会话结束，把此前被拒绝的挂载补上。
                 if self.correctionApplyPending { self.applyCorrectionPreference() }
+                // 翻译的补挂**必须排在校正之后**，与 bootstrap 里那次同一个
+                // 理由：翻译没配自己的模型目录时要退回校正层的目录，顺序反了
+                // 会拿到上一轮那个可能刚被判掉的路径。
+                if self.translationApplyPending { self.applyTranslationPreference() }
             case .listening: self.phase = .listening
-            // 校正与转写、注入同归 working：Phase 是给菜单栏用的粗粒度
+            // 校正、翻译与转写、注入同归 working：Phase 是给菜单栏用的粗粒度
             // 状态，不必区分到这一级，细节由 HUD 呈现。
-            case .transcribing, .correcting, .injecting: self.phase = .working
+            case .transcribing, .correcting, .translating, .injecting: self.phase = .working
             }
             self.hudModel.phase = state
             self.cancelHotkey.update(for: state)
@@ -467,6 +473,16 @@ final class AppModel {
         // 真正让它被看见的是 endHUD 的停留（见 hudNoticeLinger）——
         // 这两步之间只隔几十毫秒，不停留等于没显示。
         session.onCorrection = { [weak self] annotation in
+            self?.hudModel.notice = annotation?.hudLabel
+        }
+        // 翻译标注走同一条路：产生的时刻紧挨着校正标注（.translating 与
+        // .injecting 之间），同样靠 endHUD 的停留才被看见。
+        //
+        // **两处写同一个赋值是有意的**，不是漏了抽函数：这一轮里两种标注不会
+        // 同时出现（校正标注只在校正改了东西时有值，翻译标注只在翻译没译成时
+        // 有值），但**将来会**——两条都非 nil 时该显示哪一条、要不要合并成两行，
+        // 是 HUD 的呈现问题，属于 Task 11。本轮先把回调接通，不替它定策略。
+        session.onTranslation = { [weak self] annotation in
             self?.hudModel.notice = annotation?.hudLabel
         }
         self.session = session
@@ -889,6 +905,11 @@ final class AppModel {
     }
 
     /// 按当前偏好挂（或摘掉）翻译流水线。
+    ///
+    /// `attachTranslation` 只在 idle 时生效（为什么这么定见那边）。录音/转写
+    /// 途中换语言会被 `DictationSession` 拒绝，因此这里记下「有一次挂载没生效」，
+    /// 等会话回到 idle 时由 `onStateChange` 里的补挂逻辑再调一次本方法——
+    /// 与 `applyCorrectionPreference` 同一形状。
     private func applyTranslationPreference() {
         // 镜像只在这一处更新，`bootstrap` 与 `selectOutputLanguage` 都经由
         // 本方法——两处各写一份的话，迟早有一条路径忘了同步，而表现是
@@ -901,9 +922,23 @@ final class AppModel {
             translationModelDirectory: translationPreference.modelDirectory,
             correctionModelDirectory: correctionPreference.modelDirectory
         )
+        // **镜像与「缺目录」的判断排在会话状态 guard 之前。** 用户点完菜单，
+        // 菜单标题与 `selectOutputLanguage` 里那条 HUD 提示必须当场就对——
+        // 哪怕这次挂载要等这一轮会话结束。放到 guard 之后的话，录音途中换语言
+        // 会出现「菜单还写着旧语言」，而那正是这个镜像存在的理由。
         translationModelMissing = attachment == .unconfigured
 
         let log = AppLogger.shared
+        guard let session else {
+            translationApplyPending = true
+            return
+        }
+        guard session.state == .idle else {
+            translationApplyPending = true
+            log.log("输出语言本次会话不生效（当前 \(session.state)），会话结束后补挂")
+            return
+        }
+
         switch attachment {
         case .detach:
             translationPipeline = nil
@@ -932,6 +967,14 @@ final class AppModel {
                 + "请在「校正」菜单里指定本地模型目录"
             )
         }
+
+        // **挂载写在 switch 外面，四条分支共用这一句。** 写进 switch 的话，
+        // 四格里漏掉一格是迟早的事，而漏掉 `.detach` 的表现是「用户切回中文
+        // 却还在出英文」——一句话被翻译过之后再也退不回来，用户只能重启。
+        // 摘掉也是一次挂载：`translationPipeline` 在上面四格里已经各自置好，
+        // 这里只负责把它送进会话。
+        session.attachTranslation(translationPipeline, target: outputLanguage)
+        translationApplyPending = false
     }
 
     /// 切换输出语言。改动立即生效并跨启动保留。
@@ -1078,7 +1121,7 @@ final class AppModel {
             // 可能有用的出口。等真机上先确认它到底触发不触发。
             log.log("结束录音，进入转写")
             Task { await session.finish() }
-        case .transcribing, .correcting, .injecting:
+        case .transcribing, .correcting, .translating, .injecting:
             log.log("toggle 忽略：正在处理上一段（\(session.state)）")
         }
     }

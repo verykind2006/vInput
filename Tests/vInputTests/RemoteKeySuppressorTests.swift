@@ -100,7 +100,10 @@ struct RemoteKeySuppressorTests {
     /// 就收，与 `CancelHotkeyController.update(for:)` 同一个形状。
     @Test("会话离开 listening 就收掉抑制")
     func endsSuppressionWhenSessionLeavesListening() {
-        for state in [DictationSession.State.idle, .transcribing, .correcting, .injecting] {
+        // 遍历「除 .listening 之外的全部状态」，列表向 `DictationSession` 要而
+        // 不是手抄一份：原来这里抄了四格，M8 加 `.translating` 时没有任何东西
+        // 会提醒人回来补第五格——而漏掉的那一格恰恰就是没被覆盖的那一格。
+        for state in DictationSession.State.allCasesInPipelineOrder.filter({ $0 != .listening }) {
             let suppressor = RemoteKeySuppressor()
             suppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
             suppressor.update(for: state)

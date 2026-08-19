@@ -12,7 +12,30 @@ final class DictationSession {
         case transcribing
         /// 转写已完成，正在校正。HUD 据此显示「正在校正」。
         case correcting
+        /// 校正已完成，正在翻译。**排在 `.correcting` 之后**，
+        /// 理由见 `allCasesInPipelineOrder`。
+        case translating
         case injecting
+
+        /// 流水线的固定顺序。**校正必须在翻译之前**——带同音错字的中文译过去，
+        /// 错误会被固化：说「上线」转写成「上限」，译过去就是 upper limit，
+        /// 译文里看不出这是个同音错字，而中文原文里校正层本来能修掉它。
+        ///
+        /// **这个数组自己证明不了上面那句话。** 它是手写的，把 `process()` 里
+        /// 校正与翻译两段代码对调，它一个字都不用改——那正是本仓库栽过七次的
+        /// 「看着在检查什么，其实什么都没检查」。真正守住调用顺序的是
+        /// `DictationTranslationTests.stateOrderPutsCorrectionFirst`：
+        /// 让假校正器与假翻译器各自记下被调到的时刻，断言的是调用顺序本身，
+        /// 外加「翻译器收到的是校正**后**的文本」这条行为证据。
+        ///
+        /// 那么它留着干什么：一是给「实际状态序列」一个可比对的基准
+        /// （`observedStatesFollowDeclaredOrder` 断言实测序列是它的子序列，
+        /// 数组一改就红）；二是给要遍历全部状态的用例一个出处
+        /// （`RemoteKeySuppressorTests`）——那里原本手抄了一份状态列表，
+        /// 加一格时没人会记得回去补，而漏掉的那一格恰恰是没被覆盖的那一格。
+        static let allCasesInPipelineOrder: [State] = [
+            .idle, .listening, .transcribing, .correcting, .translating, .injecting,
+        ]
     }
 
     private(set) var state: State = .idle
@@ -29,6 +52,11 @@ final class DictationSession {
     ///
     /// **校正关闭时一次都不回调**——没开的东西不该提示「未校正」。
     var onCorrection: ((CorrectionAnnotation?) -> Void)?
+    /// 翻译产生标注时回调。nil 表示正常译出（HUD 什么都不显示）。
+    ///
+    /// **输出语言是中文时一次都不回调**，与 `onCorrection` 同一条规矩：
+    /// 用户没要翻译，屏幕上就不该冒出任何与翻译有关的字。
+    var onTranslation: ((TranslationAnnotation?) -> Void)?
 
     private let audioSource: AudioSource
     private let transcriber: Transcriber
@@ -42,6 +70,18 @@ final class DictationSession {
     /// 而本仓库不重建会话（`AppModel` 里的 session 只构造一次，
     /// 换 Whisper 模型走的是 `SwitchableTranscriber.switchTo`）。
     private var correctionPipeline: CorrectionPipeline?
+    /// 翻译流水线。可为 nil——不翻译时摘掉，注入路径上就少一次 actor 跳转。
+    /// 是 `var` 的理由与 `correctionPipeline` 一字不差。
+    private var translationPipeline: TranslationPipeline?
+    /// 当前输出语言。
+    ///
+    /// **与流水线分开存，两者都要判。** `AppModel` 在目标是中文时会把流水线
+    /// 直接摘掉（见 `TranslationAttachment.detach`），但那是它的策略，不是本
+    /// 类型能假设的事——只判流水线在不在的话，谁哪天挂着流水线传了 `.chinese`
+    /// 进来，中文就会被送去「翻译成中文」，而 `TranslationPipeline` 里的同款
+    /// guard 会让这件事在行为上完全看不出来（返回值一模一样），只是白付一次
+    /// actor 跳转和一次状态迁移。
+    private var translationTarget: TranslationTarget = .chinese
     /// 注入失败时的兜底：写剪贴板 + 发通知。可为 nil——缺席时行为与从前
     /// 完全一致（报错、回 idle），只是文字又会蒸发。
     private let rescue: TextRescuing?
@@ -179,6 +219,30 @@ final class DictationSession {
         correctionPipeline = pipeline
     }
 
+    /// 挂上（或摘掉）翻译流水线。传 nil 表示不翻译。
+    ///
+    /// **与 `attachCorrectionPipeline` 同一条规则：只在 idle 时接受挂载。**
+    /// 用户在说话途中从菜单里换语言时这次挂载会被拒，`AppModel` 记下来
+    /// （`translationApplyPending`），等回到 idle 再补挂一次。
+    ///
+    /// 选「延迟生效」而不是「立刻生效」，理由有两条：
+    ///
+    /// 1. **一次会话内规则不变。** 用户是在他当时选的语言下开口的。说到一半
+    ///    改主意就把这句话改译成别的，等于拿他说完之后才做的选择去处理他说完
+    ///    之前的话——而这一句会被**直接注进他即将发出的窗口**。反过来（英文
+    ///    切回中文）同理：那句话是冲着英文说的，就该出英文。
+    /// 2. **立刻生效也换不来什么。** 本地翻译模型冷加载几十秒（M8 第 0 步实测
+    ///    14.1 秒，有页缓存 3.7–8.0 秒），中途挂上的流水线在这一句上多半
+    ///    `isReady == false`，注入的仍是中文，只是多一条「翻译模型还在加载」
+    ///    的标注——白担一次「规则中途变了」的风险，换一句解释。
+    ///
+    /// 守着这条语义的是 `DictationTranslationTests.attachMidSessionAppliesNextRound`。
+    func attachTranslation(_ pipeline: TranslationPipeline?, target: TranslationTarget = .chinese) {
+        guard state == .idle else { return }
+        translationPipeline = pipeline
+        translationTarget = target
+    }
+
     /// 用上一次失败时保留的音频重新走一遍。
     func retry() async {
         guard canRetry else { return }
@@ -241,13 +305,29 @@ final class DictationSession {
             finalText = trimmed
         }
 
+        // 翻译绝不抛错：`TranslationPipeline.translate` 内部已把所有失败路径
+        // 收敛为「返回中文原文 + 标注」。这里不写 do/catch 是有意的——
+        // 若将来它开始抛错，编译器会立刻指出，而不是让错误静默吞掉用户说的话
+        // （与上面的校正层同款处理）。
+        //
+        // **排在校正之后。** 带同音错字的中文译过去，错误会被固化：用户说
+        // 「上线」而转写成「上限」，译过去就是 upper limit，译文里看不出这是个
+        // 同音错字，而中文原文里校正层本来能修掉它。
+        var textToInject = finalText
+        if let translationPipeline, translationTarget.requiresTranslation {
+            transition(to: .translating)
+            let result = await translationPipeline.translate(finalText, to: translationTarget)
+            textToInject = result.text
+            onTranslation?(result.annotation)
+        }
+
         transition(to: .injecting)
 
         let outcome: Result<Void, Error>
         do {
             // 规则三：注入前确认目标应用没变
             try targetGuard.verify(targetToken)
-            try sink.send(finalText)
+            try sink.send(textToInject)
             outcome = .success(())
         } catch {
             outcome = .failure(error)
@@ -259,14 +339,17 @@ final class DictationSession {
         transition(to: .idle)
         switch outcome {
         case .success:
-            onText?(finalText)
+            onText?(textToInject)
         case .failure(let error):
             // 规则二（注入失败）与规则三（目标应用改变）此前都到此为止，
             // 文本直接蒸发。现在先把它救进剪贴板并通知用户，再报错。
             //
             // 顺序上兜底在 onError 之前：`AppModel` 在 onError 里只是把错误
             // 写到菜单栏，而用户看到提示时文字必须已经在剪贴板里了。
-            await rescue?.rescue(finalText, error: error)
+            //
+            // 救的是 `textToInject` 而不是 `finalText`：用户要的是译文，
+            // 从剪贴板里粘出一段中文等于这次翻译白做了。
+            await rescue?.rescue(textToInject, error: error)
             onError?(error)
         }
     }

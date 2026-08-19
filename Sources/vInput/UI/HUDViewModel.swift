@@ -90,6 +90,11 @@ final class HUDViewModel {
         case .transcribing: "正在转写"
         // 与转写分开显示：校正可能耗时数秒，共用文案会让用户以为程序卡死
         case .correcting: "正在校正"
+        // 与校正分开显示，理由同上：翻译同样是数秒量级的等待（M8 第 0 步实测
+        // 单条最长 4.9 秒），共用「正在校正」会让用户以为卡在校正上。
+        // **本轮只到文案为止**，「正在翻译」在 HUD 上怎么呈现（要不要图标、
+        // 要不要进度）是 Task 11 的事。
+        case .translating: "正在翻译"
         case .injecting: "正在输入"
         }
         if phase == .listening, previewDegraded {
