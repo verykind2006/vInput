@@ -65,3 +65,6 @@ Bench/translate-sweep.txt
 # 标记文件里是本机绝对路径，报告是每轮被覆盖的产物。
 Bench/.whisper-translate.json
 Bench/whisper-translate.txt
+
+# 云端翻译端到端体检的本机开关，见 Tests/vInputTests/GeminiE2ETests.swift
+Testing/.gemini-e2e-enabled

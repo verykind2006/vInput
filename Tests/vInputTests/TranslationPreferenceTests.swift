@@ -127,8 +127,10 @@ struct TranslationAttachmentTests {
     /// 云端有关的提示。
     ///
     /// 它同时是「先判语言、后判后端」这条顺序的**唯一机械守卫**：把
-    /// `translationAttachment` 里那两个判断对调，本条立刻变成
-    /// `.cloudNotImplemented`。
+    /// `translationAttachment` 里那两个判断对调，本条立刻变成 `.cloud`
+    /// ——2026-08-19（Task 13）实测确认这条仍然有牙口，云端真正落地之后
+    /// 它守的东西从「返回值不同」变成了「真会发出一条请求」。
+    /// **期望值不变，仍是 `.detach`**：对调之后不许去迁就它。
     @Test("中文 + 云端开：仍然摘掉，云端开关一个字节都不该出站")
     func chineseWithCloudStillDetaches() {
         #expect(
@@ -140,7 +142,7 @@ struct TranslationAttachmentTests {
         for target in TranslationTarget.allCases where target.requiresTranslation {
             #expect(
                 attachment(target: target, cloud: true, correctionDirectory: correctionDir)
-                    == .cloudNotImplemented,
+                    == .cloud,
                 "\(target.rawValue) 开了云端却走进了本地分支"
             )
         }
@@ -155,12 +157,12 @@ struct TranslationAttachmentTests {
         )
     }
 
-    /// | 外语 | 云端开 | 云端（本轮未实现） | 有出站 |
+    /// | 外语 | 云端开 | 云端 `GeminiTranslator` | 有出站 |
     @Test("外语 + 云端开：走云端分支")
     func foreignCloudRoutesToCloud() {
         #expect(
             attachment(target: .spanish, cloud: true, translationDirectory: translationDir)
-                == .cloudNotImplemented
+                == .cloud
         )
     }
 
@@ -217,7 +219,7 @@ struct TranslationAttachmentTests {
     /// 缺目录的判断**排在云端之后**：选了云端时本地目录压根不相关。
     @Test("选了云端时不因为缺本地目录而报未配置")
     func cloudDoesNotNeedLocalDirectory() {
-        #expect(attachment(target: .english, cloud: true) == .cloudNotImplemented)
+        #expect(attachment(target: .english, cloud: true) == .cloud)
     }
 
     // MARK: - 菜单标题

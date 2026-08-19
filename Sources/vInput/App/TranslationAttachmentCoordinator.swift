@@ -76,6 +76,8 @@ final class TranslationAttachmentCoordinator {
     private let inputs: @MainActor () -> Inputs
     private let session: @MainActor () -> (any TranslationAttachTarget)?
     private let makeTranslator: @MainActor (URL) -> any Translator
+    private let makeCloudTranslator: @MainActor () -> any Translator
+    private let cloudKeyAvailable: @MainActor () -> Bool
     private let warmUp: @MainActor (TranslationPipeline) -> Void
     private let log: @MainActor (String) -> Void
 
@@ -98,10 +100,28 @@ final class TranslationAttachmentCoordinator {
     /// 就永远丢失了——而菜单已经写着新语言，等于在骗人。
     private(set) var isPending = false
 
+    /// - Parameters:
+    ///   - makeCloudTranslator: 造云端翻译器。**这是本 app 唯一能造出
+    ///     `GeminiTranslator` 的地方**，也是唯一一条出站路径——`Sources/`
+    ///     里除了这个默认值再没有第二处 `GeminiTranslator(`，由
+    ///     `CloudEgressTests` 扫源码钉住（那条扫描不剥注释，所以这里刻意
+    ///     不写出那个网络类型的名字，免得把自己扫进允许清单）。零出站那条
+    ///     用例正是把这个工厂换成「带记录型会话的真 `GeminiTranslator`」，
+    ///     从而观测得到「本该发出的请求一条都没发」。
+    ///   - cloudKeyAvailable: Keychain 里有没有 key。**只用来立刻告诉用户
+    ///     一声**，不参与「挂什么」的判断——缺 key 时照样挂云端，绝不退回
+    ///     本地（那会让用户以为走的是云端，实际跑的是本机模型）。
+    ///     真正读 key 的是 `GeminiTranslator` 自己，且是在**每次请求时**读：
+    ///     用户中途把 key 存进 Keychain 之后，下一句话就生效，不必回菜单
+    ///     重选一次语言。
     init(
         inputs: @escaping @MainActor () -> Inputs,
         session: @escaping @MainActor () -> (any TranslationAttachTarget)?,
         makeTranslator: @escaping @MainActor (URL) -> any Translator,
+        makeCloudTranslator: @escaping @MainActor () -> any Translator = { GeminiTranslator() },
+        cloudKeyAvailable: @escaping @MainActor () -> Bool = {
+            TranslationKey.read(service: TranslationKey.geminiService) != nil
+        },
         warmUp: @escaping @MainActor (TranslationPipeline) -> Void
             = TranslationAttachmentCoordinator.detachedWarmUp,
         log: @escaping @MainActor (String) -> Void = { AppLogger.shared.log($0) }
@@ -109,6 +129,8 @@ final class TranslationAttachmentCoordinator {
         self.inputs = inputs
         self.session = session
         self.makeTranslator = makeTranslator
+        self.makeCloudTranslator = makeCloudTranslator
+        self.cloudKeyAvailable = cloudKeyAvailable
         self.warmUp = warmUp
         self.log = log
     }
@@ -154,9 +176,33 @@ final class TranslationAttachmentCoordinator {
             log("翻译已启用：目标=\(current.target.rawValue) 模型目录=\(directory.path)")
             // 与校正同一个道理：加载一次要几十秒，注入路径上一秒都不能等。
             warmUp(built)
-        case .cloudNotImplemented:
-            pipeline = nil
-            log("翻译未启用：偏好选了云端后端，而云端后端尚未实现，本次不翻译")
+        case .cloud:
+            let built = TranslationPipeline(translator: makeCloudTranslator())
+            pipeline = built
+            if cloudKeyAvailable() {
+                // **明说「文字会离开本机」。** 产品大原则是一切不出本机，
+                // 出站是唯一需要用户事后能在日志里查证的那件事。
+                log("翻译已启用：云端 Gemini，目标=\(current.target.rawValue)（文字会离开本机）")
+            } else {
+                // **缺 key 绝不静默、也绝不退回本地。**
+                //
+                // M6 ③ 的直接教训：一个静默不工作的功能，用户看到的只有
+                // 「没变化」，无从判断是哪一种。这里给两处提示——这条日志
+                // 当场就有（含存 key 的命令，用户不必去翻文档），
+                // 以及每次听写时 HUD 上的
+                // `TranslationAnnotation.missingAPIKey`（云端翻译器在
+                // `translate` 里抛 `.missingAPIKey`，一个字节都不出站）。
+                log(
+                    "翻译已启用但云端缺 API key：目标=\(current.target.rawValue)，"
+                        + "每次听写都会退回中文原文并在 HUD 上说明。"
+                        + "存 key：security add-generic-password -a vInput -s "
+                        + "\(TranslationKey.geminiService) -w"
+                )
+            }
+            // 云端没有权重要加载，预热在这里买到的是**在用户开口之前**就把
+            // 缺 key 这件事捅出来（`GeminiTranslator.prepare` 会抛
+            // `.missingAPIKey`，`TranslationPipeline.prepareTranslator` 记日志）。
+            warmUp(built)
         case .unconfigured:
             pipeline = nil
             // **说清楚查过哪两个位置**，只说「没配」的话用户不知道去哪儿配。

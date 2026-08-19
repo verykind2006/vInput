@@ -876,14 +876,17 @@ final class AppModel {
         case detach
         /// 挂本地 MLX 翻译，用这个模型目录。
         case local(directory: URL)
-        /// 要翻译、且选了云端，而云端后端还没实现。
+        /// 要翻译、且选了云端：挂 `GeminiTranslator`。**文字会离开本机。**
         ///
         /// 单列一格是为了让「先判语言、再判后端」这条顺序**有牙口**：
         /// 没有这一格的话，把两个判断对调不会改变任何返回值，
         /// 「云端开着但输出语言是中文时一个字节都不出站」就没有任何
-        /// 测试守着。云端实现落地后，这一格换成真正的云端后端即可，
-        /// 位置不变。
-        case cloudNotImplemented
+        /// 测试守着。
+        ///
+        /// **这一格不带模型目录**：云端不需要本地权重，也**不许**在缺 key
+        /// 时退回本地——那样用户以为走的是云端，实际跑的是本机模型，
+        /// 而这两件事的出站行为正好相反。
+        case cloud
         /// 要翻译，但一个模型目录都没有。**不许静默**：调用方要日志 + HUD。
         case unconfigured
     }
@@ -903,7 +906,7 @@ final class AppModel {
     /// | 中文 | 关 | 翻译层完全不参与 | 零 |
     /// | 中文 | **开** | **同上** | **零** |
     /// | 外语 | 关 | 本地 `MLXTranslator` | 零 |
-    /// | 外语 | 开 | 云端（未实现） | 有 |
+    /// | 外语 | 开 | 云端 `GeminiTranslator` | 有 |
     ///
     /// **第二行最容易漏**：用户可能为某次需要打开过云端、之后忘了关。
     /// 只要输出语言是中文，就不该有任何东西出站，也不该弹任何与云端有关的
@@ -930,8 +933,10 @@ final class AppModel {
     ) -> TranslationAttachment {
         // 先判语言。**云端开关在这一行之后才允许被读到。**
         guard target.requiresTranslation else { return .detach }
-        // 到这里才轮到后端选择。
-        if usesCloudBackend { return .cloudNotImplemented }
+        // 到这里才轮到后端选择。**这是插入，不是重排**——两行对调时
+        // `TranslationAttachmentTests.chineseWithCloudStillDetaches` 会红，
+        // 那条的期望值（`.detach`）不该被迁就。
+        if usesCloudBackend { return .cloud }
         guard let directory = translationModelDirectory ?? correctionModelDirectory else {
             return .unconfigured
         }
