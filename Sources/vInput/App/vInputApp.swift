@@ -39,6 +39,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 面板。放在这里而不是菜单视图里，是因为它与视图的生命周期无关，
         // 而菜单视图每次打开都会重建。
         model.chooseCorrectionModelFolder = { presentCorrectionModelFolderPanel() }
+        // 同上，也在 bootstrap 之前：开启云端翻译要先弹一次确认，而
+        // `AppModel` 不该知道 `NSAlert` 的存在。没接上时 `toggleCloudBackend`
+        // 的失败方向是「不开」。
+        model.confirmCloudBackend = { presentCloudBackendConfirmation() }
         model.bootstrap()
     }
 
@@ -71,6 +75,33 @@ private func presentCorrectionModelFolderPanel() -> URL? {
     return panel.url
 }
 
+/// 弹出「开启云端翻译」的确认框，返回用户是否确认。
+///
+/// **不是普通的开关切换**：一开，用户说的每一句话都会发到 Google，而这个
+/// 工具会用在含报价的场合。文案（含「输出语言是中文时零出站」那一条）在
+/// `AppModel.cloudBackendConfirmation` 里，由测试钉着。
+///
+/// 两处细节：
+///
+/// - **取消是默认按钮**。`NSAlert` 里先加的那个是默认按钮（回车触发），
+///   所以取消先加、开启后加，判 `alertSecondButtonReturn`。一路回车不该把
+///   出站开关按开。
+/// - `.critical` 而不是 `.warning`：这是不可逆地把内容发给第三方的动作。
+/// - `activate` 不能去掉，理由同 `presentCorrectionModelFolderPanel`。
+@MainActor
+private func presentCloudBackendConfirmation() -> Bool {
+    NSApplication.shared.activate(ignoringOtherApps: true)
+
+    let copy = AppModel.cloudBackendConfirmation
+    let alert = NSAlert()
+    alert.alertStyle = .critical
+    alert.messageText = copy.title
+    alert.informativeText = copy.message
+    alert.addButton(withTitle: copy.cancelButton)
+    alert.addButton(withTitle: copy.confirmButton)
+    return alert.runModal() == .alertSecondButtonReturn
+}
+
 private struct MenuContent: View {
     let model: AppModel
 
@@ -101,6 +132,7 @@ private struct MenuContent: View {
         modelMenu
         correctionMenu
         outputLanguageMenu
+        translationBackendMenu
 
         // 基准集录制。开发期工具，VINPUT_BENCH=1 才显示。
         if AppModel.benchEnabled {
@@ -200,6 +232,49 @@ private struct MenuContent: View {
                         Text(target.menuLabel)
                     }
                 }
+            }
+        }
+    }
+
+    /// 翻译后端子菜单：**「谁来译」**。
+    ///
+    /// **与「输出语言」平级、各自一个子菜单，不做成输出语言里的一项。**
+    /// 那两个开关是正交的（用户 2026-08-19 专门强调过）：一个决定译成什么，
+    /// 一个决定谁来译。塞进语言列表里会让人以为「云端」是一种语言，
+    /// 或者以为选了云端就等于选了某种语言。
+    ///
+    /// 标题、开关文案、说明行全部由 `AppModel` 那三个纯函数算出，不在这里
+    /// 拼字符串——拼在视图里就没有任何测试守得住它（与 `outputLanguageMenu`
+    /// 同一条分工）。而这里要守的恰恰是「菜单说的和实际行为一致」：
+    /// 状态由协调器**真正算出来的挂载结论**推出，见
+    /// `AppModel.translationBackendStatus`。
+    ///
+    /// 菜单本身**不读 Keychain**（可能弹系统授权框），只读镜像；
+    /// 想立刻刷新的人自己按「重新检查 API key」。
+    @ViewBuilder
+    private var translationBackendMenu: some View {
+        Menu(AppModel.translationBackendMenuTitle(model.translationBackend)) {
+            Button(AppModel.translationBackendToggleLabel(model.translationBackend)) {
+                model.toggleCloudBackend()
+            }
+
+            Divider()
+            // 说明行随状态变：「开了但不会生效」的两种状态各自把话说完，
+            // 否则用户只看到一个「开」，无从判断现在到底有没有东西在出站。
+            ForEach(
+                AppModel.translationBackendDetailLines(
+                    status: model.translationBackend,
+                    target: model.outputLanguage
+                ),
+                id: \.self
+            ) { line in
+                Text(line)
+            }
+
+            // 只在云端开着时出现：云端关的时候有没有 key 与用户无关。
+            if model.translationBackend != .local {
+                Divider()
+                Button("重新检查 API key") { model.recheckCloudAPIKey() }
             }
         }
     }

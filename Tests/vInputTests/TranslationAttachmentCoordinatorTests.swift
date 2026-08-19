@@ -235,6 +235,64 @@ struct TranslationAttachmentCoordinatorTests {
         #expect(harness.warmUpCount == 1, "没有待补挂却又预热了一次")
     }
 
+    // MARK: - 菜单要的两个状态：挂载结论、Keychain 里有没有 key
+
+    /// **只有真要走云端的那几格才去碰 Keychain，且一次 `apply()` 只碰一次。**
+    ///
+    /// 读 Keychain 可能弹系统授权对话框。中文（＝不翻译）那一格本来就零出站，
+    /// key 在不在与它无关；为了「菜单状态更准」去弹一个框是纯赔本。
+    ///
+    /// 把那句读取从 `if attachment == .cloud` 里挪出来（改成每次 apply 都读），
+    /// 头两条当场红。
+    @Test("只有真要走云端时才读 Keychain，且只读一次")
+    func keychainIsReadOnlyWhenCloudActuallyRuns() {
+        let chineseWithCloud = Harness(target: .chinese, cloud: true)
+        chineseWithCloud.coordinator.apply()
+        #expect(
+            chineseWithCloud.cloudKeyReads == 0,
+            "输出中文却去读了 Keychain：那一格零出站，读它只会白弹一个系统授权框")
+
+        let foreignLocal = Harness(target: .english, cloud: false)
+        foreignLocal.coordinator.apply()
+        #expect(foreignLocal.cloudKeyReads == 0, "走本地却去读了云端的 key")
+
+        let foreignCloud = Harness(target: .english, cloud: true)
+        foreignCloud.coordinator.apply()
+        #expect(foreignCloud.cloudKeyReads == 1, "云端那格读了 \(foreignCloud.cloudKeyReads) 次，应当正好一次")
+        #expect(
+            foreignCloud.coordinator.cloudKeyPresent, "读到了 key 却没记下来，菜单会写成「缺 API key」")
+    }
+
+    /// 缺 key 时镜像也要如实。菜单靠它显示「缺 API key，未生效」。
+    @Test("缺 key 时镜像记着缺")
+    func missingKeyIsMirrored() {
+        let harness = Harness(target: .english, cloud: true, cloudKey: nil)
+        harness.coordinator.apply()
+
+        #expect(harness.coordinator.cloudKeyPresent == false)
+        #expect(harness.coordinator.attachment == .cloud, "缺 key 不许退回本地")
+    }
+
+    /// **菜单要的状态排在会话 guard 之前算好。**
+    ///
+    /// 用户在录音途中开云端：这一轮挂不上（会话不在 idle），但菜单必须当场
+    /// 就对——与 `mirrorsUpdateEvenWhenAttachRefused` 同一条理由。把那两句
+    /// 挪到 guard 之后，本条红。
+    @Test("挂载被会话拒绝时，菜单要的挂载结论与 key 状态照样算好")
+    func backendMirrorsUpdateEvenWhenAttachRefused() async throws {
+        let harness = Harness(target: .english, cloud: false)
+        try await harness.session.start()
+
+        harness.inputs.usesCloudBackend = true
+        harness.coordinator.apply()
+
+        #expect(harness.coordinator.attachment == .cloud, "菜单会停在「本机」，而用户刚开了云端")
+        #expect(harness.cloudKeyReads == 1, "这一格的 key 状态没查，菜单只能瞎写")
+
+        harness.source.emit(Harness.samples)
+        await harness.session.finish()
+    }
+
     // MARK: - 镜像
 
     /// **镜像的更新排在会话状态 guard 之前。**
@@ -394,6 +452,50 @@ struct CloudEgressTests {
         #expect(joined.contains("离开本机"), "实际日志：\(joined)")
     }
 
+    /// **菜单说会出站的那一格，正好是真的发出了请求的那一格。**
+    ///
+    /// 这是「菜单状态与实际行为脱节」的唯一硬证据。上面那套
+    /// `CloudBackendMenuTests` 跑的是纯函数，它证明得了「这张真值表是这么
+    /// 定的」，证明不了「表里说会发出的那一格真的发得出、说不发的那一格真的
+    /// 一条都没发」。这一条把两头接上：状态从**协调器跑完 `apply()` 之后
+    /// 记下来的挂载结论**推出（和菜单读的是同一个东西），出站与否由记录型
+    /// `URLSession` 数出来。
+    ///
+    /// 变异：把 `translationBackendStatus` 改成直接照抄 `usesCloudBackend`，
+    /// 「中文 + 云端开」那一格立刻说自己在出站，而记录器数到 0 条——本条红。
+    @Test("菜单说会出站的那格，正好是真发了请求的那格")
+    func menuClaimMatchesObservedEgress() async throws {
+        let cases: [(name: String, harness: Harness)] = [
+            ("中文 + 云端关", Harness(target: .chinese)),
+            ("中文 + 云端开", Harness(target: .chinese, cloud: true)),
+            ("外语 + 云端关", Harness(target: .english)),
+            ("外语 + 云端开 + 没配 key", Harness(target: .english, cloud: true, cloudKey: nil)),
+            ("外语 + 云端开 + 有 key", Harness(target: .english, cloud: true)),
+        ]
+
+        for (name, harness) in cases {
+            harness.coordinator.apply()
+            try await harness.runSession()
+
+            // 菜单读的就是这两个值（`AppModel.syncTranslationMirrors`）。
+            let status = AppModel.translationBackendStatus(
+                attachment: harness.coordinator.attachment,
+                usesCloudBackend: harness.inputs.usesCloudBackend,
+                hasAPIKey: harness.coordinator.cloudKeyPresent
+            )
+            let actuallySent = !harness.recorder.requests.isEmpty
+
+            #expect(
+                status.sendsTextOffDevice == actuallySent,
+                """
+                【\(name)】菜单说\(status.sendsTextOffDevice ? "会" : "不会")出站，
+                实际发出了 \(harness.recorder.requests.count) 条请求。
+                状态：\(status)，标题：\(AppModel.translationBackendMenuTitle(status))
+                """
+            )
+        }
+    }
+
     // MARK: - 出站面只有一处，扫源码钉住
 
     /// **`Sources/` 里只有一个地方能造出 `GeminiTranslator`，也只有一个
@@ -511,6 +613,12 @@ private final class Harness {
     let cloudKey: MutableBox<String?>
     /// 每次听写拿到的翻译标注。缺 key 时用户看到的那句 HUD 就出自这里。
     var annotations: [TranslationAnnotation?] = []
+    /// 协调器查过几次「Keychain 里有没有 key」。**「没查」只有计数看得见。**
+    ///
+    /// 查一次可能弹一次系统授权框（用 `security` 存进去的条目，ACL 里没有
+    /// 本 app），所以「哪几格会去查」本身就是要守的行为，见
+    /// `keychainIsReadOnlyWhenCloudActuallyRuns`。
+    var cloudKeyReads = 0
 
     /// 构造完立刻赋值，不会是 nil；用隐式解包是因为闭包要捕获 self。
     var coordinator: TranslationAttachmentCoordinator!
@@ -564,7 +672,10 @@ private final class Harness {
                 return GeminiTranslator(
                     session: self.recorder.makeSession(), readKey: { key.value })
             },
-            cloudKeyAvailable: { [unowned self] in self.cloudKey.value != nil },
+            cloudKeyAvailable: { [unowned self] in
+                self.cloudKeyReads += 1
+                return self.cloudKey.value != nil
+            },
             warmUp: { [unowned self] _ in self.warmUpCount += 1 },
             log: { [unowned self] message in self.logs.append(message) }
         )

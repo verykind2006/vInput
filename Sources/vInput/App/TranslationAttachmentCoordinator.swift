@@ -93,6 +93,31 @@ final class TranslationAttachmentCoordinator {
     /// 选了外语却一个可用的模型目录都没有。同上，供菜单后缀与 HUD 用。
     private(set) var modelMissing = false
 
+    /// 最近一次 `apply()` 算出来的挂载结论。菜单的「翻译后端：…」由它推出。
+    ///
+    /// **菜单必须读这个，不能读偏好里的那个布尔值。** 「云端开关开着」与
+    /// 「这次真的会走云端」是两回事——输出语言是中文时结论是 `.detach`，
+    /// 一个字节都不出站，而菜单若直接印开关状态就会说成正在往外发。
+    private(set) var attachment: AppModel.TranslationAttachment = .detach
+
+    /// 最近一次「确实要走云端」时，Keychain 里有没有 key。
+    ///
+    /// **只在 `attachment == .cloud` 时才查，一次 `apply()` 至多一次。**
+    /// 用 `security add-generic-password` 存进去的条目，ACL 里没有本 app，
+    /// 头一次读会弹系统授权对话框。于是：
+    ///
+    /// - 菜单**不去读 Keychain**，只读这个镜像——否则每打开一次菜单就可能
+    ///   弹一次框，而菜单是用户每天点很多次的东西；
+    /// - 中文（＝不翻译）那一格一次都不读：那一格本来就零出站，
+    ///   key 在不在与它无关，为了「状态更准」去弹一个框是纯赔本。
+    ///
+    /// 代价是：用户在挂载之后才把 key 存进 Keychain 时，菜单会继续写着
+    /// 「缺 API key」直到下一次 `apply()`。**只是显示旧了，行为是对的**——
+    /// `GeminiTranslator` 每次请求都现读 Keychain，下一句话就生效。
+    /// 菜单里另有一个「重新检查 API key」让用户自己刷新
+    /// （`AppModel.recheckCloudAPIKey`）。
+    private(set) var cloudKeyPresent = false
+
     /// 上一次挂载被会话拒绝（当时不在 idle），或者会话还不存在。
     ///
     /// 用户在录音中或转写那几秒里从菜单换语言是很自然的动作，而
@@ -150,7 +175,14 @@ final class TranslationAttachmentCoordinator {
             translationModelDirectory: current.translationModelDirectory,
             correctionModelDirectory: current.correctionModelDirectory
         )
+        self.attachment = attachment
         modelMissing = attachment == .unconfigured
+        // **Keychain 只在真要走云端时读。** 读它可能弹系统授权框，理由与
+        // 「一次 apply 至多读一次」都写在 `cloudKeyPresent` 上。
+        // 这一句必须留在 `attachment == .cloud` 的条件里、也必须留在会话
+        // guard 之前：前者保证中文那一格一次都不读，后者保证录音途中开云端
+        // 时菜单当场就对（与镜像同一条理由）。
+        if attachment == .cloud { cloudKeyPresent = cloudKeyAvailable() }
 
         guard let session = session() else {
             isPending = true
@@ -179,7 +211,8 @@ final class TranslationAttachmentCoordinator {
         case .cloud:
             let built = TranslationPipeline(translator: makeCloudTranslator())
             pipeline = built
-            if cloudKeyAvailable() {
+            // 用上面那次读的结果，不再读第二次——见 `cloudKeyPresent`。
+            if cloudKeyPresent {
                 // **明说「文字会离开本机」。** 产品大原则是一切不出本机，
                 // 出站是唯一需要用户事后能在日志里查证的那件事。
                 log("翻译已启用：云端 Gemini，目标=\(current.target.rawValue)（文字会离开本机）")

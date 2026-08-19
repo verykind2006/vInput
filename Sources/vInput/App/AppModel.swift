@@ -59,6 +59,17 @@ final class AppModel {
     /// 而「为什么没翻译」是个会反复被问起的问题。
     private(set) var translationModelMissing: Bool = false
 
+    /// 翻译**由谁来做**：本机，还是云端 Google。菜单据此显示。
+    ///
+    /// 与 `outputLanguage` 是两件事：那个决定「译成什么」，这个决定「谁来译」。
+    /// 用户 2026-08-19 专门强调过别把这两个开关搅在一起。
+    ///
+    /// 取值由 `translationBackendStatus` 从**协调器真正算出来的那个挂载结论**
+    /// 推出来（而不是把偏好里的布尔值直接抄给菜单）：抄布尔值的话，
+    /// 「云端开着但输出语言是中文」这一格会显示成「每句话都会发出」，
+    /// 而真实行为是一个字节都不出站——菜单就在骗人。
+    private(set) var translationBackend: TranslationBackendStatus = .local
+
     private let permissions = Permissions()
     /// 校正偏好。开关状态与模型目录都要跨启动保留。
     private let correctionPreference = CorrectionPreference()
@@ -72,6 +83,14 @@ final class AppModel {
     /// 由 UI 层注入：`AppModel` 不该知道 `NSOpenPanel` 的存在，而「开启校正
     /// 时若无合法模型就弹选择器」这条流程必须能在没有 UI 的测试里驱动。
     var chooseCorrectionModelFolder: (@MainActor () -> URL?)?
+    /// 弹出「开启云端翻译」的确认，返回用户是否确认。
+    ///
+    /// 与 `chooseCorrectionModelFolder` 同一条分工：`AppModel` 不该知道
+    /// `NSAlert` 的存在，而「开启前必须先确认」这条流程要能被扫源码钉住。
+    ///
+    /// **没接上 UI 时默认不开**（`toggleCloudBackend` 里的 `?? false`）：
+    /// 一个出站开关的失败方向只能是「不出站」。
+    var confirmCloudBackend: (@MainActor () -> Bool)?
     /// 上一次挂载校正流水线被会话拒绝（当时不在 idle）。
     ///
     /// 用户在录音中或转写那几秒里改设置是很自然的动作，而
@@ -955,6 +974,180 @@ final class AppModel {
         return modelMissing ? "\(title)（缺模型目录）" : title
     }
 
+    // MARK: - 云端开关：谁来译
+
+    /// 云端翻译**此刻**的真实状态。菜单栏的「翻译后端：…」一行由它决定。
+    ///
+    /// 分成四格而不是一个布尔值，是因为「开关开着」与「开着且真的在出站」
+    /// 差得很远，而只印开关状态的菜单会在两种情况下骗人：
+    ///
+    /// - 云端开着、输出语言却是中文（＝不翻译）：**一个字节都不出站**
+    ///   （`CloudEgressTests` 拿真会话 + 记录型网络会话端到端验过）。
+    ///   只写「云端：开」的话，用户会以为自己说的话正在往外发。
+    /// - 云端开着、选了外语，但 Keychain 里没有 key：每次听写都退回中文原文
+    ///   （`GeminiTranslator` 在发请求之前就抛 `.missingAPIKey`）。
+    ///   只写「云端：开」的话，用户会以为翻译在工作，而它一次都没工作过。
+    ///
+    /// 这与 `outputLanguageMenuTitle` 的「（缺模型目录）」后缀是同一条原则：
+    /// 状态显示与实际行为不一致，等于在骗人。
+    enum TranslationBackendStatus: Equatable {
+        /// 云端关。要不要翻译由输出语言决定，但**无论翻不翻，都在本机跑**。
+        case local
+        /// 云端开着，但输出语言是中文＝不翻译，因此仍然零出站。
+        case cloudIdleBecauseChinese
+        /// 云端开 + 外语，但 Keychain 里没有 API key：每次听写退回中文原文。
+        ///
+        /// **不出站**：`GeminiTranslator` 读不到 key 就抛，请求根本不发
+        /// （`CloudEgressTests.missingKeyIsLoudAndDoesNotFallBackToLocal`）。
+        case cloudMissingKey
+        /// 云端开 + 外语 + 有 key：**每句话都会发到 Google。**
+        case cloudActive
+
+        /// 这一格下，用户说的话会不会离开这台电脑。
+        ///
+        /// 菜单文案里那句出站警示只该出现在它为真的那一格，而它为真的那一格
+        /// 必须正好是**真的发得出请求**的那一格——后半句由
+        /// `CloudEgressTests.menuClaimMatchesObservedEgress` 拿记录型网络
+        /// 会话当场对照，不是靠推理。
+        ///
+        /// （这两处刻意不写出那个网络类型的名字：出站面的源码扫描不剥注释，
+        /// 提一句就会把本文件扫进允许清单，而那条清单是要越短越好的。）
+        var sendsTextOffDevice: Bool { self == .cloudActive }
+    }
+
+    /// 由「挂载结论 + 云端开关 + 有没有 key」算出菜单要显示的状态。
+    ///
+    /// **第一个参数是 `translationAttachment` 的返回值，不是偏好里的布尔值。**
+    /// 这条接法是本函数的全部要点：菜单说的话必须是从**真正决定行为的那个
+    /// 判断**里推出来的，而不是另起一套判断。另起一套的后果就是「菜单说开、
+    /// 实际走本机」——两套判断迟早分家，而分家没有任何东西看得见。
+    ///
+    /// 于是「先判语言、后判后端」那条顺序在这里也有牙口：把
+    /// `translationAttachment` 里两个判断对调，中文 + 云端开会变成 `.cloud`，
+    /// 本函数随之给出 `.cloudActive`，`CloudBackendMenuTests` 那张手写的
+    /// 真值表当场红。
+    ///
+    /// - Parameter hasAPIKey: Keychain 里有没有 key。**只在 `.cloud` 那一格
+    ///   被读到**，理由见 `TranslationAttachmentCoordinator.cloudKeyPresent`：
+    ///   读 Keychain 可能弹系统授权框，中文那一格不该因为一个开关去碰它。
+    nonisolated static func translationBackendStatus(
+        attachment: TranslationAttachment,
+        usesCloudBackend: Bool,
+        hasAPIKey: Bool
+    ) -> TranslationBackendStatus {
+        guard attachment == .cloud else {
+            // 走不到云端却开着云端开关，只可能是「输出语言是中文」——
+            // 外语无论有没有本地模型目录都会落到 `.cloud`。
+            return usesCloudBackend ? .cloudIdleBecauseChinese : .local
+        }
+        return hasAPIKey ? .cloudActive : .cloudMissingKey
+    }
+
+    /// 「翻译后端：…」这一行菜单标题。
+    ///
+    /// **四格四句话，一格一句**：都写「云端：开」的话，上面那两种「开了但
+    /// 不会生效」的状态在菜单上就消失了。
+    nonisolated static func translationBackendMenuTitle(
+        _ status: TranslationBackendStatus
+    ) -> String {
+        switch status {
+        case .local:
+            "翻译后端：本机（文字不出这台电脑）"
+        case .cloudIdleBecauseChinese:
+            "翻译后端：云端 Google（当前输出中文，未出站）"
+        case .cloudMissingKey:
+            "翻译后端：云端 Google（缺 API key，未生效）"
+        case .cloudActive:
+            "翻译后端：云端 Google（每句话都会发出）"
+        }
+    }
+
+    /// 子菜单里那个开关项的文案。
+    ///
+    /// **开启那一句必须把后果写在按钮上**，不能是「启用云端翻译」这种中性
+    /// 说法：这个开关一开，用户说的每一句话都会发到 Google，而这工具会用在
+    /// 含报价的场合（用户 2026-08-17）。末尾的省略号是 macOS 的惯例：
+    /// 点它会先弹一个确认框（`cloudBackendConfirmation`），不是当场就开。
+    nonisolated static func translationBackendToggleLabel(
+        _ status: TranslationBackendStatus
+    ) -> String {
+        switch status {
+        case .local:
+            "开启云端翻译：每句话都会发到 Google…"
+        case .cloudIdleBecauseChinese, .cloudMissingKey, .cloudActive:
+            "关闭云端翻译，改回本机"
+        }
+    }
+
+    /// 子菜单里的说明行。**每一格都要把「现在到底会发生什么」说完。**
+    ///
+    /// 做成一个纯函数而不是拼在 SwiftUI 视图里：拼在视图里就没有任何测试
+    /// 守得住它（与 `TranslationTarget.menuLabel`、`HUDViewModel` 同一条分工）。
+    nonisolated static func translationBackendDetailLines(
+        status: TranslationBackendStatus,
+        target: TranslationTarget
+    ) -> [String] {
+        switch status {
+        case .local:
+            [
+                "翻译在本机跑，说的话不出这台电脑。",
+                "「输出语言」决定译成什么，这里决定谁来译——两件事。",
+            ]
+        case .cloudIdleBecauseChinese:
+            [
+                // **这一格是用户最容易误解的**：开着开关不等于正在往外发。
+                "云端开着，但输出语言是「中文」＝不翻译：现在一个字节都不会离开本机。",
+                "把输出语言换成外语之后，每句话才会发到 Google。",
+            ]
+        case .cloudMissingKey:
+            [
+                "云端开着，但 Keychain 里没有 API key：每次听写都会退回中文原文，也不会发出任何请求。",
+                "存 key：security add-generic-password -a vInput -s \(TranslationKey.geminiService) -w",
+                "存好后下次听写即生效，不必回菜单重选。",
+            ]
+        case .cloudActive:
+            [
+                "现在每说一句话，转写出来的全文都会发到 Google 的服务器，译成\(target.displayName)。",
+                "涉及报价等机密内容时，先关掉它，或把输出语言切回中文。",
+                "转写与校正始终在本机，不受这个开关影响。",
+            ]
+        }
+    }
+
+    /// 「开启云端翻译」的确认框文案。
+    ///
+    /// **开启云端不能像切换一个普通选项。** 产品大原则是一切不出本机
+    /// （用户 2026-08-17 确立，理由是这工具会涉及机密内容，包括报价），
+    /// 云端是「默认关、用户显式开」——「显式」这两个字要求用户在知道后果
+    /// 之后再点一次，而不是划过一个开关。
+    ///
+    /// 文案里必须同时说清三件事，缺一件用户就会做出错的判断：
+    /// 发生什么（每句话发到 Google）、什么时候不发生（输出语言是中文时零
+    /// 出站）、什么不受影响（转写与校正始终在本机）。
+    struct CloudBackendConfirmation {
+        let title: String
+        let message: String
+        let confirmButton: String
+        /// **取消是默认按钮**（见 `presentCloudBackendConfirmation`）：
+        /// 一路回车不该把出站开关按开。
+        let cancelButton: String
+    }
+
+    nonisolated static let cloudBackendConfirmation = CloudBackendConfirmation(
+        title: "开启云端翻译？每句话都会发到 Google",
+        message: """
+            开启后，你说的每一句话——转写出来的全文——都会通过网络发到 Google 的 \
+            Gemini 服务器做翻译。涉及报价、客户信息等机密内容时不要开启。
+
+            这个开关只管「谁来译」，不管「要不要译」：只要输出语言是中文（＝不翻译），\
+            就算它开着也不会有任何文字离开本机；出站只发生在输出语言是外语时。
+
+            转写与校正始终在本机，不受这个开关影响。随时可以在同一处关掉。
+            """,
+        confirmButton: "开启云端翻译",
+        cancelButton: "取消"
+    )
+
     /// 按当前偏好挂（或摘掉）翻译流水线。
     ///
     /// **判断与挂载全在 `TranslationAttachmentCoordinator` 里**，本方法只负责
@@ -977,6 +1170,54 @@ final class AppModel {
         guard let translationCoordinator else { return }
         outputLanguage = translationCoordinator.target
         translationModelMissing = translationCoordinator.modelMissing
+        // **从协调器真正算出来的那个挂载结论推，不要另起一套判断。**
+        // 菜单是否显示「会发出」，必须与实际会不会发出同源；两处各判一次
+        // 的话，「云端开 + 中文＝零出站」这一格迟早会在菜单上显示成正在出站。
+        translationBackend = AppModel.translationBackendStatus(
+            attachment: translationCoordinator.attachment,
+            usesCloudBackend: translationPreference.usesCloudBackend,
+            hasAPIKey: translationCoordinator.cloudKeyPresent
+        )
+    }
+
+    /// 切换云端翻译开关。**开启要先确认，关闭不必。**
+    ///
+    /// 不对称是有意的：关掉的方向是「更不出站」，任何时候都该一步到位；
+    /// 开启的方向会让用户说的每一句话离开本机，必须先看到后果再点一次
+    /// （文案见 `cloudBackendConfirmation`）。这与校正那边「关闭不做任何
+    /// 校验、开启必须先有合法模型目录」是同一种不对称。
+    ///
+    /// 没接上确认 UI 时**不开**：一个出站开关的失败方向只能是「不出站」。
+    func toggleCloudBackend() {
+        guard translationPreference.usesCloudBackend else {
+            guard confirmCloudBackend?() ?? false else {
+                AppLogger.shared.log("开启云端翻译被取消，翻译保持在本机")
+                return
+            }
+            translationPreference.usesCloudBackend = true
+            applyTranslationPreference()
+            // 出站是唯一需要用户事后能在日志里查证的那件事，
+            // 所以开关本身也留一条，而不只有挂载时那条。
+            AppLogger.shared.log(
+                "云端翻译已开启（输出语言为外语时，转写出来的文字会离开本机）")
+            return
+        }
+        translationPreference.usesCloudBackend = false
+        applyTranslationPreference()
+        AppLogger.shared.log("云端翻译已关闭，翻译回到本机")
+    }
+
+    /// 重新查一次 Keychain 里有没有 API key，并刷新菜单上的状态。
+    ///
+    /// 菜单**不会**每次打开就去读 Keychain（理由见
+    /// `TranslationAttachmentCoordinator.cloudKeyPresent`：那可能弹系统授权
+    /// 框），所以「刚存完 key」这件事需要一个用户自己按的入口。
+    /// 用户主动按下的一次读取是可以接受的——他知道自己在干什么。
+    ///
+    /// 顺带一提，存好 key 之后**不按也行**：`GeminiTranslator` 每次请求都
+    /// 现读 Keychain，下一句话就生效；这个按钮只影响菜单上的显示。
+    func recheckCloudAPIKey() {
+        applyTranslationPreference()
     }
 
     /// 切换输出语言。改动立即生效并跨启动保留。
