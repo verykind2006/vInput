@@ -257,7 +257,9 @@ struct TranslationAnnotationLabelTests {
         .tooShort(ratio: 0.4),
     ]
 
-    private static let annotations: [TranslationAnnotation] =
+    /// 非 private：`TranslationAnnotationTests` 复用同一份样本表。
+    /// 两处各写一份的话，加一格时补了这边忘了那边——而那正是这张表要防的事。
+    static let annotations: [TranslationAnnotation] =
         [.modelLoading, .timedOut, .failed("boom"), .missingAPIKey, .missingLocalModel]
         + rejections.map { .rejected($0) }
 

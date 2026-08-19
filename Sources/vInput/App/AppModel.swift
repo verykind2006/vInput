@@ -478,12 +478,13 @@ final class AppModel {
         // 翻译标注走同一条路：产生的时刻紧挨着校正标注（.translating 与
         // .injecting 之间），同样靠 endHUD 的停留才被看见。
         //
-        // **两处写同一个赋值是有意的**，不是漏了抽函数：这一轮里两种标注不会
-        // 同时出现（校正标注只在校正改了东西时有值，翻译标注只在翻译没译成时
-        // 有值），但**将来会**——两条都非 nil 时该显示哪一条、要不要合并成两行，
-        // 是 HUD 的呈现问题，属于 Task 11。本轮先把回调接通，不替它定策略。
+        // **不能照抄上面那行赋值。** 翻译回调排在校正回调之后，写成
+        // `notice = annotation?.hudLabel` 的话，一次正常译出（标注为 nil）
+        // 会把刚写进去的校正标注**抹掉**——用户看到的是「校正好像没运行」。
+        // 走 `applyTranslationAnnotation`，它对 nil 的语义是「什么都不做」。
         session.onTranslation = { [weak self] annotation in
-            self?.hudModel.notice = annotation?.hudLabel
+            guard let self else { return }
+            AppModel.applyTranslationAnnotation(annotation, to: self.hudModel)
         }
         self.session = session
         // 会话与全部回调就绪后再挂校正，让上次启动保存的开关状态生效。
@@ -818,6 +819,28 @@ final class AppModel {
     }
 
     // MARK: - 翻译
+
+    /// 把翻译标注写到 HUD。
+    ///
+    /// 抽成静态函数是为了**能测**：`AppModel` 的实例构造会拉起真快捷键、
+    /// 真 CGEvent tap 与模型加载，测试进程里跑不动。这与
+    /// `benchToggleAction` / `translationAttachment` 是同一个理由。
+    ///
+    /// **nil 的语义是「什么都不做」，不是「清空」。** 两者的差别不是风格：
+    /// 翻译回调排在校正回调之后（`.correcting` → `.translating`），
+    /// 写成清空的话，一次**成功**的翻译会把刚写进去的校正标注抹掉，
+    /// 而用户会以为校正没运行。`beginHUD` 已经在每次会话开始时清过一遍，
+    /// 这里不需要再清（见 `beginHUD` 里那句「上一轮的附注与它的收起计时器
+    /// 必须一起清掉」）。
+    ///
+    /// 正常译出不写任何字：写了的话每句话都要多停 `hudNoticeLinger` 那几秒。
+    static func applyTranslationAnnotation(
+        _ annotation: TranslationAnnotation?, to hud: HUDViewModel
+    ) {
+        guard let annotation else { return }
+        hud.notice = annotation.hudLabel
+    }
+
 
     /// 按当前偏好，翻译层该挂什么。
     ///
