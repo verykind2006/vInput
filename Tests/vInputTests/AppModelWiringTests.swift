@@ -218,4 +218,33 @@ struct AppModelWiringTests {
         )
     }
 
+    // MARK: - 换语言时的即时反馈
+
+    /// 用户刚点完菜单、菜单当场就关了，**HUD 才是他这一刻会看到的东西**。
+    ///
+    /// 菜单标题上的「（缺模型目录）」后缀是常驻提示，但它在菜单里；
+    /// 少了这几行，选了西班牙文而没有模型时用户得不到任何即时反馈——
+    /// 正是「静默不工作」。2026-08-19 QA 实测：删掉这三行，981 tests 全绿。
+    @Test("换输出语言时缺模型要当场弹 HUD")
+    func selectingOutputLanguageWarnsWhenModelMissing() throws {
+        let body = try Self.memberBody(
+            try Self.appModelSource(),
+            startingAt: "func selectOutputLanguage(_ target: TranslationTarget) {")
+        #expect(
+            body.contains("if translationModelMissing"),
+            """
+            selectOutputLanguage 里没有「缺模型目录就提示」的判断。
+            菜单当场就关了，用户这一刻唯一看得见的反馈就是 HUD。
+            """
+        )
+        // 文案取自 `TranslationAnnotation`，不另写一句——「翻译为什么没生效」
+        // 只该有一处措辞。写死一个字符串字面量时这条会红。
+        #expect(
+            body.contains("showHUDNotice(TranslationAnnotation.missingLocalModel.hudLabel)"),
+            """
+            selectOutputLanguage 里没有 showHUDNotice(
+            TranslationAnnotation.missingLocalModel.hudLabel)。
+            """
+        )
+    }
 }

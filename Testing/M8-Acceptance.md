@@ -2,7 +2,7 @@
 
 - 日期：2026-08-19
 - 分支：`m8-implementation`
-- 自动化：**981 tests / 128 suites 全绿**（M8 开工时 762）
+- 自动化：**990 tests / 128 suites 全绿**（M8 开工时 762；合并前 QA 之后补的守卫 +9）
 - 默认后端：`qwen3-4b-instruct-2507-4bit`（**与校正层同一个模型，共用同一份权重**）
 
 说中文 → 转写 → 校正 → **翻译** → 注入。译砸了退回中文原文并在 HUD 说明。
@@ -143,7 +143,7 @@
 
 **判断顺序：先判语言，再判后端。** 反了的话「云端开 + 语言选中文」会走进「没配 API key」分支，弹一句与用户意图无关的提示。
 
-**这条顺序有机械守卫**：`TranslationAttachment` 单列 `.cloud` 一格，使得对调两个判断会改变返回值。变异实测：对调 → 6 条红。
+**这条顺序有机械守卫**：`TranslationAttachment` 单列 `.cloud` 一格，使得对调两个判断会改变返回值。变异实测（2026-08-19 复跑，990 tests 基线）：对调 → **6 条红 / 8 处断言**，分布在 `TranslationAttachmentCoordinatorTests.swift`（4）、`TranslationPreferenceTests.swift`（1）、`CloudBackendMenuTests.swift`（1）。
 
 ### 「云端开着 + 中文 = 零出站」是端到端验过的
 
@@ -183,9 +183,45 @@ security add-generic-password -a vInput -s vinput-gemini-api-key -w
 
 1. **模型目录没配就静默不翻译**。计划写「`translation.modelDirectory` 没配就 return」，而那个键默认 nil 且**今天没有任何入口会去设它**——用户选完「西班牙文」什么都不发生，菜单上还写着「输出语言：西班牙文」。改为退回校正层的目录，两个都没配时日志 + 菜单后缀 + HUD 三处说清楚。
 2. **一次成功的翻译会抹掉校正标注**。翻译回调排在校正之后，照抄 `notice = annotation?.hudLabel` 的话，译文正常时（标注 nil）会把刚写进去的校正标注清掉——用户看到的是「校正好像没运行」。改为「nil 表示什么都不做」。
-3. **`AppModel` 的接线零测试覆盖**。变异实测：把「挂流水线到会话」整句删掉，899 tests 全绿。抽出 `TranslationAttachmentCoordinator` 后同一变异 4 条红。（`AppModelWiringTests` 扫源码钉住 `AppModel` 不许绕过它。）
+3. **`AppModel` 的接线零测试覆盖**。变异实测：把「挂流水线到会话」整句删掉，899 tests 全绿。抽出 `TranslationAttachmentCoordinator` 后同一变异**7 条红 / 9 处断言**（2026-08-19 合并前 QA 之后在 990 tests 基线上复跑；此前写的「4 条」是云端那套用例加进来之前量的，数字变大是覆盖变厚）。（`AppModelWiringTests` 扫源码钉住 `AppModel` 不许绕过它。）
 4. **门控脚本的护栏自己是空的**。「跑了 0 条算失败」第一版数的是汇总行，而 suite 被 `.enabled(if:)` 跳过时 Swift Testing 照样打 `Test run with 5 tests ... passed`，跳过的用例计进那个数。改成数逐条结果行。
 5. **`digitsIn` 把中文数字当阿拉伯数字**，见第二节。
+
+### 合并前 QA（2026-08-19）找出来、这一轮修掉的四条
+
+6. **配好校正模型目录之后，翻译层要重启才生效。** `correction.modelDirectory`
+   是翻译层今天唯一的模型来源，而写它的两条入口（`enableCorrection` /
+   `selectCorrectionModel`）**都不通知翻译协调器**；idle 那道兜底也不接
+   （`sessionDidBecomeIdle` 第一行 `guard isPending`，而上次 `apply()` 是成功
+   返回的）。用户的遭遇是：应用亲口说「请在「校正」菜单里指定本地模型目录」，
+   他照做了，**然后什么都没发生**。第二个后果是换模型时翻译层继续持有旧目录的
+   `MLXTranslator`，`ModelContainerRegistry` 省下的那份 2 GB 又被吃回去。
+   两条入口各补一句 `applyTranslationPreference()`（**排在
+   `applyCorrectionPreference()` 之后**，理由同 `bootstrap`），
+   `AppModelWiringTests` 扫源码钉住这一句与这个顺序。
+7. **校正模型目录失效时翻译层照挂，HUD 永远说「翻译模型还在加载」。**
+   翻译借了校正层的**目录**，没借它的**校验**。
+   `CorrectionActivation.revalidateAtLaunch()` 判掉失效目录时只关开关、
+   **不清目录**，于是 `.local` 挂着一条死路径：菜单不带「（缺模型目录）」后缀，
+   而 `OneShotLoader` 失败不缓存、`detachedWarmUp` 用 `try?` 吞异常且只跑一次，
+   每次听写都撞 `guard await translator.isReady`。**用户会等一个永远不会完成的
+   加载**，而那行字在这里是错的：不是「慢」，是「没有」。改法是在挂 `.local`
+   **之前**用 `CorrectionModelCatalog.validate`（校正层开启时用的同一个判据，
+   不另写一套）校一次，不过就落 `.unconfigured`——那一格已有现成的三处告知。
+   校验以闭包传进 `translationAttachment`，**那个纯函数仍然不碰文件系统**。
+8. **生产转写默认 `.transcribe` 没有任何守卫。** 把
+   `WhisperKitTranscriber.init` 里那个默认值改成 `.translate`，981 tests 一条
+   不红——而真接错了，每句中文都变成**语义错误**的英文（见第二节那两个例子），
+   全部现有指标都看不出来。补了两条断言：默认值是 `.transcribe`、显式传参真的
+   被记住（少了后一条，把 `task` 写死成常量也全绿）。
+9. **六个门控脚本里三个没有「跑了 0 条算失败」护栏**（`e2e.sh` /
+   `translate-sweep.sh` / `whisper-translate.sh`）。补护栏时又量出**第二层
+   假绿灯**：`swift test --filter X` 选的是**整个源文件**，于是与门控套件同处
+   一个文件的普通用例会把「逐条结果行」的计数顶上去——实测
+   `--filter WhisperTranslateSweepTests` 在门控关着时逐条结果行 3 行、退出码 0，
+   **只数结果行的护栏在这里是绿的**。判据因此改成两条：逐条结果行 > 0
+   **且一条 skipped 都没有**。同一个洞让 `bench-run.sh` 不带语言码那条默认路径
+   此前**一条护栏都没有**（护栏只长在带翻译的 xcodebuild 分支上），一并补上。
 
 ---
 
@@ -222,3 +258,39 @@ M5 到 M8 栽过**八次**同一类错误，形态各不相同，本质都是「
 | **`.chinese` 传进 `TranslationPrompt` 的实际行为** | 会生成 "Translate … into Chinese." 这句废话。流水线在调模型之前就分流了，所以到不了，但没测过模型真拿到会返回什么 |
 | **两条标注同时出现时的呈现** | 当前是「后写的赢」，已用测试刻意钉住。真要两行显示时那条会先红 |
 | **⚠️ 两处生产代码崩溃** | `RemoteKeySuppressor.handle` 野指针（SIGSEGV）、`SBCDecoder.decodeFrame` 数组越界（SIGTRAP）。**与 M8 无关，08-11 就存在**，已单独记进 Roadmap 并标为优先级最高 |
+
+### ⚠️ M8 削弱了 M4 的串行闸门（有意推迟，未修）
+
+**这一条不是既有欠账，是 M8 自己对一个既有安全机制造成的削弱**，此前只活在
+`Correct/CorrectionPipeline.swift:63-80` 那段自己写的「已知，未修」注释里。
+合并判断要看得见它，所以搬到这里。
+
+两层共用 `ModelContainer` 之后：
+
+- `InFlightGate`（`CorrectionPipeline.swift:82`）只认得**校正自己**的推理，
+  看不见翻译那条；
+- `TranslationPipeline` **根本没有闸门**。
+
+再叠上第四节那条实测——**超时取消对 MLX 推理基本无效，GPU 照跑到 EOS**——
+一次跑飞的翻译会把后面一两句话的校正和翻译一起挤到超时。用户看到的是连着
+两三句「已注入中文原文」，最坏一句话等 16 秒（校正 8 秒 + 翻译 8 秒）。
+
+**后果是降级不是丢字**（规则二不破），所以本轮不修。但它是一次真实的、
+被有意推迟的削弱，不该只写在一个源文件的注释里。
+
+### 两处「菜单当场变了，这次不算数」（只记账，不改行为）
+
+录音途中从菜单换输出语言、或切云端开关：**镜像立刻更新**
+（`TranslationAttachmentCoordinator.swift` 里那段刻意排在会话 guard 之前，
+**这个设计是对的**——菜单标题必须当场就对），但**本次会话仍走旧设置**，
+告知只有一条日志。用蓝牙鼠标/遥控器按住说话时，用户的手是够得着菜单的。
+
+同类的第二处：**两条路的响度不一致**。
+
+| 路径 | 缺模型目录时的告知 |
+|---|---|
+| `selectOutputLanguage` | 菜单后缀 **+ HUD** |
+| `toggleCloudBackend`（关掉云端且没有本地模型目录） | **只有菜单后缀** |
+
+两处都记在这里而不是修掉：改动会牵动 HUD 的呈现时机，而这一轮的边界是
+「只修 QA 找到的问题，不加新功能」。

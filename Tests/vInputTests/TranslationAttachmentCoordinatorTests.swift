@@ -10,10 +10,15 @@ import Testing
 /// 「搬家前」那两行是把新文件挪走、`AppModel.swift` 回到 HEAD 之后**重新
 /// 跑出来的**，不是转述上一个任务的结论。
 ///
+/// 头两行的「搬家后」是**合并前 QA 之后重新跑的**（990 tests 基线）。此前写的
+/// 是 4 条 / 2 条，那是云端那套用例（`CloudEgressTests`，同在本文件）加进来
+/// **之前**量的——数字变大是覆盖变厚，不是当时量错。**这一轮把变异数字当
+/// 证据用，数字本身就该对得上。**
+///
 /// | 变异 | 搬家前（长在 `AppModel` 里） | 搬家后 |
 /// |---|---|---|
-/// | 删掉「把流水线挂到会话上」那一句 | **899/899 全绿** | 本文件 4 条红 |
-/// | 丢掉「会话忙时记下待补挂」 | **899/899 全绿** | 本文件 2 条红 |
+/// | 删掉「把流水线挂到会话上」那一句 | **899/899 全绿** | **本文件 7 条红 / 9 处断言**（全局也是 7 条，一条都没落到别的文件） |
+/// | 丢掉「会话忙时记下待补挂」（`session.state != .idle` 那道 guard 里的 `isPending = true`） | **899/899 全绿** | **本文件 1 条红 / 2 处断言**（`sessionIsBusy…` 那条；「会话还不存在」走的是另一道 guard，没被这条变异碰到） |
 /// | `.detach` 分支不摘（保留上一条流水线） | — | `switchingBackToChineseDetaches` 红 |
 /// | 镜像更新挪到「会话必须 idle」那道 guard 之后 | — | `mirrorsUpdateEvenWhenAttachRefused` 红 |
 /// | `sessionDidBecomeIdle` 去掉 `isPending` 判断 | — | `idleWithoutPendingDoesNotRebuild` 红 |
@@ -102,6 +107,14 @@ struct TranslationAttachmentCoordinatorTests {
 
         #expect(harness.translatorDirectories.isEmpty, "选了云端却造出了本地翻译器")
         #expect(harness.cloudTranslatorCount == 1, "选了云端却没造云端翻译器")
+        // **云端也要预热，理由和本地完全不同。** 云端没有权重要加载，这一次
+        // 预热买到的是「在用户开口之前就把缺 key 捅出来」——`prepare()` 会抛
+        // `.missingAPIKey`，`prepareTranslator` 记一条日志。
+        //
+        // 2026-08-19 QA 实测：把 `.cloud` 那格的 `warmUp(built)` 删掉，
+        // 981 tests 一条不红；而同一个 switch 里 `.local` 那格删掉是 3 条红。
+        // 同一个 switch 的两格，一格有守卫一格没有。
+        #expect(harness.warmUpCount == 1, "云端那格漏了预热：缺 key 要在用户开口之前就说")
     }
 
     /// 选了外语但一个模型目录都没有：**不许静默**。
@@ -114,6 +127,27 @@ struct TranslationAttachmentCoordinatorTests {
         #expect(harness.coordinator.modelMissing, "缺目录必须点亮，菜单后缀与 HUD 都靠它")
         #expect(harness.sink.received == [Harness.transcript])
         #expect(harness.translatorDirectories.isEmpty)
+    }
+
+    /// **缺目录那条日志是唯一说清「去哪儿配」的话，它自己也要有守卫。**
+    ///
+    /// 2026-08-19 QA 实测：把这条日志整句删掉，981 tests 一条不红。菜单上
+    /// 那个「（缺模型目录）」后缀只说了「缺」，说不了「查过哪两个位置」，
+    /// 更说不了「去「校正」菜单里配」——那正是用户唯一需要知道的事。
+    ///
+    /// 钉三件事，缺一件用户就得靠猜：查过的两个位置、目录可能是**失效**
+    /// 而非未配（挪走/改名之后校正只关开关、不清目录，此时用户是「配过」的，
+    /// 一句「未指定」会让他去找一个不存在的配置项）、以及去哪儿配。
+    @Test("缺目录时那条日志说清查过哪两个位置、也说清去哪儿配")
+    func unconfiguredLogSaysWhereToConfigure() {
+        let harness = Harness(target: .english, correctionDirectory: nil)
+        harness.coordinator.apply()
+
+        let joined = harness.logs.joined(separator: "\n")
+        #expect(joined.contains("translation.modelDirectory"), "实际日志：\(joined)")
+        #expect(joined.contains("校正模型目录"), "实际日志：\(joined)")
+        #expect(joined.contains("失效"), "实际日志：\(joined)")
+        #expect(joined.contains("「校正」菜单"), "实际日志：\(joined)")
     }
 
     /// **曾经配过、如今失效的目录：不许照挂。**
@@ -393,7 +427,7 @@ struct TranslationAttachmentCoordinatorTests {
 ///
 /// | 变异 | 结果 |
 /// |---|---|
-/// | `translationAttachment` 里语言判断与后端判断**对调** | 3 条红（本文件 1、协调器 1、`TranslationAttachmentTests` 1）；**注意请求数那条没红**——会话自己还有一道 `requiresTranslation`，挂上去也不会被调，抓住它的是「云端翻译器被造了几次」 |
+/// | `translationAttachment` 里语言判断与后端判断**对调** | **6 条红 / 8 处断言**（本文件 4：`CloudEgressTests` 2 + 「翻译层挂载协调器」2；`TranslationPreferenceTests` 1；`CloudBackendMenuTests` 1）。此前写的「3 条」是 2026-08-19 合并前 QA 复跑时发现的低估，已按当天实测订正。**注意请求数那条没红**——会话自己还有一道 `requiresTranslation`，挂上去也不会被调，抓住它的是「云端翻译器被造了几次」 |
 /// | `.detach` 分支里偷偷 `makeCloudTranslator()` 并起一个 `Task` 去译 | 本文件 2 条红（都是构造计数）；请求数那条**没红**，那个 detached 任务没能在断言之前落地 |
 /// | 云端开着时把云端流水线挂上去、并谎报 target 为英文 | 本文件 2 条红，**请求数那条这次红了**，日志里印出了完整的出站请求（POST、端点、362 字节请求体） |
 /// | 协调器 `.cloud` 分支「没 key 就退回本地」 | `missingKeyIsLoudAndDoesNotFallBackToLocal` 一条里 5 处断言红——注入的成了本地模型的英文译文 |
