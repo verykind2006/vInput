@@ -103,8 +103,45 @@ print "配置：{$FIELDS}"
 # 显示名（「翻译扫描」）。同 scripts/e2e.sh 用 CorrectionE2ETests 而不是
 # 「校正端到端」。写显示名会匹配不到任何用例，而 xcodebuild 照样报
 # TEST SUCCEEDED、退出码 0——又一个假绿灯。
+LOG="$(mktemp -t translate-sweep)"
+# 标记文件与日志一起收。上面那个 trap 只管标记文件，覆盖它要连标记文件一起写。
+trap 'rm -f "$MARKER" "$LOG"' EXIT
+
+set +e
 xcodebuild test \
     -scheme vInput \
     -destination "platform=OS X" \
     -derivedDataPath "${DERIVED_DATA:-$ROOT/.xcbuild}" \
-    -only-testing:vInputTests/TranslationSweepTests
+    -only-testing:vInputTests/TranslationSweepTests 2>&1 | tee "$LOG"
+STATUS=${pipestatus[1]}
+set -e
+
+# **「一条用例都没真跑」必须是失败**，判据有两条，缺一条都能被骗过。
+#
+# ① 数**逐条结果行**（`✔ Test "…"` / `✘ Test "…"`），不数那行汇总：
+#    suite 被 `.enabled(if:)` 跳过时 Swift Testing 照样打
+#    `✔ Test run with N tests … passed`，**跳过的用例计进那个 N**、退出码 0
+#    （2026-08-19 实测，原文见 scripts/translate-e2e.sh 里的同一段）。
+#
+# ② **一条 skipped 都不许有。** 只有 ① 的话，凡是与门控套件同处一个源文件的
+#    那几条普通用例会把计数顶上去——2026-08-19 实测：
+#    `./scripts/test.sh --filter WhisperTranslateSweepTests` 在标记文件没写对
+#    （被门控跳过）时打出 `➜ Suite "Whisper 直译对照" skipped.`，
+#    而同文件的 `WhisperTranslateGateTests` 照跑 3 条、逐条结果行 3 行、
+#    退出码 0——**只数 ① 的护栏在这里是绿的**。`swift test --filter` 选的是
+#    整个源文件，不是那一个类型。门控脚本里跑的东西本就一条都不该被跳过，
+#    所以这条判据没有误报空间。
+RAN=$(grep -cE '[✔✘] Test "' "$LOG" || true)
+SKIPPED=$(grep -cE '(Test|Suite) ".*" skipped' "$LOG" || true)
+if [[ "$RAN" -eq 0 || "$SKIPPED" -ne 0 ]]; then
+  print -u2 ""
+  print -u2 "═══ 门控没真的开：跑了 $RAN 条、跳过 $SKIPPED 条，这不是成功 ═══"
+  if [[ "$SKIPPED" -ne 0 ]]; then
+    print -u2 "套件被 .enabled(if:) 跳过了：标记文件 $MARKER 没对上。"
+  else
+    print -u2 "一条用例都没被选中：-only-testing 是不是写成了 @Suite 的显示名（要类型名）？"
+  fi
+  exit 1
+fi
+
+exit "$STATUS"

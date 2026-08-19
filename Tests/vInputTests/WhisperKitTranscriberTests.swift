@@ -4,6 +4,42 @@ import Testing
 
 @Suite("WhisperKitTranscriber")
 struct WhisperKitTranscriberTests {
+    // MARK: - 生产默认的解码任务
+
+    /// **生产永远是 `.transcribe`。**
+    ///
+    /// 提交信息与验收文档都写着「生产默认 `.transcribe` 不变」，而
+    /// 2026-08-19 QA 实测：把 `WhisperKitTranscriber.init` 里那个默认值改成
+    /// `.translate`，981 tests 一条不红。
+    ///
+    /// 改错了的表现不是崩溃也不是空输出，是**每一句中文都变成语义错误的
+    /// 英文**：M8 第 0 步实测「权限也需要重新梳理」→ "the whole line needs
+    /// to be reorganized"，零残留汉字、术语保留高、长度比正常——
+    /// **全部现有指标都看不出来**，用户把输出语言选回中文也救不回来
+    /// （那时翻译层根本不参与，注入的就是 Whisper 直接吐出的英文）。
+    ///
+    /// 这个参数存在的唯一理由是 `scripts/whisper-translate.sh` 那条对照，
+    /// 而它恰好长在最容易被人顺手接到「输出语言」偏好上的地方。
+    @Test("生产默认的解码任务是 .transcribe，不是 .translate")
+    func productionTaskIsTranscribe() async {
+        await #expect(
+            WhisperKitTranscriber().task == .transcribe,
+            """
+            WhisperKitTranscriber 的默认 task 不再是 .transcribe。
+            Whisper 的 .translate 只能译成英文，而且是**语义错误**的英文，
+            现有全部指标都看不出来。要做对照请显式传参（见
+            scripts/whisper-translate.sh），不要改默认值。
+            """
+        )
+    }
+
+    /// 上面那条如果单独存在，把 `task` 写成写死 `.transcribe` 的常量也全绿。
+    /// 这一条让「构造器参数真的被用上」成为观测得到的事——对照脚本正是靠它。
+    @Test("显式传入的解码任务被记住")
+    func explicitTaskIsHonoured() async {
+        await #expect(WhisperKitTranscriber(task: .translate).task == .translate)
+    }
+
     @Test("过短的音频直接拒绝，不加载模型")
     func rejectsShortAudio() async {
         let transcriber = WhisperKitTranscriber()

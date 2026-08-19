@@ -78,6 +78,7 @@ final class TranslationAttachmentCoordinator {
     private let makeTranslator: @MainActor (URL) -> any Translator
     private let makeCloudTranslator: @MainActor () -> any Translator
     private let cloudKeyAvailable: @MainActor () -> Bool
+    private let isUsableModelDirectory: @MainActor (URL) -> Bool
     private let warmUp: @MainActor (TranslationPipeline) -> Void
     private let log: @MainActor (String) -> Void
 
@@ -139,6 +140,15 @@ final class TranslationAttachmentCoordinator {
     ///     真正读 key 的是 `GeminiTranslator` 自己，且是在**每次请求时**读：
     ///     用户中途把 key 存进 Keychain 之后，下一句话就生效，不必回菜单
     ///     重选一次语言。
+    ///   - isUsableModelDirectory: 这个目录今天还是个能用的 MLX 模型目录吗。
+    ///     **默认值就是校正层开启时用的那一个判据**
+    ///     （`CorrectionModelCatalog.validate`），不另写一套——两份判据迟早
+    ///     松紧不一，而表现是「校正说这目录不行、翻译照挂」。
+    ///
+    ///     借目录也要借校验的理由写在 `AppModel.translationAttachment` 上：
+    ///     校正的启动自检把失效目录判掉时**只关开关、不清目录**，翻译层
+    ///     照挂的话每次听写 HUD 都说「翻译模型还在加载」，而那个加载永远
+    ///     不会完成。
     init(
         inputs: @escaping @MainActor () -> Inputs,
         session: @escaping @MainActor () -> (any TranslationAttachTarget)?,
@@ -146,6 +156,10 @@ final class TranslationAttachmentCoordinator {
         makeCloudTranslator: @escaping @MainActor () -> any Translator = { GeminiTranslator() },
         cloudKeyAvailable: @escaping @MainActor () -> Bool = {
             TranslationKey.read(service: TranslationKey.geminiService) != nil
+        },
+        isUsableModelDirectory: @escaping @MainActor (URL) -> Bool = { directory in
+            if case .success = CorrectionModelCatalog.validate(directory: directory) { return true }
+            return false
         },
         warmUp: @escaping @MainActor (TranslationPipeline) -> Void
             = TranslationAttachmentCoordinator.detachedWarmUp,
@@ -156,6 +170,7 @@ final class TranslationAttachmentCoordinator {
         self.makeTranslator = makeTranslator
         self.makeCloudTranslator = makeCloudTranslator
         self.cloudKeyAvailable = cloudKeyAvailable
+        self.isUsableModelDirectory = isUsableModelDirectory
         self.warmUp = warmUp
         self.log = log
     }
@@ -173,7 +188,8 @@ final class TranslationAttachmentCoordinator {
             target: current.target,
             usesCloudBackend: current.usesCloudBackend,
             translationModelDirectory: current.translationModelDirectory,
-            correctionModelDirectory: current.correctionModelDirectory
+            correctionModelDirectory: current.correctionModelDirectory,
+            isUsableModelDirectory: isUsableModelDirectory
         )
         self.attachment = attachment
         modelMissing = attachment == .unconfigured
@@ -239,9 +255,14 @@ final class TranslationAttachmentCoordinator {
         case .unconfigured:
             pipeline = nil
             // **说清楚查过哪两个位置**，只说「没配」的话用户不知道去哪儿配。
+            //
+            // 措辞是「未指定或已失效」而不是「未指定」：目录被移动/改名之后
+            // 校正的启动自检只把开关落回「关」、**不清目录**，此时用户是
+            // 「配过了」的，一句「未指定」会让他去找一个根本不存在的配置项。
             log(
                 "翻译未启用：目标=\(current.target.rawValue)，但没有可用的模型目录"
-                + "（translation.modelDirectory 未指定，校正模型目录也未指定），"
+                + "（translation.modelDirectory 与校正模型目录都未指定，"
+                + "或指定的目录已失效——被移动、改名，或不是 MLX 模型目录），"
                 + "请在「校正」菜单里指定本地模型目录"
             )
         }

@@ -96,8 +96,29 @@ trap 'rm -f "$ROOT/Bench/.run-config.json"' EXIT
 if [[ -z "$TRANSLATE_TO" ]]; then
   # **不带语言码的路径与从前逐字一致**：SwiftPM 跑得动 WhisperKit，
   # 而它比 xcodebuild 快得多。
-  ./scripts/test.sh --filter BenchRunnerTests "${REST[@]}"
-  exit $?
+  #
+  # 这条分支此前**一条护栏都没有**（护栏只长在下面那条 xcodebuild 分支上，
+  # 而这条才是不带参数时的默认路径）。2026-08-19 实测：`swift test --filter`
+  # 选的是**整个源文件**——`--filter BenchRunnerTests` 会把同文件的
+  # `BenchTranslationSectionTests` 一起选进来，于是「基准集对照」被门控跳过时
+  # 那几条普通用例照跑、退出码 0，报告一个字都没生成而脚本报成功。
+  # 所以这里的判据同 whisper-translate.sh：逐条结果行 > 0 **且** 一条 skipped
+  # 都没有。
+  BENCH_LOG="$(mktemp -t bench-run-swiftpm)"
+  trap 'rm -f "$ROOT/Bench/.run-config.json" "$BENCH_LOG"' EXIT
+  set +e
+  ./scripts/test.sh --filter BenchRunnerTests "${REST[@]}" 2>&1 | tee "$BENCH_LOG"
+  BENCH_STATUS=${pipestatus[1]}
+  set -e
+  BENCH_RAN=$(grep -cE '[✔✘] Test "' "$BENCH_LOG" || true)
+  BENCH_SKIPPED=$(grep -cE '(Test|Suite) ".*" skipped' "$BENCH_LOG" || true)
+  if [[ "$BENCH_RAN" -eq 0 || "$BENCH_SKIPPED" -ne 0 ]]; then
+    print -u2 ""
+    print -u2 "═══ 门控没真的开：跑了 $BENCH_RAN 条、跳过 $BENCH_SKIPPED 条，这不是成功 ═══"
+    print -u2 "标记文件 Bench/.run-config.json 没对上，或 --filter 写错了类型名。"
+    exit 1
+  fi
+  exit "$BENCH_STATUS"
 fi
 
 # 带翻译时**必须走 xcodebuild**：SwiftPM 命令行编译不出 mlx-swift 的 Metal

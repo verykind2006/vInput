@@ -65,7 +65,10 @@ struct CloudBackendMenuTests {
                 target: target,
                 usesCloudBackend: cloud,
                 translationModelDirectory: nil,
-                correctionModelDirectory: directory
+                correctionModelDirectory: directory,
+                // 这张表测的是「挂载结论 → 菜单状态」的映射，目录是不是真存在
+                // 与它无关；`directory: nil` 那两格已经覆盖了 `.unconfigured`。
+                isUsableModelDirectory: { _ in true }
             )
             return AppModel.translationBackendStatus(
                 attachment: attachment,

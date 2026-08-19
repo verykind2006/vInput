@@ -825,6 +825,18 @@ final class AppModel {
         case .accepted(let descriptor):
             syncCorrectionMirrors()
             applyCorrectionPreference()
+            // **翻译层也要重挂，且必须排在 applyCorrectionPreference() 之后。**
+            //
+            // `correction.modelDirectory` 是翻译层今天**唯一**的模型来源
+            // （`translation.modelDirectory` 没有任何入口能设，见
+            // `translationAttachment` 的注释）。少了这一句，用户照着
+            // 「请在「校正」菜单里指定本地模型目录」那条提示做完之后，
+            // 说话出来的还是中文、菜单还挂着「（缺模型目录）」，
+            // 要重启才生效——应用亲口给的指令，用户照做，什么都没发生。
+            //
+            // 顺序的理由与 `bootstrap` 里那一处一字不差：翻译要退回校正层的
+            // 目录，而校正的启动自检/开启校验可能刚把一个失效目录判掉。
+            applyTranslationPreference()
             log.log("校正已开启，模型=\(descriptor.name)")
         case .rejected(let missing):
             // 不开、不保存，并说清缺了什么——只说「无效目录」的话，
@@ -851,6 +863,14 @@ final class AppModel {
         case .accepted(let descriptor):
             syncCorrectionMirrors()
             applyCorrectionPreference()
+            // 同 `enableCorrection()`：这是写 `correction.modelDirectory` 的
+            // 第二条入口，而那个键是翻译层唯一的模型来源。
+            //
+            // 换模型时不重挂还有第二个后果：翻译层会继续持有**旧目录**的
+            // `MLXTranslator`，于是登记处里同时活着两个 `OneShotLoader`、
+            // 两份 2 GB 权重常驻——`ModelContainerRegistry` 要省的那一份
+            // 正好在这条路径上被吃回去。
+            applyTranslationPreference()
             log.log("校正模型已切换：\(descriptor.name)")
         case .rejected(let missing):
             phase = .error("这不是校正模型目录，缺少：\(missing.joined(separator: "、"))")
@@ -944,11 +964,33 @@ final class AppModel {
     /// → 同一份权重，在 16 GB 的目标机上省下一次加载和一份 2 GB 常驻。
     ///
     /// 两个都没配时返回 `.unconfigured`，由调用方记日志并提示，绝不静默。
+    ///
+    /// ## 借目录也要借校验
+    ///
+    /// `CorrectionActivation.revalidateAtLaunch()` 在目录失效时只把校正开关
+    /// 落回「关」，**不清 `modelDirectory`**（那是对的：用户下次把文件夹挪
+    /// 回来就能直接开）。于是翻译层会拿到一条死路径，而
+    /// `.local` 一挂上去，菜单不带「（缺模型目录）」后缀、每次听写 HUD 都打
+    /// 「翻译模型还在加载，本次注入中文原文」——`OneShotLoader` 失败不缓存值、
+    /// `detachedWarmUp` 用 `try?` 吞掉异常且只调一次，那个「加载」**永远不会
+    /// 完成**。用户会等一个等不到的东西，而那行字在这里是错的：不是「慢」，
+    /// 是「没有」。
+    ///
+    /// 所以校验必须发生在挂上去**之前**，落 `.unconfigured`——那一格已经有
+    /// 现成的三处告知（日志说清查了哪两个位置、菜单后缀、换语言时的 HUD）。
+    ///
+    /// **校验以闭包传进来，本函数因此仍然不碰文件系统。**
+    /// 判据不另写一套：生产用的是 `CorrectionModelCatalog.validate`（与校正
+    /// 层开启时用的同一个），由 `TranslationAttachmentCoordinator` 提供，
+    /// 见那边 `isUsableModelDirectory` 的默认值。参数**不给默认值**是有意的：
+    /// 给了「永远为真」的默认值，新出现的调用点会静默绕过校验，而那正是本
+    /// 缺陷的形状。
     nonisolated static func translationAttachment(
         target: TranslationTarget,
         usesCloudBackend: Bool,
         translationModelDirectory: URL?,
-        correctionModelDirectory: URL?
+        correctionModelDirectory: URL?,
+        isUsableModelDirectory: (URL) -> Bool
     ) -> TranslationAttachment {
         // 先判语言。**云端开关在这一行之后才允许被读到。**
         guard target.requiresTranslation else { return .detach }
@@ -956,9 +998,15 @@ final class AppModel {
         // `TranslationAttachmentTests.chineseWithCloudStillDetaches` 会红，
         // 那条的期望值（`.detach`）不该被迁就。
         if usesCloudBackend { return .cloud }
+        // 云端那一格在上面就返回了：云端不需要本地权重，拿本地目录的死活
+        // 去拦一条根本不读它的路径是纯误杀。
         guard let directory = translationModelDirectory ?? correctionModelDirectory else {
             return .unconfigured
         }
+        // 选中哪个就校验哪个，**不在两个候选之间悄悄改选**：
+        // `translation.modelDirectory` 今天没有入口能设，真有了以后，
+        // 「我指了 A 却在用 B」比「A 坏了，告诉我」更难排查。
+        guard isUsableModelDirectory(directory) else { return .unconfigured }
         return .local(directory: directory)
     }
 

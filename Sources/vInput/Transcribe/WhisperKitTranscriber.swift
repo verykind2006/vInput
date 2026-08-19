@@ -253,7 +253,15 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
     ///
     /// 注意 `.translate` 与 `language` 的关系：`language` 仍是**源语言**，
     /// 保持 "zh" 不变。
-    private let task: DecodingTask
+    ///
+    /// **非 private 是为了让「生产默认是 `.transcribe`」这句话有测试守着。**
+    /// 2026-08-19 QA 实测：把下面那个默认值改成 `.translate`，981 tests
+    /// 一条不红——一个只靠注释维持的生产默认值，而且恰好长在最容易被人
+    /// 顺手接到「输出语言」偏好上的地方。接错了每一句中文都会变成**语义
+    /// 错误**的英文（M8 第 0 步实测：「权限也需要重新梳理」→ "the whole
+    /// line needs to be reorganized"），而全部现有指标都看不出来。
+    /// 守卫见 `WhisperKitTranscriberTests.productionTaskIsTranscribe`。
+    let task: DecodingTask
 
     init(
         modelName: String = "base",

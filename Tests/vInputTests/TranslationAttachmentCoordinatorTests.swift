@@ -116,13 +116,50 @@ struct TranslationAttachmentCoordinatorTests {
         #expect(harness.translatorDirectories.isEmpty)
     }
 
+    /// **曾经配过、如今失效的目录：不许照挂。**
+    ///
+    /// 这是「借了校正层的目录，却没借它的校验」留下的洞。走一遍用户真实的
+    /// 遭遇：他把模型文件夹挪走或改了名 →
+    /// `CorrectionActivation.revalidateAtLaunch()` 只把校正开关落回「关」、
+    /// **不清 `modelDirectory`** → 翻译层拿到一条死路径。
+    ///
+    /// 挂上去的后果不是「少翻译一次」：`OneShotLoader` 失败不缓存值、
+    /// `detachedWarmUp` 用 `try?` 吞掉异常且只调一次，于是每次听写都撞
+    /// `guard await translator.isReady`，HUD 每句话都打「翻译模型还在加载，
+    /// 本次注入中文原文」——**用户会等一个永远不会完成的加载**，而输出语言
+    /// 菜单一个字警告都没有。那行字在这里是错的：不是「慢」，是「没有」。
+    ///
+    /// 所以这一格必须与「一个目录都没配」收敛到同一处：`.unconfigured`
+    /// 那一格已经有现成的三处告知（日志 + 菜单后缀 + 换语言时的 HUD）。
+    @Test("外语 + 校正目录已失效：不挂本地，落回缺目录那一格")
+    func staleCorrectionDirectoryDoesNotAttach() async throws {
+        let harness = Harness(target: .english, correctionDirectory: Harness.staleDirectory)
+        harness.coordinator.apply()
+        try await harness.runSession()
+
+        #expect(harness.coordinator.attachment == .unconfigured)
+        #expect(harness.coordinator.modelMissing, "菜单后缀与那条 HUD 都靠它，不点亮就是静默")
+        #expect(harness.translatorDirectories.isEmpty, "目录已失效却照样造了个翻译器")
+        #expect(harness.warmUpCount == 0, "对一条死路径排了一次注定失败的预热")
+        #expect(harness.sink.received == [Harness.transcript], "规则二：不许丢字")
+        // **这一条是这次修复真正买到的东西。** 挂上去的话每句话都是
+        // `.modelLoading`（「翻译模型还在加载」），而它永远不会变。
+        // 实测值是空数组，不是 `[nil]`：流水线为 nil 时会话根本不走翻译那一环，
+        // `onTranslation` 一次都不触发。挂上去的话这里是 `[.modelLoading]`。
+        #expect(
+            harness.annotations.isEmpty,
+            "翻译那一环还在跑，八成又在说「翻译模型还在加载」。实际：\(harness.annotations)"
+        )
+    }
+
     /// 挂上去的目录必须来自判断结果，不是随手拿一个。
     ///
     /// 两个目录都配时翻译自己的优先（`TranslationAttachmentTests` 钉的是判断，
     /// 这里钉的是「判断出来的那个真的被送进了翻译器」）。
     @Test("翻译器拿到的是判断挑出来的那个目录")
     func translatorReceivesChosenDirectory() async throws {
-        let translationDirectory = URL(fileURLWithPath: "/models/translate")
+        // 同样是真目录：`.local` 挂上去之前要过一次真的目录校验。
+        let translationDirectory = Harness.makeFakeModelDirectory()
         let harness = Harness(target: .english, translationDirectory: translationDirectory)
         harness.coordinator.apply()
         try await harness.runSession()
@@ -587,7 +624,45 @@ private final class Harness {
     /// 那会被判成 `.truncated`，于是「成功路径」这条用例测的其实是闸门拦截。
     static let translated = "We go live this afternoon."
     /// 校正层的模型目录。翻译没配自己的时退回它。
-    static let correctionDirectory = URL(fileURLWithPath: "/models/correct")
+    ///
+    /// **这是一个真的临时目录，里面摆着真的 MLX 模型目录布局**（两个必需的
+    /// json + 一个 `.safetensors`），不是 `/models/correct` 那种假路径。
+    ///
+    /// 理由：协调器挂 `.local` 之前会用
+    /// `CorrectionModelCatalog.validate` 校一次目录（见
+    /// `AppModel.translationAttachment` 上「借目录也要借校验」那一段）。
+    /// 在这套装置里把那个判据 stub 成「永远放行」的话，**生产接的是哪个判据
+    /// 就没有任何东西守着**——而本文件其余每一条用例都要走过它，
+    /// 于是「接错了判据」会当场变成一整片红。空文件不行：真判据要求
+    /// `.safetensors` 后缀与那两个 json 都在。
+    static let correctionDirectory: URL = makeFakeModelDirectory()
+
+    /// 摆一个能过 `CorrectionModelCatalog.validate` 的最小目录。
+    ///
+    /// 必需项**不在这里抄一份**——直接读 `CorrectionModelCatalog` 上那两个
+    /// 常量。抄的话，判据加了一项时这里还是绿的，而生产已经开始拒绝
+    /// 用户的目录了。
+    static func makeFakeModelDirectory() -> URL {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("vInput-translate-attach-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        for name in CorrectionModelCatalog.requiredFiles {
+            FileManager.default.createFile(
+                atPath: directory.appendingPathComponent(name).path, contents: Data())
+        }
+        FileManager.default.createFile(
+            atPath: directory
+                .appendingPathComponent("model\(CorrectionModelCatalog.weightsSuffix)").path,
+            contents: Data())
+        return directory
+    }
+
+    /// 一条**曾经配过、如今失效**的目录：用户把模型文件夹挪走或改名了。
+    ///
+    /// 校正的启动自检（`CorrectionActivation.revalidateAtLaunch`）遇到它只把
+    /// 开关落回「关」，**不清 `modelDirectory`**，所以翻译层照旧拿得到它。
+    static let staleDirectory = URL(fileURLWithPath: "/nonexistent/moved-away-model")
     static let samples = Array(repeating: Float(0.1), count: 16_000)
 
     let source = FakeAudioSource()

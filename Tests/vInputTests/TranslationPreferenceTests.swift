@@ -98,17 +98,26 @@ struct TranslationAttachmentTests {
     private let translationDir = URL(fileURLWithPath: "/models/translate")
     private let correctionDir = URL(fileURLWithPath: "/models/correct")
 
+    /// - Parameter directoryIsUsable: 目录校验的判据。**默认放行**，因为下面
+    ///   那几条路由用例给的是 `/models/…` 这种不存在的假路径——它们要测的是
+    ///   「四种组合各挂什么」，不是文件系统。真判据（
+    ///   `CorrectionModelCatalog.validate`）由
+    ///   `TranslationAttachmentCoordinator` 提供，且它确实会被用上这件事由
+    ///   `TranslationAttachmentCoordinatorTests` 里那条拿**真临时目录**跑的
+    ///   用例守着。生产函数本身**不给**这个参数默认值，见它的注释。
     private func attachment(
         target: TranslationTarget,
         cloud: Bool = false,
         translationDirectory: URL? = nil,
-        correctionDirectory: URL? = nil
+        correctionDirectory: URL? = nil,
+        directoryIsUsable: @escaping (URL) -> Bool = { _ in true }
     ) -> AppModel.TranslationAttachment {
         AppModel.translationAttachment(
             target: target,
             usesCloudBackend: cloud,
             translationModelDirectory: translationDirectory,
-            correctionModelDirectory: correctionDirectory
+            correctionModelDirectory: correctionDirectory,
+            isUsableModelDirectory: directoryIsUsable
         )
     }
 
@@ -214,6 +223,58 @@ struct TranslationAttachmentTests {
         }
         // 中文不受影响：它压根不该被当成「缺配置」。
         #expect(attachment(target: .chinese) == .detach)
+    }
+
+    /// **配过但已失效的目录，与没配是同一件事。**
+    ///
+    /// 借了校正层的目录就得借它的校验：
+    /// `CorrectionActivation.revalidateAtLaunch()` 遇到失效目录时只把校正
+    /// 开关落回「关」、**不清 `modelDirectory`**，翻译层照旧拿得到那条死路径。
+    /// 挂上去的表现是每次听写 HUD 都说「翻译模型还在加载」，而
+    /// `OneShotLoader` 失败不缓存、预热只跑一次，那个加载永远不会完成。
+    @Test("目录失效时不许挂本地，落回缺目录那一格")
+    func unusableDirectoryIsUnconfigured() {
+        #expect(
+            attachment(
+                target: .spanish,
+                correctionDirectory: correctionDir,
+                directoryIsUsable: { _ in false }
+            ) == .unconfigured
+        )
+        // 翻译自己的目录也一样，**不会悄悄改选校正层那个**：
+        // 「我指了 A 却在用 B」比「A 坏了，告诉我」更难排查。
+        #expect(
+            attachment(
+                target: .spanish,
+                translationDirectory: translationDir,
+                correctionDirectory: correctionDir,
+                directoryIsUsable: { $0 != self.translationDir }
+            ) == .unconfigured
+        )
+    }
+
+    /// **云端那一格不碰本地目录，一次都不该去校验。**
+    ///
+    /// 云端不需要本地权重。拿本地目录的死活去拦一条根本不读它的路径是纯
+    /// 误杀，而校验要碰文件系统——每次 `apply()` 白付一次目录遍历。
+    /// 中文那一格同理：它连翻译都不做。
+    @Test("云端与中文这两格不去校验本地目录")
+    func cloudAndChineseSkipDirectoryValidation() {
+        var validated: [URL] = []
+        let spy: (URL) -> Bool = { validated.append($0); return true }
+
+        #expect(
+            attachment(
+                target: .spanish, cloud: true,
+                correctionDirectory: correctionDir, directoryIsUsable: spy
+            ) == .cloud
+        )
+        #expect(
+            attachment(
+                target: .chinese, correctionDirectory: correctionDir, directoryIsUsable: spy
+            ) == .detach
+        )
+        #expect(validated.isEmpty, "去校验了本地目录：\(validated)")
     }
 
     /// 缺目录的判断**排在云端之后**：选了云端时本地目录压根不相关。
