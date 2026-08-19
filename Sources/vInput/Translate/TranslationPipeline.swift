@@ -98,7 +98,10 @@ struct TranslationPipeline: Sendable {
     /// 不是「怕用户等」这么一句软话。
     ///
     /// 换更大的模型（菜单里明摆着邀请）需要重新实测这个值。
-    static let defaultTimeout: Duration = .seconds(8)
+    /// **这是下限不是定值。** 实际预算随文本长度放大，见 `TranslationBudget`
+    /// ——2026-08-19 分档实测：约 0.042 秒/字，190 字左右就撞穿 8 秒，
+    /// 而基准集最长才 64 字，所以这个数在长段口述上一直是错的。
+    static let defaultTimeout: Duration = TranslationBudget.floor
 
     private let translator: any Translator
     private let gate: TranslationGate
@@ -154,16 +157,23 @@ struct TranslationPipeline: Sendable {
             return TranslationResult(text: text, annotation: .modelLoading)
         }
 
+        // **按这一段的长度算预算，不用构造时那个固定值。**
+        // `timeout` 现在的语义是「下限」：短句照旧 8 秒，长段按
+        // 0.05 秒/字放大到最多 30 秒（上限的理由见 `TranslationBudget`）。
+        //
+        // 算在 do 外面，因为超时那条 catch 要把它写进日志——只写「超时」
+        // 而不写预算和字数，事后无从判断该把系数调到多少。
+        let budget = max(timeout, TranslationBudget.scaled(forCharacters: text.count))
         let started = ContinuousClock.now
         let output: String
         do {
-            output = try await withTimeout(timeout) {
+            output = try await withTimeout(budget) {
                 try await translator.translate(text, to: target)
             }
         } catch is TimedOut {
             // 记耗时：只写「超时」看不出实际要多久，也就无从判断预算该调到多少。
             AppLogger.shared.log(
-                "翻译超时：目标=\(target.rawValue) 预算=\(timeout) 耗时 \(ContinuousClock.now - started)")
+                "翻译超时：目标=\(target.rawValue) 字数=\(text.count) 预算=\(budget) 耗时 \(ContinuousClock.now - started)")
             return TranslationResult(text: text, annotation: .timedOut)
         } catch let error as TranslatorError {
             switch error {

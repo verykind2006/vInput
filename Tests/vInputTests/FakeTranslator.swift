@@ -39,6 +39,9 @@ actor FakeTranslator: Translator {
         /// 抛一个**不是** `TranslatorError` 的错误，走兜底那条 catch。
         case failOther
         case hang
+        /// 睡一段固定时间再成功。**用来验证超时预算本身**：同一个延迟，
+        /// 预算够就过、不够就超时，两者的差别只能来自预算。
+        case slow(Duration, String)
     }
 
     /// 兜底 catch 的素材。云端实现漏出 URLError 就是这个形态。
@@ -80,6 +83,9 @@ actor FakeTranslator: Translator {
         case .succeed(let output): return output
         case .fail(let error): throw error
         case .failOther: throw OtherError()
+        case .slow(let delay, let output):
+            try await Task.sleep(for: delay)
+            return output
         case .hang:
             try await Task.sleep(for: .seconds(600))
             return ""

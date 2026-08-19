@@ -28,6 +28,17 @@ enum BenchCategory: String, Codable, CaseIterable, Sendable {
     /// `Bench/translate-digits.json`，由 `--corpus` 指定。
     case digits
 
+    /// 长段口述。**不进 `manifest.json`**，理由同 `digits`。
+    ///
+    /// 存在的理由是一个真缺口：基准集 26 条的中文字数是 15–64、中位 37，
+    /// 而实际使用里一段口述常有一两百字。**翻译的超时预算（8 秒）与
+    /// `maxTokens`（512）两个数都是按 64 字以内的句子定的**——输入长五倍，
+    /// 推理时间也长，撞穿超时的表现是退回中文原文，而用户看到的是
+    /// 「翻译时灵时不灵」。这一类住在 `Bench/translate-longform.json`，
+    /// 按字数分档（35 / 48 / 82 / 101 / 154 / 191 / 315 / 589），
+    /// 为的是量出**从哪一档开始不行**，而不是只知道「长的不行」。
+    case longform
+
     /// 需要录音的类别。`manifest.json` 只装这四类。
     ///
     /// 单列出来是为了让「哪些类别要有录音」这件事有一个可断言的定义，

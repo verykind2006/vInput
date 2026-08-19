@@ -102,7 +102,15 @@ actor MLXTranslator: Translator {
         // 上限的取值与理由见 `defaultMaxTokens`。计划原文写的「由第 0 步的
         // 实测长度定」在任务重排后失效了：第 0 步（Task 3/4 的对照装置）要用
         // 本文件才跑得起来，现在排在本任务**之后**。
-        parameters.maxTokens = maxTokens
+        // **按这一段的长度算上限，不用构造时那个固定值。**
+        // 构造参数现在的语义是「下限」：短句照旧 512，长段按 2 token/字
+        // 放大（实测反推约 0.8–0.95，取 2 是刻意给足余量——见
+        // `TranslationBudget.tokensPerCharacter`）。
+        //
+        // 2026-08-19 实测：589 字的输入产出约 470–560 token，**贴着 512**。
+        // 再长一点就会被静默截断，而截断出来的是完全合法的目标语言文本，
+        // 事后与超时半途而废分不开。
+        parameters.maxTokens = max(maxTokens, TranslationBudget.maxTokens(forCharacters: text.count))
 
         // **每次新建 ChatSession。** 它内部持有对话历史（`Generator.messages`），
         // 复用会让上一句转写污染下一句的翻译。
