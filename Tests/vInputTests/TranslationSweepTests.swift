@@ -341,9 +341,13 @@ struct TranslationSweepTests {
         ///
         /// `termPreservationRate` 的分母是从**原文**抽出来的术语，模型只要把
         /// 原文原样吐回来，这个指标就是满分——M5 那次「术语命中率测的是词在
-        /// 不在 prompt 里」是同一款陷阱的另一个形态。判据取「译文里的汉字数
-        /// 达到原文汉字数的一半」：零星残留一两个字是漏译，过半就只能是抄。
-        var looksCopied: Bool { sourceHan > 0 && outputHan * 2 >= sourceHan }
+        /// 不在 prompt 里」是同一款陷阱的另一个形态。
+        ///
+        /// 判据本身搬进了 `TranslationMetrics.looksCopiedFromSource`：基准集
+        /// 报告的翻译段要用**同一条**判据，各写一份迟早两处阈值不一样。
+        var looksCopied: Bool {
+            TranslationMetrics.looksCopiedFromSource(source: entry.text, translation: output)
+        }
     }
 
     @Test("跑全部语言并输出报告")

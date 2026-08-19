@@ -94,6 +94,26 @@ enum TranslationMetrics {
         return digitsIn(source).filter { !inTranslation.contains($0) }
     }
 
+    /// 译文看起来像是把原文原样抄了一遍。
+    ///
+    /// **存在的理由是 `termPreservationRate` 的分母是从原文抽的术语——
+    /// 模型把原文原样吐回来就是满分。** M5 那次「术语命中率测的是词在不在
+    /// prompt 里」是同一款陷阱的另一个形态：一个看起来很好的数，实际什么
+    /// 都没发生。所以「零汉字残留 + 术语满分」和「大量汉字残留 + 术语满分」
+    /// 必须能在报告里分开，后者根本不是翻译。
+    ///
+    /// 判据取「译文里的汉字数达到原文汉字数的一半」：零星残留一两个字是
+    /// 漏译，过半就只能是抄。原文没有汉字时（例如纯数字语料）返回 false
+    /// ——那种素材上这条指标本来就无从谈起。
+    ///
+    /// 这条原先长在 `TranslationSweepTests.Row` 里。基准集报告的翻译段要用
+    /// 同一条判据，**提上来共用而不是照抄一份**：抄一份就会有一天两处的
+    /// 阈值不一样，而那时两份报告里同名的一列说的不是同一件事。
+    static func looksCopiedFromSource(source: String, translation: String) -> Bool {
+        let sourceHan = residualHanCount(source)
+        return sourceHan > 0 && residualHanCount(translation) * 2 >= sourceHan
+    }
+
     /// 译文与原文的显著字符数之比。**漏译会明显偏短。**
     ///
     /// 用 `BenchMetrics.significantCharacters` 而不是 `count`：
