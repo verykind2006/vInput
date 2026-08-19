@@ -390,3 +390,109 @@ struct TranslationQualityTests {
         }
     }
 }
+
+/// 菜单上「翻译在用哪个模型」那一行。
+///
+/// 用户 2026-08-19 提的：他看不出翻译用的是哪个大模型。这一行是唯一的
+/// 答案，**它说错就等于骗人**。
+@Suite("翻译模型的菜单文案")
+struct TranslationModelMenuLineTests {
+    /// **「跟随校正」这四个字不能省。**
+    ///
+    /// 不写的话，用户换校正模型时翻译也跟着变，而他完全无从预料——
+    /// 两个菜单看起来是两件事。把这四个字删掉，本条会红。
+    @Test("借用校正目录时要说清是跟随来的")
+    func inheritedSaysSo() {
+        let line = AppModel.translationModelMenuLine(
+            name: "qwen3-4b-instruct-2507-4bit", inherited: true)
+        #expect(line.contains("qwen3-4b-instruct-2507-4bit"))
+        #expect(line.contains("跟随校正"), "没说清这个目录是从校正那儿借的")
+    }
+
+    /// 单独指定过就不能再说「跟随」——那时换校正模型翻译不会变。
+    @Test("单独指定时不说跟随")
+    func explicitDoesNotClaimInheritance() {
+        let line = AppModel.translationModelMenuLine(
+            name: "qwen2.5-7b-instruct-4bit", inherited: false)
+        #expect(line.contains("qwen2.5-7b-instruct-4bit"))
+        #expect(!line.contains("跟随"), "明明是单独指定的，却说成跟随校正")
+    }
+
+    /// 两种状态的文案必须不同。
+    ///
+    /// 防的是「把 inherited 参数收下但不用」——那样两条断言各自看着都过，
+    /// 而菜单永远显示同一句话。本仓库栽过八次这类空断言。
+    @Test("两种状态的文案不一样")
+    func twoStatesDiffer() {
+        let same = "qwen3-4b-instruct-2507-4bit"
+        #expect(
+            AppModel.translationModelMenuLine(name: same, inherited: true)
+                != AppModel.translationModelMenuLine(name: same, inherited: false)
+        )
+    }
+
+    /// 没有可用目录时要给出**去哪儿配**，不能只说「未指定」。
+    ///
+    /// 这是 M6 ③ 那条教训的延伸：只说「没有」而不说「怎么办」，
+    /// 用户看到的仍然只是「没变化」。
+    @Test("没有目录时说清去哪儿配")
+    func missingTellsWhereToConfigure() {
+        let line = AppModel.translationModelMenuLine(name: nil, inherited: true)
+        #expect(line.contains("校正"), "没告诉用户可以在校正菜单里指定")
+        // 没有目录时不该冒出一个模型名。
+        #expect(!line.contains("qwen"))
+    }
+}
+
+/// 菜单上的模型名从哪儿来。
+@Suite("翻译模型的镜像")
+struct TranslationModelMirrorTests {
+    private let explicit = URL(fileURLWithPath: "/models/translate")
+    private let inheritedDir = URL(fileURLWithPath: "/models/correct")
+
+    /// **从挂载结论取，不从偏好取。**
+    ///
+    /// 用户指定过一个目录、但它已失效、实际退回了校正层的那个——
+    /// 读偏好的话菜单显示前者而跑的是后者。这条钉的就是这个差别：
+    /// 偏好里写着 `/models/translate`，挂载结论却是 `/models/correct`，
+    /// 菜单必须说后者。
+    @Test("显示的是实际挂上的目录，不是偏好里写的")
+    func showsWhatActuallyAttached() {
+        let mirror = AppModel.translationModelMirror(
+            attachment: .local(directory: inheritedDir), explicitDirectory: explicit)
+        #expect(mirror.name == "correct", "显示的是偏好里的目录，而不是真正挂上的")
+    }
+
+    /// 没单独指定时算「跟随」。
+    @Test("偏好为空时算跟随校正")
+    func nilPreferenceMeansInherited() {
+        let mirror = AppModel.translationModelMirror(
+            attachment: .local(directory: inheritedDir), explicitDirectory: nil)
+        #expect(mirror.name == "correct")
+        #expect(mirror.inherited)
+    }
+
+    /// 单独指定过就不算跟随。
+    @Test("偏好非空时不算跟随")
+    func explicitPreferenceIsNotInherited() {
+        let mirror = AppModel.translationModelMirror(
+            attachment: .local(directory: explicit), explicitDirectory: explicit)
+        #expect(mirror.name == "translate")
+        #expect(!mirror.inherited)
+    }
+
+    /// 没挂本机模型的三种结论都不该冒出模型名。
+    ///
+    /// **`.cloud` 那一格尤其要紧**：走云端时本机模型不参与任何事，
+    /// 菜单上摆一个模型名会让人以为云端也在用它。
+    @Test("没挂本机模型时不显示模型名")
+    func nonLocalAttachmentsHaveNoName() {
+        for attachment: AppModel.TranslationAttachment in [.detach, .cloud, .unconfigured] {
+            #expect(
+                AppModel.translationModelMirror(
+                    attachment: attachment, explicitDirectory: explicit).name == nil,
+                "\(attachment) 也显示了模型名"
+            )
+        }
+    }
+}

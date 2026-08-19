@@ -70,6 +70,16 @@ final class AppModel {
     /// 而真实行为是一个字节都不出站——菜单就在骗人。
     private(set) var translationBackend: TranslationBackendStatus = .local
 
+    /// 当前**实际**在用的本机翻译模型目录名。没有可用目录时为 nil。
+    ///
+    /// 「实际」两个字是重点：它可能来自 `translation.modelDirectory`，
+    /// 也可能是退回校正层的目录借来的。菜单必须把这两种情况说清楚，
+    /// 否则用户换了校正模型会莫名其妙发现翻译也跟着变了。
+    private(set) var translationModelName: String?
+
+    /// 上面那个目录是不是**借来的**（用户没单独给翻译指定）。
+    private(set) var translationModelIsInherited: Bool = true
+
     private let permissions = Permissions()
     /// 校正偏好。开关状态与模型目录都要跨启动保留。
     private let correctionPreference = CorrectionPreference()
@@ -83,6 +93,9 @@ final class AppModel {
     /// 由 UI 层注入：`AppModel` 不该知道 `NSOpenPanel` 的存在，而「开启校正
     /// 时若无合法模型就弹选择器」这条流程必须能在没有 UI 的测试里驱动。
     var chooseCorrectionModelFolder: (@MainActor () -> URL?)?
+
+    /// 选翻译模型目录的面板。与 `chooseCorrectionModelFolder` 同一条分工。
+    var chooseTranslationModelFolder: (@MainActor () -> URL?)?
     /// 弹出「开启云端翻译」的确认，返回用户是否确认。
     ///
     /// 与 `chooseCorrectionModelFolder` 同一条分工：`AppModel` 不该知道
@@ -1226,6 +1239,70 @@ final class AppModel {
             usesCloudBackend: translationPreference.usesCloudBackend,
             hasAPIKey: translationCoordinator.cloudKeyPresent
         )
+        let mirror = AppModel.translationModelMirror(
+            attachment: translationCoordinator.attachment,
+            explicitDirectory: translationPreference.modelDirectory
+        )
+        translationModelName = mirror.name
+        translationModelIsInherited = mirror.inherited
+    }
+
+    /// 菜单上该显示哪个模型名、算不算「跟随校正」。
+    ///
+    /// **从挂载结论里取，不直接读偏好。** 读偏好的话，「用户指定过一个目录、
+    /// 但它已经失效、实际退回了校正层的那个」这种情况，菜单上会显示成前者
+    /// 而跑的是后者——用户据此判断「翻译在用哪个模型」，那就是在骗他。
+    ///
+    /// 抽成纯函数是为了能测：`AppModel` 在测试进程里起不来（init 就要真
+    /// 快捷键、真 CGEvent tap），留在方法体里这条判断就没有任何东西守得住。
+    nonisolated static func translationModelMirror(
+        attachment: TranslationAttachment, explicitDirectory: URL?
+    ) -> (name: String?, inherited: Bool) {
+        let inherited = explicitDirectory == nil
+        guard case .local(let directory) = attachment else { return (nil, inherited) }
+        return (directory.lastPathComponent, inherited)
+    }
+
+    /// 「模型：…」那一行菜单文案。
+    ///
+    /// 抽成纯函数的理由与本文件其他几个一样：`AppModel` 在测试进程里起不来，
+    /// 拼在 SwiftUI 视图里就没有任何测试守得住它。
+    ///
+    /// **「跟随校正」这四个字不能省。** 不写的话，用户换校正模型时翻译
+    /// 也跟着变，而他完全无从预料——两个菜单看起来是两件事。
+    nonisolated static func translationModelMenuLine(
+        name: String?, inherited: Bool
+    ) -> String {
+        guard let name else { return "模型：未指定（在「校正」里指定，或在这里单独指定）" }
+        return inherited ? "模型：\(name)（跟随校正）" : "模型：\(name)"
+    }
+
+    /// 单独给翻译指定一个本机模型目录。
+    ///
+    /// 校验用的是**校正层那一套** `CorrectionModelCatalog.validate`，不另写：
+    /// 两层跑的是同一个 MLX 加载器，对目录的要求逐字相同。另写一套的话，
+    /// 两边迟早对不上，而症状是「校正说这个目录能用，翻译说不能」。
+    func selectTranslationModel(directory: URL) {
+        switch CorrectionModelCatalog.validate(directory: directory) {
+        case .success(let descriptor):
+            translationPreference.modelDirectory = directory
+            applyTranslationPreference()
+            AppLogger.shared.log("翻译模型已单独指定：\(descriptor.name)")
+        case .failure(let error):
+            phase = .error("这不是可用的模型目录：\(error)")
+            AppLogger.shared.log("指定翻译模型被拒：\(error)")
+        }
+    }
+
+    /// 撤销单独指定，改回跟随校正模型。
+    ///
+    /// **保留这条路**：没有它，用户一旦单独指过一次就再也回不去「跟随」，
+    /// 而「跟随」正是默认且推荐的状态——两层共用同一份权重，
+    /// 在 16 GB 的机器上省一次加载和一份 2 GB 常驻。
+    func clearTranslationModel() {
+        translationPreference.modelDirectory = nil
+        applyTranslationPreference()
+        AppLogger.shared.log("翻译模型改回跟随校正模型")
     }
 
     /// 切换云端翻译开关。**开启要先确认，关闭不必。**

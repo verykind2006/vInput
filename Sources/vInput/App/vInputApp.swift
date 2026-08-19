@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 面板。放在这里而不是菜单视图里，是因为它与视图的生命周期无关，
         // 而菜单视图每次打开都会重建。
         model.chooseCorrectionModelFolder = { presentCorrectionModelFolderPanel() }
+        model.chooseTranslationModelFolder = { presentCorrectionModelFolderPanel() }
         // 同上，也在 bootstrap 之前：开启云端翻译要先弹一次确认，而
         // `AppModel` 不该知道 `NSAlert` 的存在。没接上时 `toggleCloudBackend`
         // 的失败方向是「不开」。
@@ -269,6 +270,28 @@ private struct MenuContent: View {
                 id: \.self
             ) { line in
                 Text(line)
+            }
+
+            // 本机模型只在本机后端下有意义：走云端时它不参与任何事，
+            // 摆在那里只会让人以为云端也在用它。
+            if model.translationBackend == .local {
+                Divider()
+                Text(
+                    AppModel.translationModelMenuLine(
+                        name: model.translationModelName,
+                        inherited: model.translationModelIsInherited
+                    )
+                )
+                Button("单独指定翻译模型…") {
+                    if let url = model.chooseTranslationModelFolder?() {
+                        model.selectTranslationModel(directory: url)
+                    }
+                }
+                // 只在真的单独指过时出现：没指过的时候这一项什么都不做，
+                // 摆出来只是噪音。
+                if !model.translationModelIsInherited {
+                    Button("改回跟随校正模型") { model.clearTranslationModel() }
+                }
             }
 
             // 只在云端开着时出现：云端关的时候有没有 key 与用户无关。
