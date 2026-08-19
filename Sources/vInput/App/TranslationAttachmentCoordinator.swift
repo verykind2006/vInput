@@ -234,7 +234,13 @@ final class TranslationAttachmentCoordinator {
             // 与校正同一个道理：加载一次要几十秒，注入路径上一秒都不能等。
             warmUp(built)
         case .cloud:
-            let built = TranslationPipeline(translator: makeCloudTranslator(current.cloudModel))
+            // **云端的超时下限比本机高得多**，理由见
+            // `TranslationBudget.cloudFloor`：实测均 7.2 秒、最长 12.7 秒，
+            // 而本机那个 8 秒会把成功返回的云端译文也掐掉。
+            let built = TranslationPipeline(
+                translator: makeCloudTranslator(current.cloudModel),
+                timeout: TranslationBudget.cloudFloor
+            )
             pipeline = built
             // 用上面那次读的结果，不再读第二次——见 `cloudKeyPresent`。
             if cloudKeyPresent {

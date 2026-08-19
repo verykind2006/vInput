@@ -164,3 +164,39 @@ struct TranslationPipelineBudgetTests {
         #expect(result.text == Self.output)
     }
 }
+
+/// 云端的超时下限。
+@Suite("云端超时下限")
+struct CloudTimeoutFloorTests {
+    /// **本机那个 8 秒在云端上是错的。**
+    ///
+    /// 2026-08-19 真实联网实测（`gemini-3.6-flash`，一句 20 字的中文）：
+    /// 均 7.2 秒、最长 12.7 秒。而 20 字按 0.05 算只有 1 秒，会落到 8 秒
+    /// 下限上——即使云端成功返回也会被掐掉。
+    @Test("云端下限盖得住实测最长耗时")
+    func cloudFloorCoversMeasuredWorstCase() {
+        // 实测最长 12.7 秒，留至少 1.5 倍余量。
+        #expect(TranslationBudget.cloudFloor >= .seconds(12.7 * 1.5))
+        // 明显高于本机下限——两者相等就说明这一格白设了。
+        #expect(TranslationBudget.cloudFloor > TranslationBudget.floor)
+    }
+
+    /// **但也不能无限迁就。**
+    ///
+    /// 同一轮里 `gemini-3.5-flash` 出现过一次 88.2 秒。迁就那种量级等于
+    /// 让用户为一次异常干等一分半。超时同时也是「最坏情况下干等多久」。
+    @Test("云端下限不迁就异常值")
+    func cloudFloorDoesNotChaseOutliers() {
+        #expect(TranslationBudget.cloudFloor < .seconds(60))
+        #expect(TranslationBudget.cloudFloor == .seconds(25))
+    }
+
+    /// 长文本在云端仍然按长度放大——下限只是下限。
+    @Test("云端下限之上仍按长度放大")
+    func cloudStillScalesWithLength() {
+        // 589 字 × 0.05 = 29.5 秒 > 25 秒的下限。
+        let long = max(TranslationBudget.cloudFloor, TranslationBudget.scaled(forCharacters: 589))
+        #expect(long > TranslationBudget.cloudFloor)
+        #expect(long <= TranslationBudget.ceiling)
+    }
+}

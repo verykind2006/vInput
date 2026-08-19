@@ -802,3 +802,39 @@ private final class Harness {
         await session.finish()
     }
 }
+
+/// 云端那条路真的拿到了云端的超时下限。
+///
+/// **`TranslationBudget.cloudFloor` 这个常量本身另有用例守着；这一组守的是
+/// 「它接上了」。** 两件事必须分开验——把协调器那句 `timeout:` 参数整个删掉
+/// （退回本机默认的 8 秒），常量那组用例一条都不会红，实测确认过。
+/// 而它失效的表现是：云端明明成功返回，却在 8 秒被掐掉、退回中文原文，
+/// 用户看到的是「云端翻译好像根本没生效」。
+@Suite("云端流水线的超时下限")
+@MainActor
+struct CloudPipelineTimeoutTests {
+    @Test("云端流水线用的是云端下限，不是本机的 8 秒")
+    func cloudPipelineGetsCloudFloor() {
+        let harness = Harness(target: .english, cloud: true)
+        harness.coordinator.apply()
+
+        let pipeline = harness.coordinator.pipeline
+        #expect(pipeline != nil, "云端后端下应当挂上流水线")
+        #expect(pipeline?.timeout == TranslationBudget.cloudFloor)
+        // 反过来钉一次：等于本机下限就说明这一格白设了。
+        #expect(pipeline?.timeout != TranslationBudget.floor)
+    }
+
+    /// 本机那条路不受影响，仍然是本机下限。
+    ///
+    /// 少了这条的话，「两条路都用云端下限」也能让上面那条绿——
+    /// 而那会让本机的失败路径白等 25 秒。
+    @Test("本机流水线仍然用本机下限")
+    func localPipelineKeepsLocalFloor() {
+        let harness = Harness(target: .english)
+        harness.coordinator.apply()
+
+        #expect(harness.coordinator.pipeline?.timeout == TranslationBudget.floor)
+        #expect(harness.coordinator.pipeline?.timeout != TranslationBudget.cloudFloor)
+    }
+}

@@ -137,7 +137,7 @@ struct GeminiTranslatorTests {
         #expect(
             request.url?.absoluteString
                 == "https://generativelanguage.googleapis.com/v1beta/models/"
-                + "gemini-2.0-flash:generateContent")
+                + "\(GeminiTranslator.defaultModel):generateContent")
         #expect(request.headers["x-goog-api-key"] == Self.fakeKey)
         #expect(request.headers["Content-Type"] == "application/json")
 
@@ -320,5 +320,79 @@ final class MutableBox<T: Sendable>: @unchecked Sendable {
     var value: T {
         get { lock.withLock { storage } }
         set { lock.withLock { storage = newValue } }
+    }
+}
+
+/// 地域受限：`400 FAILED_PRECONDITION` 必须收敛成 `.locationNotSupported`，
+/// 不能落进泛泛的「翻译失败」。
+@Suite("云端地域受限的分流")
+struct GeminiLocationNotSupportedTests {
+    /// 2026-08-19 真实联网时 Google 的原样报文（message 略去，
+    /// 生产代码也刻意只取 `status`——见 `GeminiTranslator` 里那段关于
+    /// 回显用户内容的注释）。
+    private static let realBody = Data(
+        """
+        {"error":{"code":400,"status":"FAILED_PRECONDITION",\
+        "message":"User location is not supported for the API use."}}
+        """.utf8)
+
+    /// **把那一行分流删掉，这条就红。**
+    ///
+    /// 删掉之后它会变成 `.engineFailed("HTTP 400 FAILED_PRECONDITION")`
+    /// ——字符串里是有那几个字，但流水线据此给出的标注是「翻译失败」，
+    /// 会让用户去重说一遍，而重说一百遍也没用。
+    @Test("FAILED_PRECONDITION 收敛成 locationNotSupported")
+    func failedPreconditionBecomesLocationError() async {
+        let recorder = RequestRecorder(reply: .status(400, Self.realBody))
+        let translator = GeminiTranslator(
+            model: "gemini-3.6-flash", session: recorder.makeSession(), readKey: { "k" })
+        await #expect(throws: TranslatorError.locationNotSupported) {
+            try await translator.translate("今天开会。", to: .english)
+        }
+    }
+
+    /// 别的 400 仍然走 `engineFailed`——只有地域这一格被单拎出来。
+    ///
+    /// 少了这条的话，「所有 400 都当成地域受限」也能让上面那条绿，
+    /// 而那会把「模型名写错」也说成「你的网络位置用不了云端」。
+    @Test("其它 400 仍然是 engineFailed")
+    func otherFailuresStayGeneric() async {
+        let body = Data(#"{"error":{"code":400,"status":"INVALID_ARGUMENT"}}"#.utf8)
+        let recorder = RequestRecorder(reply: .status(400, body))
+        let translator = GeminiTranslator(
+            model: "gemini-3.6-flash", session: recorder.makeSession(), readKey: { "k" })
+        await #expect(throws: TranslatorError.engineFailed("HTTP 400 INVALID_ARGUMENT")) {
+            try await translator.translate("今天开会。", to: .english)
+        }
+    }
+
+    /// 404（模型名过时，2026-08-19 实测撞过）同样保持原样。
+    @Test("模型不存在仍然是 engineFailed")
+    func modelNotFoundStaysGeneric() async {
+        let body = Data(#"{"error":{"code":404,"status":"NOT_FOUND"}}"#.utf8)
+        let recorder = RequestRecorder(reply: .status(404, body))
+        let translator = GeminiTranslator(
+            model: "gemini-2.0-flash", session: recorder.makeSession(), readKey: { "k" })
+        await #expect(throws: TranslatorError.engineFailed("HTTP 404 NOT_FOUND")) {
+            try await translator.translate("今天开会。", to: .english)
+        }
+    }
+}
+
+/// 两处默认模型不许各写一份。
+@Suite("默认模型只有一处")
+struct GeminiDefaultModelTests {
+    /// 2026-08-19 真发生过：换模型列表时改了 `CloudTranslationModel`，
+    /// `GeminiTranslator.defaultModel` 被漏下，还留着已实测 404 的
+    /// `gemini-2.0-flash`。生产路径上协调器会显式传模型，所以漏掉不会
+    /// 立刻炸——只有直接构造 `GeminiTranslator()` 的地方会中招，更难发现。
+    @Test("翻译器的默认模型跟着模型表走")
+    func defaultModelFollowsTheList() {
+        #expect(GeminiTranslator.defaultModel == CloudTranslationModel.default.identifier)
+        // 顺带钉住它确实是实测通过的那个，而不是任意字符串。
+        #expect(
+            CloudTranslationModel.KnownModel.allCases
+                .map(\.rawValue).contains(GeminiTranslator.defaultModel)
+        )
     }
 }

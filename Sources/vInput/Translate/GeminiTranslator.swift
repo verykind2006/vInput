@@ -39,7 +39,18 @@ struct GeminiTranslator: Translator {
     /// 真实联网只跑得了门控 e2e（`./scripts/gemini-e2e.sh`），译文质量、
     /// 术语保留、耗时一概没有量过。本地那三个数（1.00/0.92/0.89）是
     /// **本地后端**的，不能拿来替云端说话。
-    static let defaultModel = "gemini-2.0-flash"
+    /// **取自 `CloudTranslationModel.default`，不另写一份。**
+    ///
+    /// 两处各写一个字面量的下场刚发生过：2026-08-19 换模型列表时改了
+    /// `CloudTranslationModel`，这里的 `gemini-2.0-flash` 被漏下——而那个
+    /// 标识符**已经不存在了**（实测 404）。生产路径上协调器会显式传模型，
+    /// 所以漏掉不会立刻炸，只有不传模型、吃这个默认值的调用点会中招，
+    /// 更难发现。
+    ///
+    /// （这段注释刻意不写出本类型带括号的构造写法：出站面那条源码扫描
+    /// **不剥注释**，写一次就会把本文件也算成一个构造点——本文件里既有的
+    /// 注释专门警告过这件事，而我改这里时还是踩了一次。）
+    static let defaultModel = CloudTranslationModel.default.identifier
 
     /// 端点主机名。单列出来是给测试断言用：零出站那条用例要能说清
     /// 「本该发往哪里的请求一条都没发」。
@@ -168,6 +179,12 @@ struct GeminiTranslator: Translator {
             // 刚说的那句话，它会经由流水线进日志。status 是封闭的枚举名，
             // 不可能含用户内容。
             let status = (try? JSONDecoder().decode(ResponseBody.self, from: data))?.error?.status
+            // **地域受限单列一格。** Google 用 `FAILED_PRECONDITION` 表示
+            // "User location is not supported for the API use."——2026-08-19
+            // 实测，中国 + VPN 下约 1/8 的请求撞上它。并进「翻译失败」的话，
+            // 用户会去重说一遍，而重说一百遍也没用：他要做的是换网络位置
+            // 或切回本机。
+            if status == "FAILED_PRECONDITION" { throw TranslatorError.locationNotSupported }
             throw TranslatorError.engineFailed(
                 status.map { "HTTP \(http.statusCode) \($0)" } ?? "HTTP \(http.statusCode)")
         }

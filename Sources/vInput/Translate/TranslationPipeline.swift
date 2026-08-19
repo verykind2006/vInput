@@ -19,6 +19,12 @@ enum TranslationAnnotation: Equatable, Sendable {
     /// 选了云端但没配 API key。**单列而不是并进 failed**：
     /// 这一条用户有明确的动作可做（去配 key），其余没有。
     case missingAPIKey
+    /// 云端按地理位置拒绝了。
+    ///
+    /// **不能并进 `failed`**：那格的措辞是「翻译失败」，会让用户去重说一遍
+    /// ——而重说一百遍也没用。这一条他有明确的动作可做（换网络位置、开 VPN、
+    /// 或者切回本机）。
+    case locationNotSupported
     /// 选了外语，但一个本地翻译模型目录都没有，翻译层根本没挂上。
     ///
     /// **不能用 `failed` 顶替**：什么都没试过，谈不上失败，而「翻译失败」
@@ -50,6 +56,8 @@ enum TranslationAnnotation: Equatable, Sendable {
         case .timedOut: "翻译超时，已注入中文原文"
         case .failed: "翻译失败，已注入中文原文"
         case .missingAPIKey: "云端翻译未配置 API key，已注入中文原文"
+        // 说清「不是翻译坏了，是这个网络位置用不了云端」，并给出两条出路。
+        case .locationNotSupported: "当前网络位置无法使用云端翻译，已注入中文原文"
         // 用「将」不用「已」：这一条在用户点菜单选语言的那一刻就说出来，
         // 那时还没有哪一次听写发生过。
         case .missingLocalModel: "没有可用的翻译模型目录，将注入中文原文"
@@ -180,6 +188,9 @@ struct TranslationPipeline: Sendable {
             case .missingAPIKey:
                 AppLogger.shared.log("翻译失败：云端未配置 API key")
                 return TranslationResult(text: text, annotation: .missingAPIKey)
+            case .locationNotSupported:
+                AppLogger.shared.log("翻译失败：云端不支持当前网络所在的地理位置")
+                return TranslationResult(text: text, annotation: .locationNotSupported)
             case .modelNotReady:
                 // 上面的 isReady 查过了还能撞上这一条：加载在两次检查之间被卸掉，
                 // 或者实现自己判断得更严。对用户是同一件事——等一下再说。

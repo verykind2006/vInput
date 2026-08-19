@@ -13,6 +13,17 @@ enum TranslatorError: Error, Equatable {
     /// 规划了云端后端（GeminiTranslator），缺 key 是配置问题不是引擎故障，
     /// 提示用户的话术完全不同，所以单列。
     case missingAPIKey
+    /// 云端拒绝服务，理由是**调用方所在的地理位置不支持**。
+    ///
+    /// **单列而不是并进 `engineFailed`**：这一条用户有明确的动作可做
+    /// （换网络位置 / 开 VPN / 改用本机），而 `engineFailed` 那格的措辞是
+    /// 「翻译失败」——它会让用户去重说一遍，而重说一百遍也没用。
+    ///
+    /// 2026-08-19 实测，中国 + VPN 下约 **1/8** 的请求撞上它，
+    /// 报文是 `400 FAILED_PRECONDITION: User location is not supported
+    /// for the API use.`（只取 gRPC 状态名，不取 message——见
+    /// `GeminiTranslator` 里那段关于回显用户内容的注释）。
+    case locationNotSupported
 }
 
 /// 把中文转写译成目标语言。

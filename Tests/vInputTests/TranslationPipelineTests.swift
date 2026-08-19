@@ -260,7 +260,10 @@ struct TranslationAnnotationLabelTests {
     /// 非 private：`TranslationAnnotationTests` 复用同一份样本表。
     /// 两处各写一份的话，加一格时补了这边忘了那边——而那正是这张表要防的事。
     static let annotations: [TranslationAnnotation] =
-        [.modelLoading, .timedOut, .failed("boom"), .missingAPIKey, .missingLocalModel]
+        [
+            .modelLoading, .timedOut, .failed("boom"), .missingAPIKey, .missingLocalModel,
+            .locationNotSupported,
+        ]
         + rejections.map { .rejected($0) }
 
     /// 只为编译期存在：两个 switch 都不写 `default`，任一枚举加一格就编译不过。
@@ -272,7 +275,8 @@ struct TranslationAnnotationLabelTests {
         }
         for annotation in annotations {
             switch annotation {
-            case .modelLoading, .timedOut, .failed, .missingAPIKey, .missingLocalModel, .rejected:
+            case .modelLoading, .timedOut, .failed, .missingAPIKey, .missingLocalModel,
+                .locationNotSupported, .rejected:
                 break
             }
         }

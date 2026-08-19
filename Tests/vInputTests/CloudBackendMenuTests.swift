@@ -200,8 +200,8 @@ struct CloudBackendMenuTests {
     /// 「模型：…」与「API Key：…」两行。
     @Test("云端模型行只印标识符，不附任何质量说法")
     func cloudModelLineMakesNoClaims() {
-        let line = AppModel.cloudModelMenuLine(.known(.flash2))
-        #expect(line.contains("gemini-2.0-flash"))
+        let line = AppModel.cloudModelMenuLine(.known(.flash36))
+        #expect(line.contains("gemini-3.6-flash"))
         // **不许附质量数字。** 云端一次真实请求都没发过；本机那三个实测数
         // （1.00 / 0.92 / 0.89）是本机模型的，附到云端上就是编。
         for claim in ["术语保留", "1.00", "0.92", "0.89", "更好", "更快"] {
@@ -468,7 +468,7 @@ struct CloudTranslationModelTests {
     /// 带着空格发出去只会换回一个看不懂的 4xx。
     @Test("首尾空白被去掉")
     func whitespaceIsTrimmed() {
-        #expect(CloudTranslationModel.from(identifier: "  gemini-2.5-flash  ") == .known(.flash25))
+        #expect(CloudTranslationModel.from(identifier: "  gemini-3.1-flash-lite  ") == .known(.flashLite31))
     }
 
     /// 自定义项的菜单文案**不带任何说明**。
@@ -497,5 +497,66 @@ struct CloudTranslationModelTests {
                 #expect(!known.note.contains(claim), "\(known.rawValue) 的说明里有没依据的数字")
             }
         }
+    }
+}
+
+/// 地域受限单列一格。
+@Suite("云端地域受限")
+struct CloudLocationNotSupportedTests {
+    /// **不能并进「翻译失败」。**
+    ///
+    /// 那格的措辞会让用户去重说一遍，而重说一百遍也没用——他要做的是换
+    /// 网络位置或切回本机。2026-08-19 实测，中国 + VPN 下约 1/8 的请求
+    /// 撞上 `400 FAILED_PRECONDITION: User location is not supported`。
+    @Test("地域受限的文案与翻译失败不同，且说清出路")
+    func locationLabelDiffersFromGenericFailure() {
+        let located = TranslationAnnotation.locationNotSupported.hudLabel
+        let failed = TranslationAnnotation.failed("boom").hudLabel
+        #expect(located != failed, "地域受限与翻译失败共用了同一句话")
+        #expect(located.contains("网络"), "没说清问题出在网络位置：\(located)")
+        // 与其余每一格一样，要说清注入的是中文原文。
+        #expect(located.contains("中文原文"))
+    }
+
+    /// 它是一个独立的错误值，不是 `engineFailed` 的某个字符串。
+    ///
+    /// 写成 `engineFailed("FAILED_PRECONDITION")` 的话，流水线那边要靠
+    /// 字符串匹配来分流——而那是最容易在改文案时静默失效的做法。
+    @Test("地域受限是独立的错误值")
+    func locationIsItsOwnErrorCase() {
+        let error = TranslatorError.locationNotSupported
+        #expect(error != .engineFailed("FAILED_PRECONDITION"))
+        #expect(error != .missingAPIKey)
+    }
+}
+
+/// 模型列表里的每一项都必须是**真发过请求验证过的**。
+@Suite("云端模型列表已实测")
+struct CloudModelListIsVerifiedTests {
+    /// 前一版三个标识符全是照文档抄的，一发请求就知道全错
+    /// （`gemini-2.0-flash` 不存在，`gemini-2.5-flash` 已对新用户下线）。
+    /// 这条钉住「表里只有 2026-08-19 实测通过的那三个」。
+    @Test("列表就是实测通过的那三个")
+    func listMatchesWhatWasVerified() {
+        #expect(
+            Set(CloudTranslationModel.KnownModel.allCases.map(\.rawValue))
+                == ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.7-flash"]
+        )
+    }
+
+    /// 已知失效的标识符不许再出现在表里。
+    @Test("下线与不存在的标识符不在表里")
+    func staleIdentifiersAreGone() {
+        let live = Set(CloudTranslationModel.KnownModel.allCases.map(\.rawValue))
+        for dead in ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"] {
+            #expect(!live.contains(dead), "\(dead) 已实测失效，不该还在列表里")
+        }
+    }
+
+    /// 默认值必须在表里，且是实测通过的那个。
+    @Test("默认值是实测通过的完整档")
+    func defaultIsVerified() {
+        #expect(CloudTranslationModel.default == .known(.flash36))
+        #expect(CloudTranslationModel.default.identifier == "gemini-3.6-flash")
     }
 }
