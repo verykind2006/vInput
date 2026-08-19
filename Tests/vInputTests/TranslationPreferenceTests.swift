@@ -315,22 +315,46 @@ struct TranslationAttachmentTests {
 /// 判断什么场合用哪种。
 @Suite("目标语言的实测质量")
 struct TranslationQualityTests {
-    /// **实测过的正好是这三种，数值逐个钉死。**
+    /// **六种全部测过，数值逐个钉死。**
     ///
-    /// 这条是「不许编数」的守卫：M8 第 0 步只跑了英/西/德三种，谁把葡/法/意
-    /// 随手标成 `.measured(...)` 都会在这里红。数值本身也钉死——把 0.89 改成
-    /// 0.95 让德语看起来好一点，同样红。
+    /// 2026-08-19 六语对照（26 条 × 6 种 = 156 次推理，零失败）。
+    /// 取的是**忽略大小写**那一版——理由见 `TranslationQuality` 的注释：
+    /// 逐字判据会把德语名词大写记成术语丢失，于是菜单上的等级是反的。
     ///
-    /// 数据来源：`Bench/reports/m8-step0/`（已 gitignore，报告在开发机上）。
-    @Test("只有英西德三种有实测数据，数值逐个钉死")
-    func onlyThreeAreMeasured() {
+    /// 这条同时是「不许编数」的守卫：把任何一个值改掉都会红。
+    /// 它此前钉的是「只有英西德三种有数据」，而那一版里德语写的 0.89
+    /// 来自只跑了 10 条的小样本——全量跑完是 0.84（逐字）/ 1.00（忽略大小写），
+    /// **小样本乐观与判据选错两个问题同时暴露**。
+    @Test("六种语言的实测值逐个钉死")
+    func allSixAreMeasured() {
         var measured: [String: Double] = [:]
         for target in TranslationTarget.allCases {
             if case .measured(let retention) = target.quality {
                 measured[target.rawValue] = retention
             }
         }
-        #expect(measured == ["en": 1.00, "es": 0.92, "de": 0.89])
+        #expect(
+            measured == [
+                "en": 1.00, "de": 1.00, "it": 1.00,
+                "fr": 0.98, "pt": 0.96, "es": 0.94,
+            ]
+        )
+    }
+
+    /// **一个术语约值 0.02，所以这些数读不出排名。**
+    ///
+    /// 26 条里只有 9 条含技术术语、合计约 50 个。这条钉的是「全部在 0.94
+    /// 以上」——那是这批数据真正读得出来的唯一一句话。谁把某一格改到明显
+    /// 更低而没有新的实测支撑，它就会红。
+    @Test("六种都在可用区间内")
+    func allSixAreUsable() {
+        for target in TranslationTarget.allCases where target.requiresTranslation {
+            guard case .measured(let retention) = target.quality else {
+                Issue.record("\(target.rawValue) 还没有实测数据")
+                continue
+            }
+            #expect(retention >= 0.94, "\(target.rawValue) 掉出了可用区间")
+        }
     }
 
     /// 中文单独一格：它是「不翻译」，谈不上质量。

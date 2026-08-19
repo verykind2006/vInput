@@ -142,3 +142,67 @@ struct TranslationMetricsTests {
         #expect(TranslationMetrics.lengthRatio(source: "", translation: "anything") == 0)
     }
 }
+
+/// 忽略大小写的术语保留率。
+///
+/// 2026-08-19 六语对照实测暴露的问题：严格判据把「德语名词大写」和
+/// 「术语被译走了」记成同一件事，于是菜单上给用户看的语种等级是反的。
+@Suite("术语保留：大小写")
+struct TermPreservationCaseTests {
+    /// **德语的真实形态。** 这四个词全部只差首字母大小写，
+    /// 而那是正确的德语正字法。
+    @Test("只差大小写时宽松判据算保留，严格判据不算")
+    func caseOnlyDifferenceCountsAsPreserved() {
+        let source = "这个 API 返回的 token 过期了，需要重新调一次 refresh 接口。"
+        let german = "Dieser API-Token ist abgelaufen und muss erneut über den Refresh-Endpoint aktualisiert werden."
+
+        #expect(
+            TranslationMetrics.termPreservationRateIgnoringCase(
+                source: source, translation: german) == 1.0,
+            "只差大小写，术语其实一个都没丢"
+        )
+        #expect(
+            TranslationMetrics.termPreservationRate(source: source, translation: german) < 1.0,
+            "严格判据应当仍然记它为未逐字保留——两个数的差值才是「只差大小写」那部分"
+        )
+    }
+
+    /// **西语的真实形态：术语被译走了。** 宽松判据同样要判它丢失，
+    /// 否则这个指标就什么都不管了。
+    @Test("术语被译成别的词时，宽松判据也算丢失")
+    func translatedAwayTermIsStillLost() {
+        let source = "这个 API 返回的 token 过期了，需要重新调一次 refresh 接口。"
+        let spanish = "Este token devuelto por el API ha expirado y es necesario llamar nuevamente al interfaz de actualización."
+
+        let loose = TranslationMetrics.termPreservationRateIgnoringCase(
+            source: source, translation: spanish)
+        #expect(loose < 1.0, "refresh 被译成 actualización，那是真丢了")
+        // 三个术语丢一个。
+        #expect(abs(loose - 2.0 / 3.0) < 0.01)
+    }
+
+    /// 两个判据不是同一个函数的两个名字。
+    ///
+    /// 防的是「宽松版直接调严格版」或反过来——那样上面两条里总有一条会绿得
+    /// 毫无意义。本仓库栽过八次这类「看着在检查其实什么都没检查」。
+    @Test("两个判据在同一素材上给出不同的数")
+    func twoCriteriaActuallyDiffer() {
+        let source = "先跑 pnpm build，失败的话看 Vite 的 rollup 阶段。"
+        let translated = "Führe zuerst pnpm build aus, dann schaue dir den Rollup-Step von Vite an."
+        #expect(
+            TranslationMetrics.termPreservationRate(source: source, translation: translated)
+                != TranslationMetrics.termPreservationRateIgnoringCase(
+                    source: source, translation: translated)
+        )
+    }
+
+    /// 原文没有技术术语时两个都返回 1.0（分母为空的约定）。
+    @Test("没有术语时两个判据都是 1.0")
+    func emptyDenominatorIsOne() {
+        let source = "今天下午三点开会。"
+        #expect(TranslationMetrics.termPreservationRate(source: source, translation: "Meeting.") == 1.0)
+        #expect(
+            TranslationMetrics.termPreservationRateIgnoringCase(
+                source: source, translation: "Meeting.") == 1.0)
+    }
+}

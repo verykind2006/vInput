@@ -60,6 +60,44 @@ enum TranslationMetrics {
         return BenchMetrics.termHitRate(terms: terms, in: translation)
     }
 
+    /// 术语保留率，**忽略大小写**。
+    ///
+    /// # 为什么翻译这一层需要这个，而校正那一层不需要
+    ///
+    /// `BenchMetrics.termHitRate` 严格比大小写，那是给**校正层**定的：
+    /// 中文语音转写里 `GitHub Actions` 被写成 `github actions` 是真实的
+    /// 失败形态（M4 实测），大小写丢了就是丢了。
+    ///
+    /// **翻译这一层不一样：大小写是目标语言的正字法。**
+    /// 2026-08-19 六语对照实测，德语在严格判据下只有 0.84、六种里最差——
+    /// 逐条看下来**一个术语都没真丢**：
+    ///
+    /// | 原文 | 德语译文 |
+    /// |---|---|
+    /// | `token` | `Token` |
+    /// | `refresh` | `Refresh-Endpoint` |
+    /// | `store` | `Zustand-Store` |
+    /// | `selector` | `Selector` |
+    ///
+    /// **德语所有名词首字母大写，那是正确的德语。** 而同一轮里西语葡语是
+    /// 真把 `refresh` 译成了 `actualización`、把 `store` 译成了 `almacén`
+    /// ——那才是丢失。严格判据把这两件事记成同一件，**于是菜单上给用户看的
+    /// 语种等级是反的**。
+    ///
+    /// # 两个都要报，不要只留一个
+    ///
+    /// 严格的那个回答「术语逐字保留了吗」，宽松的这个回答「术语活下来了吗」。
+    /// 只留宽松的会漏掉「`useMemo` 被写成 `usememo`」这类真问题——那在代码
+    /// 标识符上是致命的（用户会把译文里的标识符复制走）。**两个数并排看，
+    /// 差值就是「只差大小写」的那部分。**
+    static func termPreservationRateIgnoringCase(source: String, translation: String) -> Double {
+        let terms = BenchMetrics.technicalTerms(in: source)
+        guard !terms.isEmpty else { return 1.0 }
+        let haystack = translation.lowercased()
+        let hits = terms.filter { haystack.contains($0.lowercased()) }.count
+        return Double(hits) / Double(terms.count)
+    }
+
     /// 文本里出现的阿拉伯数字串，按出现顺序。
     ///
     /// **判据是 ASCII 的 0–9，不能用 `Character.isNumber`。** 后者对

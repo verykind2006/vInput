@@ -74,16 +74,43 @@ enum TranslationTarget: String, CaseIterable, Sendable, Equatable {
     }
 }
 
-/// 这一档语言在 M8 第 0 步实测里的质量。**菜单要靠它说清六种并不一样稳。**
+/// 这一档语言实测的翻译质量。**菜单要靠它说清六种并不一样稳。**
 ///
 /// 用户 2026-08-19 的决定是「六种全上，但要标出差异」，理由是让用户自己
 /// 判断什么场合用哪种。做成带值的枚举而不是一句写死的说明文字，是为了让
-/// 「加一种语言却没给它定级」被机械地抓到：
+/// 「加一种语言却没给它定级」被机械地抓到：`TranslationTarget.quality`
+/// 是**穷尽 switch**，加一格编译不过。
 ///
-/// - `TranslationTarget.quality` 是**穷尽 switch**，加一格编译不过；
-/// - 而「随手标成 measured 编个数」由 `TranslationTargetTests` 那条
-///   「实测过的正好是这三种、数值逐个钉死」拦下——第 0 步只测了
-///   英/西/德三种，第四个 `measured` 一定是编的。
+/// # 数字取的是「忽略大小写」那一版，这一点不是随便选的
+///
+/// 2026-08-19 六语对照（26 条 × 6 种 = 156 次推理，零失败），
+/// 两套判据给出的排序**完全不同**：
+///
+/// | 语言 | 逐字 | 忽略大小写 |
+/// |---|---|---|
+/// | 英文 | 1.00 | 1.00 |
+/// | **德文** | **0.84（六种最差）** | **1.00（并列最好）** |
+/// | 意大利文 | 0.98 | 1.00 |
+/// | 法文 | 0.96 | 0.98 |
+/// | 葡萄牙文 | 0.94 | 0.96 |
+/// | 西班牙文 | 0.92 | 0.94 |
+///
+/// 德语那 0.16 的差**全部来自德语名词首字母大写**（`token`→`Token`、
+/// `store`→`Store`、`selector`→`Selector`），而那是正确的德语。
+/// 同一轮里西语葡语是真把 `refresh` 译成了 `actualización`、
+/// 把 `store` 译成了 `almacén`——那才是丢失。
+///
+/// **只看逐字那个数的话，菜单会把德语标成最差，而它其实一个术语都没真丢。**
+///
+/// 顺带实测到模型的一个好行为：**camelCase 标识符一个字母都没动**
+/// （`useMemo` / `useCallback` 原样保留），被大写的只有那些在句子里当普通
+/// 名词用的单词。所以「复制译文里的代码标识符」这件事不受影响。
+///
+/// # 这些数的精度有限，别当成排名
+///
+/// 26 条里只有 **9 条**原文含技术术语，合计约 50 个术语——**一个术语约值
+/// 0.02**。所以 0.94 与 0.98 之间的差不到两个术语，落在噪声里；
+/// 真正读得出来的只有「六种都在 0.94 以上」这一句。
 enum TranslationQuality: Equatable, Sendable {
     /// 中文＝不翻译，无所谓质量。
     case notApplicable
@@ -95,21 +122,22 @@ enum TranslationQuality: Equatable, Sendable {
 }
 
 extension TranslationTarget {
-    /// 实测质量。数字来自 M8 第 0 步，`Bench/reports/m8-step0/`（已 gitignore，
-    /// 报告在开发机上）：英文术语保留 1.00 且零残留汉字，西语 0.92、德语 0.89
-    /// ——即每十个技术术语约有一个被译走或译错。
+    /// 实测质量。**六种全部测过了**——2026-08-19 的六语对照
+    /// （26 条 × 6 种 = 156 次推理，零失败、零残留汉字、零截断）。
     ///
-    /// **葡/法/意没有测过，所以是 `unmeasured`，不是「大概和西语差不多」。**
-    /// 本仓库栽过的那一类错误里有一半是「断言了没量过的事」。
+    /// 此前葡/法/意标的是 `unmeasured`，德语标的是 0.89（只跑了 10 条的
+    /// 小样本）。全量跑完之后德语的逐字值反而降到 0.84，而**忽略大小写是
+    /// 1.00**——小样本乐观与判据选错，两个问题同时暴露。详见类型注释。
     var quality: TranslationQuality {
         switch self {
         case .chinese: .notApplicable
+        // 2026-08-19 六语对照，忽略大小写那一版。理由见类型注释。
         case .english: .measured(termRetention: 1.00)
-        case .spanish: .measured(termRetention: 0.92)
-        case .german: .measured(termRetention: 0.89)
-        // 三种一起列：它们的取值来源相同（都没测），分开写只是重复。
-        // 加一种新语言时这里同样编译不过，人被迫回来定级。
-        case .portuguese, .french, .italian: .unmeasured
+        case .german: .measured(termRetention: 1.00)
+        case .italian: .measured(termRetention: 1.00)
+        case .french: .measured(termRetention: 0.98)
+        case .portuguese: .measured(termRetention: 0.96)
+        case .spanish: .measured(termRetention: 0.94)
         }
     }
 

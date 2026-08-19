@@ -328,6 +328,19 @@ struct TranslationSweepTests {
         var termRate: Double {
             TranslationMetrics.termPreservationRate(source: entry.text, translation: output)
         }
+        /// 忽略大小写的那一版。**两个并排看，差值就是「只差大小写」的部分**
+        /// ——德语名词大写会让严格判据把正确的译文记成丢失，
+        /// 见 `TranslationMetrics.termPreservationRateIgnoringCase`。
+        var termRateIgnoringCase: Double {
+            TranslationMetrics.termPreservationRateIgnoringCase(
+                source: entry.text, translation: output)
+        }
+        /// 只差大小写的术语个数。
+        var caseOnlyTerms: Int {
+            let strict = terms.filter { output.contains($0) }.count
+            let loose = terms.filter { output.lowercased().contains($0.lowercased()) }.count
+            return loose - strict
+        }
         var lostDigits: [String] {
             TranslationMetrics.lostDigits(source: entry.text, translation: output)
         }
@@ -445,6 +458,7 @@ struct TranslationSweepTests {
                         + "  \(Self.f(row.elapsed))秒"
                         + "  汉字 \(row.outputHan)/\(row.sourceHan)"
                         + "  术语 \(row.terms.filter(row.output.contains).count)/\(row.terms.count)"
+                        + (row.caseOnlyTerms > 0 ? "(另 \(row.caseOnlyTerms) 个只差大小写)" : "")
                         + "  长度比 \(Self.f(row.lengthRatio, 2))"
                         + "  译文 \(row.output.count) 字")
                 lines.append("   原文：\(row.entry.text)")
@@ -502,9 +516,21 @@ struct TranslationSweepTests {
             out.append("  术语保留      本批无术语可考，这一列读不出任何东西")
         } else {
             let rate = withTerms.map(\.termRate).reduce(0, +) / Double(withTerms.count)
+            let loose = withTerms.map(\.termRateIgnoringCase).reduce(0, +) / Double(withTerms.count)
             out.append(
-                "  术语保留      \(f(rate, 2))（分母非空 \(withTerms.count) 条；"
+                "  术语保留      逐字 \(f(rate, 2))　忽略大小写 \(f(loose, 2))"
+                    + "（分母非空 \(withTerms.count) 条；"
                     + "另 \(ok.count - withTerms.count) 条原文无术语，按 1.0 计，不进这个平均）")
+            // **两个数的差值就是「只差大小写」那部分。**
+            // 德语所有名词首字母大写，那是正确的德语——只看逐字那个数会把
+            // 它判成六种里最差，而它其实一个术语都没真丢
+            // （2026-08-19 六语对照实测）。
+            let caseOnly = withTerms.map(\.caseOnlyTerms).reduce(0, +)
+            if caseOnly > 0 {
+                out.append(
+                    "                两者之差全部来自大小写：共 \(caseOnly) 个术语只是首字母变了，"
+                        + "在目标语言里那多半是正确的正字法（德语名词、产品名）")
+            }
         }
         if sourceDigits == 0 {
             out.append("  数字丢失      原文共 0 个阿拉伯数字——**分母为 0，这一列读不出任何东西**")
