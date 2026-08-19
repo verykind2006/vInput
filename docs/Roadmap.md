@@ -824,7 +824,40 @@ authentication failure」；一次 `0x0000000d8c9b3468`），**都是读到了�
 **真机风险**：同一段代码在 app 里跑，遥控器/鼠标语音会话期间挂 tap。
 崩了就是整个 app 挂掉，正在说的那句话全丢。
 
-### ② `SBCDecoder.decodeFrame` 数组越界（SIGTRAP，2 次）
+### ② `SBCDecoder.calculateBits` **死循环**（2026-08-19 抓到实证，诊断已更新）
+
+**先前记的是「数组越界，间歇发生，疑似并发共享状态」——不准确。**
+2026-08-19 在本机抓到一个跑飞的测试进程，`sample` 出来的证据：
+
+```
+swiftpm-testing-helper --filter SBCDecoder   98.2% CPU   1400 分钟 CPU 时间
+Call graph（1405 个采样）：
+  SBCDecoderTests.matchesFFmpeg(fixture:)
+    → SBCDecoder.decode<A>(_:)
+      → SBCDecoder.decodeFrame(_:at:info:into:)
+        → static SBCDecoder.calculateBits(info:scaleFactor:)   ← 1075 / 1405 个采样
+```
+
+**它不是崩了，是死循环了 23 小时**，一直占着一整个核。
+
+**新诊断**：位分配（bit allocation）那个循环在某些输入上**不收敛**。
+越界与挂死**是同一个根因的两种表现**——循环跑飞后索引一路增长，
+撞上边界检查就是 SIGTRAP，没撞上就一直转。
+
+这也解释了「固定 fixture 却间歇崩」：不是并发共享状态，是**同一个不收敛
+的循环，每次跑飞到哪一步取决于调度**。
+
+**真机风险比原先估计的更高**：死循环不会像崩溃那样留下报告，
+表现是**鼠标收音时整个 app 卡住、风扇转起来**。
+**用户此前报过「无法使用鼠标收音」，当时没查出原因——这条现在是首要嫌疑。**
+
+**怎么查**：`calculateBits` 是从 FFmpeg n8.1 移植的（`Audio/Vendored/SBCDecoder.swift`，
+535 行）。对着 FFmpeg 原版逐行比对那个循环的**终止条件**——移植时最容易
+丢的就是它。上游用 `bitcount`/`bitslice` 做收敛，任一个比较写反或者
+初值取错都会让它永不退出。**先给循环加一个硬上界让它可复现地失败**，
+再去找真正的差异。
+
+### ②-旧 `SBCDecoder.decodeFrame` 数组越界（SIGTRAP，2 次）
 
 ```
 SBCDecoderTests.matchesFFmpeg(fixture:)
