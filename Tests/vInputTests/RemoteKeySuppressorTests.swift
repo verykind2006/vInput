@@ -6,18 +6,107 @@ import Testing
 @MainActor
 @Suite("遥控器杂键抑制")
 struct RemoteKeySuppressorTests {
+    /// 可观测的假 tap。**存在的理由是让「拆得干净」这件事测得出来。**
+    ///
+    /// 最初这批用例传的是「什么都不装」，于是 `tapHandle` 永远是 nil，
+    /// `stop()` 与 `deinit` 的行为**根本观测不到**——实测确认过：把
+    /// `stop()` 改成只 `setEnabled(false)` 不 invalidate、把 `deinit` 整个
+    /// 删掉，12 条用例照样全绿。**那是两条空断言，而它们守的正是本轮修的
+    /// 那个 bug 本身。**
+    @MainActor
+    final class FakeTap: EventTapping {
+        private(set) var invalidateCount = 0
+        private(set) var enabledHistory: [Bool] = []
+        var isInvalidated: Bool { invalidateCount > 0 }
+
+        nonisolated func invalidate() {
+            MainActor.assumeIsolated { invalidateCount += 1 }
+        }
+        nonisolated func setEnabled(_ enabled: Bool) {
+            MainActor.assumeIsolated { enabledHistory.append(enabled) }
+        }
+    }
+
+    /// **一律不装真的系统级 CGEvent tap。**
+    ///
+    /// 2026-08-19 查出来的一个真 bug：本文件每条用例都 `beginSuppressing()`，
+    /// 而它会调 `start()` 装一个**系统级**的 tap；没有一条用例调 `stop()`，
+    /// 当时类里也没有 `deinit`。于是每跑一次测试，系统里就留下若干个 tap，
+    /// 各自的 `userInfo` 指着已释放的内存——**下一次用户敲键盘，
+    /// 测试进程就 SIGSEGV**。崩溃报告四份：08-18 17:01、08-18 23:00、
+    /// 08-19 11:06、08-19 11:07，栈是
+    /// `__CFMachPortPerform → eventTapMessageHandler → closure #1 in start()
+    /// → swift_retain`。
+    ///
+    /// 它间歇发生，是因为 tap 建不建得起来取决于测试二进制有没有辅助功能
+    /// 授权，而临时签名每次构建都变、TCC 授权随之重置。**「一直没出事」
+    /// 只是因为大部分时候授权不在，那是运气不是设计。**
+    private func makeSuppressor(tap: FakeTap? = nil) -> RemoteKeySuppressor {
+        RemoteKeySuppressor(installer: { _ in tap })
+    }
+
+    /// 上面那条保护本身的守卫。
+    ///
+    /// 没有它的话，谁把 `makeSuppressor` 改回默认构造都不会有人发现，
+    /// 而失效的表现是「跑完测试之后某次按键让测试进程崩掉」——
+    /// 没人会联想到这里。
+    @Test("测试用的抑制器不装系统级 tap")
+    func testSuppressorInstallsNoSystemTap() {
+        let suppressor = makeSuppressor()
+        suppressor.beginSuppressing()
+        #expect(!suppressor.hasTap, "测试进程装了真的 CGEvent tap")
+        suppressor.start()
+        #expect(!suppressor.hasTap, "显式 start() 也不该装")
+    }
+
+    /// **`stop()` 必须真的把 tap 拆掉，不是只禁用。**
+    ///
+    /// 只 `tapEnable(false)` 的话 mach port 还活着，系统仍可能投递事件，
+    /// 而那时 `userInfo` 已经是野指针。这条钉的就是 `CFMachPortInvalidate`
+    /// 那一步。
+    @Test("stop 真的拆掉 tap，且可重复调用")
+    func stopInvalidatesTheTap() {
+        let tap = FakeTap()
+        let suppressor = makeSuppressor(tap: tap)
+        suppressor.beginSuppressing()
+        #expect(suppressor.hasTap)
+
+        suppressor.stop()
+        #expect(tap.isInvalidated, "stop 只禁用了 tap，没有拆掉它")
+        #expect(!suppressor.hasTap)
+        #expect(!suppressor.shouldSuppress(keyCode: Int64(kVK_F5)), "拆完还在吞键")
+
+        suppressor.stop()
+        #expect(tap.invalidateCount == 1, "重复 stop 不该重复拆")
+    }
+
+    /// **tap 绝不能活得比宿主久。**
+    ///
+    /// 这是那四份崩溃报告的直接成因：对象释放了，tap 还挂在系统里指着
+    /// 已释放的内存。删掉 `deinit` 时本条会红。
+    @Test("宿主释放时 tap 跟着被拆掉")
+    func deinitInvalidatesTheTap() {
+        let tap = FakeTap()
+        do {
+            let suppressor = makeSuppressor(tap: tap)
+            suppressor.beginSuppressing()
+            #expect(suppressor.hasTap)
+        }
+        #expect(tap.isInvalidated, "宿主没了，tap 还挂在系统里——这正是那四次 SIGSEGV")
+    }
+
     /// 真机实测：RC003 语音键按住期间持续产生 keyCode 96(F5)，
     /// 淹没了随后注入的文字。键码写死在这里，改动需要有新的实测依据。
     @Test("抑制实测到的语音键键码 F5")
     func suppressesVoiceKeyCode() {
-        let suppressor = RemoteKeySuppressor()
+        let suppressor = makeSuppressor()
         suppressor.beginSuppressing()
         #expect(suppressor.shouldSuppress(keyCode: Int64(kVK_F5)))
     }
 
     @Test("不吞用户的普通按键")
     func passesThroughOrdinaryKeys() {
-        let suppressor = RemoteKeySuppressor()
+        let suppressor = makeSuppressor()
         suppressor.beginSuppressing()
         for key in [kVK_ANSI_A, kVK_Return, kVK_PageUp, kVK_Escape] {
             #expect(!suppressor.shouldSuppress(keyCode: Int64(key)))
@@ -28,7 +117,7 @@ struct RemoteKeySuppressorTests {
     /// （系统听写）会被我们无声吞掉——那是抢用户的键盘。
     @Test("会话外一律放行，包括语音键键码")
     func passesThroughOutsideSession() {
-        let suppressor = RemoteKeySuppressor()
+        let suppressor = makeSuppressor()
         #expect(!suppressor.shouldSuppress(keyCode: Int64(kVK_F5)))
 
         suppressor.beginSuppressing()
@@ -43,7 +132,7 @@ struct RemoteKeySuppressorTests {
     /// RC003 上实测过；「多抑制」的后果只是说话那几秒键盘不响应。不对称。
     @Test("鼠标会话期间无条件抑制未知键码")
     func mouseSuppressesUnknownKeys() {
-        let suppressor = RemoteKeySuppressor()
+        let suppressor = makeSuppressor()
         suppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
         for key in [kVK_F5, kVK_ANSI_A, kVK_Return, kVK_PageUp, kVK_F13, kVK_Space] {
             #expect(suppressor.shouldSuppress(keyCode: Int64(key)))
@@ -54,14 +143,14 @@ struct RemoteKeySuppressorTests {
     /// 期间注册它）。连它一起吞掉等于把用户关在一次录音里。
     @Test("鼠标会话期间仍然放行 Esc")
     func mouseKeepsEscapeHatch() {
-        let suppressor = RemoteKeySuppressor()
+        let suppressor = makeSuppressor()
         suppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
         #expect(!suppressor.shouldSuppress(keyCode: Int64(kVK_Escape)))
     }
 
     @Test("鼠标会话结束后一律放行")
     func mousePassesThroughOutsideSession() {
-        let suppressor = RemoteKeySuppressor()
+        let suppressor = makeSuppressor()
         suppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
         suppressor.endSuppressing()
         for key in [kVK_ANSI_A, kVK_Return, kVK_F5] {
@@ -74,7 +163,7 @@ struct RemoteKeySuppressorTests {
     /// 会从此吞掉用户的所有按键。
     @Test("策略不会在会话之间粘住")
     func policyDoesNotLeakBetweenSessions() {
-        let suppressor = RemoteKeySuppressor()
+        let suppressor = makeSuppressor()
 
         suppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
         #expect(suppressor.shouldSuppress(keyCode: Int64(kVK_ANSI_A)))
@@ -100,8 +189,11 @@ struct RemoteKeySuppressorTests {
     /// 就收，与 `CancelHotkeyController.update(for:)` 同一个形状。
     @Test("会话离开 listening 就收掉抑制")
     func endsSuppressionWhenSessionLeavesListening() {
-        for state in [DictationSession.State.idle, .transcribing, .correcting, .injecting] {
-            let suppressor = RemoteKeySuppressor()
+        // 遍历「除 .listening 之外的全部状态」，列表向 `DictationSession` 要而
+        // 不是手抄一份：原来这里抄了四格，M8 加 `.translating` 时没有任何东西
+        // 会提醒人回来补第五格——而漏掉的那一格恰恰就是没被覆盖的那一格。
+        for state in DictationSession.State.allCasesInPipelineOrder.filter({ $0 != .listening }) {
+            let suppressor = makeSuppressor()
             suppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
             suppressor.update(for: state)
             #expect(
@@ -113,7 +205,7 @@ struct RemoteKeySuppressorTests {
 
     @Test("listening 期间不收")
     func keepsSuppressingWhileListening() {
-        let suppressor = RemoteKeySuppressor()
+        let suppressor = makeSuppressor()
         suppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
         suppressor.update(for: .listening)
         #expect(suppressor.shouldSuppress(keyCode: Int64(kVK_ANSI_A)))
@@ -125,7 +217,7 @@ struct RemoteKeySuppressorTests {
     /// 失灵。只收不开。
     @Test("update 只收不开")
     func updateNeverStartsSuppression() {
-        let suppressor = RemoteKeySuppressor()
+        let suppressor = makeSuppressor()
         suppressor.update(for: .listening)
         #expect(!suppressor.shouldSuppress(keyCode: Int64(kVK_F5)))
     }

@@ -240,13 +240,37 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
     /// 对照表来选，而不能靠改一行常量重编译。生产路径不传，行为不变。
     private let tuning: DecodeTuning
 
+    /// 解码任务。**生产永远是 `.transcribe`。**
+    ///
+    /// Whisper 自带 `.translate`，直接从语音解出**英文**——如果它够用，
+    /// 翻译层可以一个额外模型都不加载、一次额外推理都不做。这个参数是
+    /// 为了把这条最便宜的路测出来（Task 4 ⑤），可注入的理由与 `promptText`、
+    /// `tuning` 同一条：不能靠改一行常量重编译来做对照。
+    ///
+    /// **它只能译成英文**，这是 Whisper 模型的固有限制而不是配置问题
+    /// （解码器只有 `<|translate|>` 一个方向的训练目标，目标语言恒为英文），
+    /// 所以它最多解决六种目标语言里的一种。
+    ///
+    /// 注意 `.translate` 与 `language` 的关系：`language` 仍是**源语言**，
+    /// 保持 "zh" 不变。
+    ///
+    /// **非 private 是为了让「生产默认是 `.transcribe`」这句话有测试守着。**
+    /// 2026-08-19 QA 实测：把下面那个默认值改成 `.translate`，981 tests
+    /// 一条不红——一个只靠注释维持的生产默认值，而且恰好长在最容易被人
+    /// 顺手接到「输出语言」偏好上的地方。接错了每一句中文都会变成**语义
+    /// 错误**的英文（M8 第 0 步实测：「权限也需要重新梳理」→ "the whole
+    /// line needs to be reorganized"），而全部现有指标都看不出来。
+    /// 守卫见 `WhisperKitTranscriberTests.productionTaskIsTranscribe`。
+    let task: DecodingTask
+
     init(
         modelName: String = "base",
         modelFolder: String? = nil,
         language: String = "zh",
         normalizeToSimplified: Bool = true,
         prompt: String = WhisperKitTranscriber.punctuationPrompt,
-        tuning: DecodeTuning = .production
+        tuning: DecodeTuning = .production,
+        task: DecodingTask = .transcribe
     ) {
         self.modelName = modelName
         self.modelFolder = modelFolder
@@ -254,6 +278,7 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
         self.normalizeToSimplified = normalizeToSimplified
         self.promptText = prompt
         self.tuning = tuning
+        self.task = task
     }
 
     /// tokenizer 等辅助文件的存放目录。
@@ -534,6 +559,8 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
 
         do {
             let options = DecodingOptions(
+                // 生产恒为 .transcribe，见 `task` 那段注释。
+                task: task,
                 language: language,
                 // 退火档数。见 DecodeTuning.temperatureFallbackCount。
                 temperatureFallbackCount: tuning.temperatureFallbackCount,

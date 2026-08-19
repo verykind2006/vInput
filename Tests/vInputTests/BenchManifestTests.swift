@@ -13,13 +13,34 @@ struct BenchManifestTests {
         #expect(!manifest.entries.isEmpty)
     }
 
-    /// 四个类别都要有条目，否则覆盖面就有缺口，而缺口不会自己叫。
-    @Test("四个类别都有条目")
-    func allCategoriesPresent() throws {
+    /// 四个录音类别都要有条目，否则覆盖面就有缺口，而缺口不会自己叫。
+    ///
+    /// 遍历 `BenchCategory.recorded` 而不是 `allCases`：`digits` 那一类是
+    /// 纯文本语料，住在 `Bench/translate-digits.json`、没有录音
+    /// （理由见 `BenchCategory.digits`）。下面 `manifestHasOnlyRecordedCategories`
+    /// 补上另一半——manifest 里不许混进不需要录音的类别，
+    /// 否则这条断言就成了「挑自己能过的类别来查」。
+    @Test("四个录音类别都有条目")
+    func allRecordedCategoriesPresent() throws {
         let manifest = try BenchManifest.loadFromRepository()
-        for category in BenchCategory.allCases {
+        for category in BenchCategory.recorded {
             let count = manifest.entries.filter { $0.category == category }.count
             #expect(count >= 5, "\(category.rawValue) 只有 \(count) 条，至少要 5 条")
+        }
+    }
+
+    /// manifest 里的每一条都要有对应录音，所以它的类别必须都在 `recorded` 里。
+    ///
+    /// 少了这一条，上面那条断言可以靠「把新类别排除在 recorded 之外」
+    /// 永远通过，而 manifest 里那些没有录音的条目会在
+    /// `BenchRunnerTests` 里变成一片「未录音，跳过」。
+    @Test("manifest 里只有需要录音的类别")
+    func manifestHasOnlyRecordedCategories() throws {
+        let manifest = try BenchManifest.loadFromRepository()
+        for entry in manifest.entries {
+            #expect(
+                BenchCategory.recorded.contains(entry.category),
+                "\(entry.id) 的类别 \(entry.category.rawValue) 不需要录音，不该进 manifest.json")
         }
     }
 

@@ -32,8 +32,91 @@ import Foundation
 ///
 /// 会话期间每个按下沿都记日志（含键码与是否被抑制）。**鼠标那个键码就靠
 /// 这条日志实测出来**——拿到之后应当把鼠标也收窄成 `.only(...)`。
+/// 一个装好的事件 tap 能做的两件事。
+///
+/// 抽成协议**只为一个理由：让「拆得干净」可测**。
+/// 真 tap 是系统级的，测试进程一装就会留下能崩掉进程的野指针
+/// （见 `RemoteKeySuppressor.TapInstaller`）；而「`stop()` 有没有真的
+/// 拆掉」「`deinit` 有没有拆」这两件事恰恰是本文件修的那个 bug 本身。
+/// 没有这层，那两条守卫在测试里是平凡成立的空断言——实测确认过：
+/// 把 `stop()` 改成只 `setEnabled(false)`、把 `deinit` 整个删掉，
+/// 12 条用例照样全绿。
+protocol EventTapping: AnyObject {
+    func invalidate()
+    func setEnabled(_ enabled: Bool)
+}
+
+/// 已装好的**系统级**事件 tap，**持有权与拆除都不依赖 MainActor**。
+///
+/// 单独抽一个类型，唯一的理由是 `deinit` 必须够得着它。
+/// `RemoteKeySuppressor` 是 `@MainActor` 的，而 `deinit` 是 nonisolated
+/// ——把 `CFMachPort` 存成宿主的隔离属性，`deinit` 里就碰不到，
+/// 而**碰不到就意味着拆不掉**，正是下面那个 bug 的成因。
+///
+/// 三个 CF 调用都是线程安全的 C API，不需要回到主线程。
+final class SystemEventTap: EventTapping, @unchecked Sendable {
+    private let tap: CFMachPort
+    private let source: CFRunLoopSource
+    private var invalidated = false
+
+    init(tap: CFMachPort, source: CFRunLoopSource) {
+        self.tap = tap
+        self.source = source
+    }
+
+    /// 拆掉 tap。可重复调用。
+    ///
+    /// **`CFMachPortInvalidate` 不能省。** 只做 `tapEnable(false)` +
+    /// `CFRunLoopRemoveSource` 的话，mach port 本身还活着，
+    /// 系统仍可能把事件投递过来——而那时回调里的 `userInfo` 已经是野指针。
+    ///
+    /// **这三行没有测试守着，明说。** 假 tap 验的是协议契约
+    /// （「`stop()` 与 `deinit` 有没有调 `invalidate()`」），验不了这里面
+    /// 具体调了哪几个 CF 函数——要验就得装一个真的系统级 tap，
+    /// 而那正是本轮要禁掉的事。实测确认过：把下面这行 `CFMachPortInvalidate`
+    /// 删掉，13 条用例全绿。**改这三行的人得自己想清楚。**
+    func invalidate() {
+        guard !invalidated else { return }
+        invalidated = true
+        CGEvent.tapEnable(tap: tap, enable: false)
+        CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+        CFMachPortInvalidate(tap)
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        guard !invalidated else { return }
+        CGEvent.tapEnable(tap: tap, enable: enabled)
+    }
+}
+
 @MainActor
 final class RemoteKeySuppressor {
+    /// 怎么装这个 tap。**默认装真的；测试传 `.disabled`。**
+    ///
+    /// **这个口子是一个真 bug 逼出来的（2026-08-19）。**
+    /// `RemoteKeySuppressorTests` 的 11 条用例每条都 `beginSuppressing()`，
+    /// 而它会调 `start()` 去装一个**系统级**的 CGEvent tap——测试结束、
+    /// 对象释放，tap 却还挂在系统里，`userInfo` 指着已释放的内存。
+    /// **下一次用户敲键盘，测试进程就 SIGSEGV。**
+    /// 崩溃报告：08-18 17:01、08-18 23:00、08-19 11:06、08-19 11:07，
+    /// 栈是 `__CFMachPortPerform → eventTapMessageHandler →
+    /// closure #1 in start() → swift_retain`。
+    ///
+    /// 它间歇发生，是因为 tap 建不建得起来取决于测试二进制有没有辅助功能
+    /// 授权，而临时签名每次构建都变、TCC 授权随之重置。
+    /// **同一个根还有另一个已知后果**：测试曾真的往前台应用注入 Return 键
+    /// （`SystemKeyPoster` 的默认值）。**测试不该跑真的系统副作用。**
+    /// 装 tap 的方式。返回 nil 表示没装成（缺辅助功能授权，或测试里刻意不装）。
+    /// **参数是宿主本身**：真 tap 的 `userInfo` 必须是那个具体实例的指针，
+    /// 而回调正是靠它找回宿主的。
+    typealias TapInstaller = @MainActor (RemoteKeySuppressor) -> (any EventTapping)?
+
+    /// 生产用：真的装一个系统级 tap。
+    static let systemInstaller: TapInstaller = { makeSystemTap(for: $0) }
+
+    /// 测试用：什么都不装。
+    static let noTapInstaller: TapInstaller = { _ in nil }
+
     /// 抑制策略。
     enum Policy: Equatable, Sendable {
         /// 只吞名单里的键。
@@ -70,16 +153,49 @@ final class RemoteKeySuppressor {
     /// 仅在语音会话进行中吞键。平时完全不干预用户的键盘。
     private var isActive = false
 
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    /// 已装好的 tap。**存的是 `EventTapHandle` 而不是裸的 `CFMachPort`**，
+    /// 这样 `deinit` 够得着它——理由见 `EventTapHandle` 的注释。
+    ///
+    /// `nonisolated(unsafe)`：只在 MainActor 上读写（`start` / `stop`
+    /// 都是隔离方法），唯一的例外是 `deinit`，而那时已经没有别的引用了。
+    private nonisolated(unsafe) var tapHandle: (any EventTapping)?
+
+    private let installer: TapInstaller
+
+    init(installer: @escaping TapInstaller = RemoteKeySuppressor.systemInstaller) {
+        self.installer = installer
+    }
+
+    /// **tap 绝不能活得比宿主久。**
+    ///
+    /// 没有这个 `deinit` 时：对象释放后 tap 仍挂在系统里，回调拿着
+    /// `Unmanaged.passUnretained(self)` 留下的裸指针去 `takeUnretainedValue()`
+    /// 一块已释放的内存 → SIGSEGV。见 `TapInstaller` 的注释里那四份崩溃报告。
+    ///
+    /// **不改成 `passRetained` 来「保命」**：那会让 tap 永久持有宿主，
+    /// `deinit` 从此不会被调用，泄漏一个系统级 tap——把崩溃换成静默泄漏，
+    /// 而后者更难发现。正确的方向是让 tap 先死。
+    deinit {
+        tapHandle?.invalidate()
+    }
 
     func start() {
-        guard eventTap == nil else { return }
+        guard tapHandle == nil else { return }
+        guard let tap = installer(self) else { return }
+        tapHandle = tap
+        AppLogger.shared.log("按键抑制器已启动")
+    }
 
+    /// 真的去系统里装一个 tap。失败返回 nil。
+    private static func makeSystemTap(for suppressor: RemoteKeySuppressor) -> (any EventTapping)? {
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
             | CGEventMask(1 << CGEventType.keyUp.rawValue)
 
-        let context = Unmanaged.passUnretained(self).toOpaque()
+        // **`passUnretained`，不是 `passRetained`。**
+        // 用 retained 让 tap 替我们保命的话，宿主永远不会析构、`deinit`
+        // 从此不跑，泄漏一个系统级 tap——把崩溃换成静默泄漏，更难发现。
+        // 正确的方向是让 tap 先死，那由宿主的 `deinit` 保证。
+        let context = Unmanaged.passUnretained(suppressor).toOpaque()
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
@@ -98,26 +214,24 @@ final class RemoteKeySuppressor {
             // 需要辅助功能权限。没有也不影响听写主路径，只是遥控器录音
             // 期间会有按键垃圾——如实记日志，不阻断。
             AppLogger.shared.log("按键抑制器创建失败，遥控器录音期间可能出现杂键")
-            return
+            return nil
         }
 
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            // 建不出 run loop source 时必须把 tap 也拆掉，否则它挂在系统里
+            // 而我们再也够不到它。
+            CFMachPortInvalidate(tap)
+            AppLogger.shared.log("按键抑制器的 run loop source 创建失败，已回滚")
+            return nil
+        }
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-
-        eventTap = tap
-        runLoopSource = source
-        AppLogger.shared.log("按键抑制器已启动")
+        return SystemEventTap(tap: tap, source: source)
     }
 
     func stop() {
-        guard let eventTap else { return }
-        CGEvent.tapEnable(tap: eventTap, enable: false)
-        if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        }
-        self.eventTap = nil
-        runLoopSource = nil
+        tapHandle?.invalidate()
+        tapHandle = nil
         isActive = false
     }
 
@@ -129,7 +243,7 @@ final class RemoteKeySuppressor {
     /// - Parameter policy: 本次会话用哪一档。默认是 RC003 那档，
     ///   这样遥控器那条路径的调用点一个字都不用改。
     func beginSuppressing(policy: Policy = RemoteKeySuppressor.remotePolicy) {
-        if eventTap == nil { start() }
+        if tapHandle == nil { start() }
         self.policy = policy
         isActive = true
     }
@@ -162,6 +276,11 @@ final class RemoteKeySuppressor {
         endSuppressing()
     }
 
+    /// 系统级 tap 现在装着没有。**存在的唯一理由是让「测试不装真 tap」
+    /// 这件事可测**——否则那道保护没有任何东西守着，而它失效的表现是
+    /// 「跑完测试之后某次按键让测试进程崩掉」，没人会联想到这里。
+    var hasTap: Bool { tapHandle != nil }
+
     /// 是否该吞掉这个键。抽成纯函数以便测试——`handle` 需要真实 CGEvent。
     ///
     /// 只在会话进行中吞键：平时用户按 F5 是他自己的意思，不该被我们截走。
@@ -172,7 +291,7 @@ final class RemoteKeySuppressor {
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         // 系统可能因超时或用户输入过快禁用 tap，重新启用。
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: true) }
+            tapHandle?.setEnabled(true)
             return Unmanaged.passUnretained(event)
         }
 

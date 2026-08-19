@@ -87,6 +87,10 @@ struct HUDViewModelTests {
     func statusLabels() {
         #expect(HUDViewModel.statusLabel(for: .listening, previewDegraded: false) == "正在聆听")
         #expect(HUDViewModel.statusLabel(for: .transcribing, previewDegraded: false) == "正在转写")
+        #expect(HUDViewModel.statusLabel(for: .correcting, previewDegraded: false) == "正在校正")
+        // 翻译与校正分开显示：两者都是数秒量级的等待，共用一句文案会让用户
+        // 以为卡在校正上。**呈现细节归 Task 11**，这里只钉住「有自己的一句话」。
+        #expect(HUDViewModel.statusLabel(for: .translating, previewDegraded: false) == "正在翻译")
         #expect(HUDViewModel.statusLabel(for: .injecting, previewDegraded: false) == "正在输入")
     }
 

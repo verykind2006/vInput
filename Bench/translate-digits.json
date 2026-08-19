@@ -1,0 +1,73 @@
+{
+  "_说明": [
+    "翻译层专用的补充语料：纯文本，没有录音。用 ./scripts/translate-sweep.sh --corpus 指定。",
+    "存在的理由：Bench/manifest.json 的 26 条里一个 ASCII 数字都没有（2026-08-18 数过），",
+    "TranslationMetrics.lostDigits 的分母因此恒为 0，提示词里",
+    "「Keep all numbers exactly as they appear」这条规则本基准集根本考不到。",
+    "而数字译错是报价场景里最贵的错——那正是这个工具要求一切不出本机的场景。",
+    "不进 manifest.json 是因为那份清单的每一条都假设有 Bench/audio/<id>.wav。",
+    "文件结构与 manifest.json 相同（BenchManifest），所以扫描装置不必另写解码器。"
+  ],
+  "entries": [
+    {
+      "id": "digit-01",
+      "category": "digits",
+      "text": "这个方案的报价是 128000 元，含税，有效期到月底。"
+    },
+    {
+      "id": "digit-02",
+      "category": "digits",
+      "text": "单价 45.6 美元，起订量 200 个，超过 500 个可以再谈。"
+    },
+    {
+      "id": "digit-03",
+      "category": "digits",
+      "text": "这批货的毛利率是 23.5%，比上个季度低了 1.8 个百分点。"
+    },
+    {
+      "id": "digit-04",
+      "category": "digits",
+      "text": "我们定在 2026 年 8 月 18 日下午 3 点交付第一批。"
+    },
+    {
+      "id": "digit-05",
+      "category": "digits",
+      "text": "明天 9:30 开会，预计 45 分钟，会议室在 12 楼。"
+    },
+    {
+      "id": "digit-06",
+      "category": "digits",
+      "text": "这个型号是 RC003，不是 RC030，两个的接口完全不一样。"
+    },
+    {
+      "id": "digit-07",
+      "category": "digits",
+      "text": "订单号 SO-2026-0817，麻烦帮我查一下物流到哪了。"
+    },
+    {
+      "id": "digit-08",
+      "category": "digits",
+      "text": "一共 3 台，每台 16 GB 内存、512 GB 固态硬盘。"
+    },
+    {
+      "id": "digit-09",
+      "category": "digits",
+      "text": "第三批一共 250 件，分两次发货，第二次在 10 月。"
+    },
+    {
+      "id": "digit-10",
+      "category": "digits",
+      "text": "第二版报价降到 98000 元，账期从 60 天改成 30 天。"
+    },
+    {
+      "id": "digit-11",
+      "category": "digits",
+      "text": "对接人的电话是 138 0013 8000，分机 6207，找王工。"
+    },
+    {
+      "id": "digit-12",
+      "category": "digits",
+      "text": "服务器从 8 核 32 G 升到 16 核 64 G，成本涨了 40%。"
+    }
+  ]
+}

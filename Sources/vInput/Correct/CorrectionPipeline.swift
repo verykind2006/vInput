@@ -59,6 +59,26 @@ struct CorrectionPipeline: Sendable {
     /// 新容器上的第一次校正。而 `applyCorrectionPreference()` 只在启动、
     /// 开关校正、换校正模型时调用（读过 `AppModel`，不是每次会话），
     /// 一次会话内乃至连续多次会话之间，流水线实例都是稳定的。
+    ///
+    /// ### ⚠️ 上面这段的前提在共用容器之后不再总是成立——已知，未修
+    ///
+    /// 校正层与翻译层现在共用同一个 `ModelContainer`（见
+    /// `ModelContainerRegistry`）。于是本闸门守的东西比它自以为的少了一块：
+    ///
+    /// 1. **新流水线未必配到新容器。** 只要还有别人（翻译层，或尚未释放的
+    ///    上一个校正器）持有同一个模型，新建的 `MLXCorrector` 拿到的是**同一个**
+    ///    容器，而闸门是全新的、开着的——旧的跑飞推理仍占着那条串行队列。
+    /// 2. **闸门只认得校正自己的推理。** 队列上现在有两个生产者，翻译那次
+    ///    跑飞的推理（`maxTokens` 512，比校正的 96 长得多）本闸门看不见，
+    ///    照旧放行的校正只能排在它后面，大概率超时——正是本闸门当初要防的
+    ///    那件事（M4 实测：每超时一次队列长一节）。
+    ///    `TranslationPipeline` 那边**根本没有闸门**，方向反过来同样成立。
+    ///
+    /// 后果是降级而非丢字：排队超时最终退回原文并标注（规则二·永不丢字），
+    /// 且正常时序下两层在同一次会话里是顺序发生的，只有推理跑飞才会重叠。
+    /// **正解是把闸门挪到容器那一层（一个容器一个闸门），两层共用**，
+    /// 那要动 `TranslationPipeline` 与两条超时路径，单独排一件事做，
+    /// 不在共用容器这次里顺手改。
     private let inFlight = InFlightGate()
 
     /// - Parameter timeout: 单次推理的时间上限。**只约束推理，不约束模型加载。**
@@ -83,11 +103,17 @@ struct CorrectionPipeline: Sendable {
     /// 与 M2 对 Whisper 的做法一致（见 `AppModel.warmUpAndAttachPreview`）：
     /// 一次性的加载成本挪到用户开口之前付掉。
     func warmUp() async {
+        // **耗时是「模型到底加载了没有」在真机上唯一的证据。** 校正层与翻译层
+        // 现在共用同一个 `ModelContainer`（见 `ModelContainerRegistry`），
+        // 而「共用生效了」与「又加载了一遍」在日志里本来长得一模一样。实测
+        // 冷加载 14.1 秒、有页缓存时 3.7–8.0 秒（M8 第 0 步）；共用命中时
+        // 这一行应当接近 0。单元测试里的假闭包证明不了这件事。
+        let started = ContinuousClock.now
         do {
             try await corrector.prepare()
-            AppLogger.shared.log("校正模型预热完成")
+            AppLogger.shared.log("校正模型预热完成 耗时 \(ContinuousClock.now - started)")
         } catch {
-            AppLogger.shared.log("校正模型预热失败：\(error)")
+            AppLogger.shared.log("校正模型预热失败 耗时 \(ContinuousClock.now - started)：\(error)")
         }
     }
 
