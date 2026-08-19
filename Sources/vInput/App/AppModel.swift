@@ -80,6 +80,16 @@ final class AppModel {
     /// 上面那个目录是不是**借来的**（用户没单独给翻译指定）。
     private(set) var translationModelIsInherited: Bool = true
 
+    /// 云端选中的模型。菜单据此显示。
+    private(set) var cloudModel: CloudTranslationModel = .default
+
+    /// Keychain 里有没有 API key。
+    ///
+    /// **是缓存不是实时值**：每次打开菜单都读一次 Keychain 会弹系统授权框，
+    /// 而菜单是每天点很多次的东西（见 `TranslationAttachmentCoordinator`
+    /// 里同一条权衡）。用户存完 key 我们当场更新它，不必等下一次挂载。
+    private(set) var hasCloudAPIKey: Bool = false
+
     private let permissions = Permissions()
     /// 校正偏好。开关状态与模型目录都要跨启动保留。
     private let correctionPreference = CorrectionPreference()
@@ -96,6 +106,14 @@ final class AppModel {
 
     /// 选翻译模型目录的面板。与 `chooseCorrectionModelFolder` 同一条分工。
     var chooseTranslationModelFolder: (@MainActor () -> URL?)?
+
+    /// 让用户输入云端 API key 的面板。返回 nil 表示取消。
+    ///
+    /// **返回的字符串是密钥本身，绝不可以进日志。** 调用点只记「成功/失败」。
+    var promptForCloudAPIKey: (@MainActor () -> String?)?
+
+    /// 让用户输入自定义云端模型标识符的面板。
+    var promptForCloudModelIdentifier: (@MainActor (String) -> String?)?
     /// 弹出「开启云端翻译」的确认，返回用户是否确认。
     ///
     /// 与 `chooseCorrectionModelFolder` 同一条分工：`AppModel` 不该知道
@@ -536,7 +554,8 @@ final class AppModel {
                     target: translationPreference.outputLanguage,
                     usesCloudBackend: translationPreference.usesCloudBackend,
                     translationModelDirectory: translationPreference.modelDirectory,
-                    correctionModelDirectory: correctionPreference.modelDirectory
+                    correctionModelDirectory: correctionPreference.modelDirectory,
+                    cloudModel: translationPreference.cloudModel.identifier
                 )
             },
             session: { [weak session] in session },
@@ -1123,21 +1142,16 @@ final class AppModel {
         }
     }
 
-    /// 子菜单里那个开关项的文案。
+    /// 二选一那两项的文案。
     ///
-    /// **开启那一句必须把后果写在按钮上**，不能是「启用云端翻译」这种中性
-    /// 说法：这个开关一开，用户说的每一句话都会发到 Google，而这工具会用在
-    /// 含报价的场合（用户 2026-08-17）。末尾的省略号是 macOS 的惯例：
-    /// 点它会先弹一个确认框（`cloudBackendConfirmation`），不是当场就开。
-    nonisolated static func translationBackendToggleLabel(
-        _ status: TranslationBackendStatus
-    ) -> String {
-        switch status {
-        case .local:
-            "开启云端翻译：每句话都会发到 Google…"
-        case .cloudIdleBecauseChinese, .cloudMissingKey, .cloudActive:
-            "关闭云端翻译，改回本机"
-        }
+    /// **两项都常驻，用勾选标出当前那个**，而不是只显示「切到另一个」——
+    /// 用户 2026-08-19 要的是「点开之后可以选本地，也可以选云端」，
+    /// 那要求两个选项同时看得见。
+    ///
+    /// 云端那项**在文案里就说清后果**（不是等点下去才在确认框里说）：
+    /// 一个会把用户每句话发出去的选项，不该长得和「换个字体」一样。
+    nonisolated static func backendChoiceLabel(cloud: Bool) -> String {
+        cloud ? "云端 Google（每句话都会发出）" : "本机（文字不出这台电脑）"
     }
 
     /// 子菜单里的说明行。**每一格都要把「现在到底会发生什么」说完。**
@@ -1245,6 +1259,8 @@ final class AppModel {
         )
         translationModelName = mirror.name
         translationModelIsInherited = mirror.inherited
+        cloudModel = translationPreference.cloudModel
+        hasCloudAPIKey = translationCoordinator.cloudKeyPresent
     }
 
     /// 菜单上该显示哪个模型名、算不算「跟随校正」。
@@ -1292,6 +1308,69 @@ final class AppModel {
             phase = .error("这不是可用的模型目录：\(error)")
             AppLogger.shared.log("指定翻译模型被拒：\(error)")
         }
+    }
+
+    /// 「模型：…」那一行（云端）。
+    ///
+    /// 只印标识符，**不附任何质量或速度的说法**——云端一次真实请求都没发过，
+    /// 附一句就是在编。本机那三个实测数字是本机模型的，不许替云端说话。
+    nonisolated static func cloudModelMenuLine(_ model: CloudTranslationModel) -> String {
+        "模型：\(model.identifier)"
+    }
+
+    /// 「API Key：…」那一行。
+    ///
+    /// **有 key ≠ key 是对的。** 这行只说 Keychain 里有没有东西——
+    /// key 对不对要等真的发一次请求才知道，而截至 2026-08-19 云端一次
+    /// 真实请求都没发过。所以措辞是「已存」不是「已就绪」，
+    /// 后者会让用户以为验证过了。
+    nonisolated static func cloudAPIKeyMenuLine(hasKey: Bool) -> String {
+        hasKey ? "API Key：已存入 Keychain（是否有效未验证）" : "API Key：未配置，翻译会退回中文原文"
+    }
+
+    /// 切到本机后端。**任何时候都可以，不需要确认**——这个方向是「更不出站」。
+    func useLocalBackend() {
+        guard translationPreference.usesCloudBackend else { return }
+        translationPreference.usesCloudBackend = false
+        applyTranslationPreference()
+        AppLogger.shared.log("翻译后端已切回本机")
+    }
+
+    /// 选云端模型。
+    func selectCloudModel(_ model: CloudTranslationModel) {
+        translationPreference.cloudModel = model
+        applyTranslationPreference()
+        AppLogger.shared.log("云端翻译模型已选：\(model.identifier)")
+    }
+
+    /// 让用户填一个自定义模型标识符。
+    func promptCloudModel() {
+        guard let entered = promptForCloudModelIdentifier?(cloudModel.identifier) else { return }
+        let trimmed = entered.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        selectCloudModel(.from(identifier: trimmed))
+    }
+
+    /// 让用户输入 API key 并存进 Keychain。
+    ///
+    /// **key 一个字节都不进日志。** 只记成功与否——日志是会被贴进对话、
+    /// 贴进 issue 的东西。
+    func enterCloudAPIKey() {
+        guard let key = promptForCloudAPIKey?() else { return }
+        let ok = TranslationKey.write(key, service: TranslationKey.geminiService)
+        AppLogger.shared.log(ok ? "云端 API key 已存入 Keychain" : "云端 API key 存入失败")
+        guard ok else {
+            phase = .error("API key 存入 Keychain 失败")
+            return
+        }
+        recheckCloudAPIKey()
+    }
+
+    /// 删掉 Keychain 里的 key。
+    func removeCloudAPIKey() {
+        TranslationKey.delete(service: TranslationKey.geminiService)
+        AppLogger.shared.log("云端 API key 已从 Keychain 删除")
+        recheckCloudAPIKey()
     }
 
     /// 撤销单独指定，改回跟随校正模型。

@@ -59,6 +59,13 @@ final class TranslationAttachmentCoordinator {
         var usesCloudBackend: Bool
         var translationModelDirectory: URL?
         var correctionModelDirectory: URL?
+        /// 云端用哪个模型的标识符。
+        ///
+        /// **走 `Inputs` 而不是让 `AppModel` 自己造翻译器**：出站面那条
+        /// 源码扫描守卫钉住「全仓库只有一处能造出云端翻译器」，而零出站
+        /// 那套用例正是靠替换那一处才观测得到的。绕开它新造一个，用例
+        /// 一条都不会红，而请求会真的出站。
+        var cloudModel: String = CloudTranslationModel.default.identifier
     }
 
     /// 生产用的预热：detached 而非 `Task {}`。
@@ -76,7 +83,7 @@ final class TranslationAttachmentCoordinator {
     private let inputs: @MainActor () -> Inputs
     private let session: @MainActor () -> (any TranslationAttachTarget)?
     private let makeTranslator: @MainActor (URL) -> any Translator
-    private let makeCloudTranslator: @MainActor () -> any Translator
+    private let makeCloudTranslator: @MainActor (String) -> any Translator
     private let cloudKeyAvailable: @MainActor () -> Bool
     private let isUsableModelDirectory: @MainActor (URL) -> Bool
     private let warmUp: @MainActor (TranslationPipeline) -> Void
@@ -153,7 +160,9 @@ final class TranslationAttachmentCoordinator {
         inputs: @escaping @MainActor () -> Inputs,
         session: @escaping @MainActor () -> (any TranslationAttachTarget)?,
         makeTranslator: @escaping @MainActor (URL) -> any Translator,
-        makeCloudTranslator: @escaping @MainActor () -> any Translator = { GeminiTranslator() },
+        makeCloudTranslator: @escaping @MainActor (String) -> any Translator = {
+            GeminiTranslator(model: $0)
+        },
         cloudKeyAvailable: @escaping @MainActor () -> Bool = {
             TranslationKey.read(service: TranslationKey.geminiService) != nil
         },
@@ -225,7 +234,7 @@ final class TranslationAttachmentCoordinator {
             // 与校正同一个道理：加载一次要几十秒，注入路径上一秒都不能等。
             warmUp(built)
         case .cloud:
-            let built = TranslationPipeline(translator: makeCloudTranslator())
+            let built = TranslationPipeline(translator: makeCloudTranslator(current.cloudModel))
             pipeline = built
             // 用上面那次读的结果，不再读第二次——见 `cloudKeyPresent`。
             if cloudKeyPresent {

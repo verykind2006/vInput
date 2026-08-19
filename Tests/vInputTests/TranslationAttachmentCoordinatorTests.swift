@@ -715,6 +715,8 @@ private final class Harness {
     var logs: [String] = []
     /// 云端翻译器被造出来几次。
     var cloudTranslatorCount = 0
+    /// 每次造云端翻译器时被要求的模型标识符。
+    var cloudModelsAsked: [String] = []
     /// 云端翻译器发出的每一条请求。**这是「零出站」那条用例的观测点。**
     let recorder: RequestRecorder
     /// 假 API key。放进盒子是因为 `GeminiTranslator.readKey` 是 `@Sendable`，
@@ -775,11 +777,12 @@ private final class Harness {
             // 所以它没发请求」——空断言。真翻译器 + 记录型 `URLSession`，
             // 才使得「本该发出的请求一条都没发」成为一件观测得到的事，
             // 而同一套接线换成外语时确实记到一条（见正对照用例）。
-            makeCloudTranslator: { [unowned self] in
+            makeCloudTranslator: { [unowned self] model in
                 self.cloudTranslatorCount += 1
+                self.cloudModelsAsked.append(model)
                 let key = self.cloudKey
                 return GeminiTranslator(
-                    session: self.recorder.makeSession(), readKey: { key.value })
+                    model: model, session: self.recorder.makeSession(), readKey: { key.value })
             },
             cloudKeyAvailable: { [unowned self] in
                 self.cloudKeyReads += 1

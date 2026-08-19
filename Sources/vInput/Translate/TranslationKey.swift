@@ -51,6 +51,52 @@ enum TranslationKey {
     /// 用户很可能是 `-w "$(cat key.txt)"` 或从网页复制粘贴过来的，尾部
     /// 带个换行是常事。带着换行发出去同样是一个看不懂的 401，而用户对着
     /// Keychain 里那条记录怎么看都是对的。
+    /// 把 key 写进 Keychain。已有就覆盖。
+    ///
+    /// **写入路径存在的理由**：原来只能靠命令行
+    /// `security add-generic-password -a vInput -s … -w`。让一个产品的
+    /// 「用户显式开」动作只能在终端里完成，等于这个开关对多数人不存在。
+    ///
+    /// **key 一个字节都不进日志、不进错误信息。** 下面只回报成功与否，
+    /// 连长度都不报——日志是会被贴进对话、贴进 issue 的东西。
+    ///
+    /// 存之前 trim 首尾空白：从网页复制 key 时带上换行是常事，而带着换行
+    /// 发出去只会换回一个看不懂的 401。
+    @discardableResult
+    static func write(_ key: String, service: String) -> Bool {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return false }
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+        ]
+        // 先试更新，没有再新建。反过来写的话，已存在时 SecItemAdd 会返回
+        // errSecDuplicateItem，而那条路径很容易被当成「写失败」。
+        let update: [String: Any] = [kSecValueData as String: data]
+        let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if status == errSecSuccess { return true }
+        guard status == errSecItemNotFound else { return false }
+
+        var insert = query
+        insert[kSecValueData as String] = data
+        // 账户名与文档里那条 security 命令保持一致，这样命令行存的和界面存的
+        // 是同一条记录，用户换着用不会看到两份。
+        insert[kSecAttrAccount as String] = "vInput"
+        return SecItemAdd(insert as CFDictionary, nil) == errSecSuccess
+    }
+
+    /// 删掉 key。用户要撤回授权时用。
+    @discardableResult
+    static func delete(service: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
+    }
+
     static func read(service: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

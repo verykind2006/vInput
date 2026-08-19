@@ -40,6 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 而菜单视图每次打开都会重建。
         model.chooseCorrectionModelFolder = { presentCorrectionModelFolderPanel() }
         model.chooseTranslationModelFolder = { presentCorrectionModelFolderPanel() }
+        model.promptForCloudAPIKey = { presentCloudAPIKeyPanel() }
+        model.promptForCloudModelIdentifier = { presentCloudModelPanel(current: $0) }
         // 同上，也在 bootstrap 之前：开启云端翻译要先弹一次确认，而
         // `AppModel` 不该知道 `NSAlert` 的存在。没接上时 `toggleCloudBackend`
         // 的失败方向是「不开」。
@@ -101,6 +103,63 @@ private func presentCloudBackendConfirmation() -> Bool {
     alert.addButton(withTitle: copy.cancelButton)
     alert.addButton(withTitle: copy.confirmButton)
     return alert.runModal() == .alertSecondButtonReturn
+}
+
+/// 输入云端 API key。
+///
+/// **用 `NSSecureTextField`**：key 会出现在屏幕上，而用户很可能在会议里
+/// 共享着屏幕——这个工具的用户就是拿它口述报价的人。
+///
+/// - 返回的字符串是密钥本身，**调用方绝不可以把它写进日志**。
+/// - `activate` 不能去掉，理由同 `presentCorrectionModelFolderPanel`：
+///   菜单栏应用不激活的话面板会出现在别的窗口后面。
+@MainActor
+private func presentCloudAPIKeyPanel() -> String? {
+    NSApplication.shared.activate(ignoringOtherApps: true)
+
+    let alert = NSAlert()
+    alert.messageText = "输入 Gemini API Key"
+    alert.informativeText = """
+        key 存进本机的 Keychain，不进日志、不进仓库、不随任何东西上传。
+
+        开启云端翻译后，你说的每一句话都会发到 Google 的服务器。
+        涉及报价、客户信息等机密内容时不要开启。
+        """
+    let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+    field.placeholderString = "粘贴 API Key"
+    alert.accessoryView = field
+    alert.addButton(withTitle: "存入 Keychain")
+    alert.addButton(withTitle: "取消")
+    // 让输入框拿到焦点，否则粘贴要先点一下。
+    alert.window.initialFirstResponder = field
+
+    guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+    let value = field.stringValue
+    return value.isEmpty ? nil : value
+}
+
+/// 输入自定义的云端模型标识符。
+@MainActor
+private func presentCloudModelPanel(current: String) -> String? {
+    NSApplication.shared.activate(ignoringOtherApps: true)
+
+    let alert = NSAlert()
+    alert.messageText = "自定义云端模型"
+    alert.informativeText = """
+        填 Google 的模型标识符，例如 gemini-2.0-flash。
+
+        这里填什么都不会被校验——vInput 至今没有对 Gemini 发过一次真实
+        请求。填错的表现是每次听写都退回中文原文，日志里是一条 HTTP 4xx。
+        """
+    let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+    field.stringValue = current
+    alert.accessoryView = field
+    alert.addButton(withTitle: "使用")
+    alert.addButton(withTitle: "取消")
+    alert.window.initialFirstResponder = field
+
+    guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+    return field.stringValue
 }
 
 private struct MenuContent: View {
@@ -252,15 +311,40 @@ private struct MenuContent: View {
     ///
     /// 菜单本身**不读 Keychain**（可能弹系统授权框），只读镜像；
     /// 想立刻刷新的人自己按「重新检查 API key」。
+    /// 翻译后端子菜单。**「谁来译」的一切都在这一格里。**
+    ///
+    /// 用户 2026-08-19 的要求：本机与云端放在同一个菜单里，点开二选一；
+    /// 本机那侧是「指定模型」，云端那侧是「选哪个模型」加「API Key」。
+    ///
+    /// 两个后端的设置**互斥显示**，只出当前那一档的：另一档的模型/密钥
+    /// 此刻不参与任何事，摆出来只会让人以为它也在起作用。
     @ViewBuilder
     private var translationBackendMenu: some View {
         Menu(AppModel.translationBackendMenuTitle(model.translationBackend)) {
-            Button(AppModel.translationBackendToggleLabel(model.translationBackend)) {
+            // ① 二选一。放最上面，因为这是这个菜单存在的理由。
+            Button {
+                model.useLocalBackend()
+            } label: {
+                if model.translationBackend == .local {
+                    Label(AppModel.backendChoiceLabel(cloud: false), systemImage: "checkmark")
+                } else {
+                    Text(AppModel.backendChoiceLabel(cloud: false))
+                }
+            }
+            Button {
+                // 已经在云端时点它什么都不做，不再弹一次确认。
+                guard model.translationBackend == .local else { return }
                 model.toggleCloudBackend()
+            } label: {
+                if model.translationBackend != .local {
+                    Label(AppModel.backendChoiceLabel(cloud: true), systemImage: "checkmark")
+                } else {
+                    Text(AppModel.backendChoiceLabel(cloud: true))
+                }
             }
 
             Divider()
-            // 说明行随状态变：「开了但不会生效」的两种状态各自把话说完，
+            // ② 说明行随状态变：「开了但不会生效」的两种状态各自把话说完，
             // 否则用户只看到一个「开」，无从判断现在到底有没有东西在出站。
             ForEach(
                 AppModel.translationBackendDetailLines(
@@ -272,32 +356,56 @@ private struct MenuContent: View {
                 Text(line)
             }
 
-            // 本机模型只在本机后端下有意义：走云端时它不参与任何事，
-            // 摆在那里只会让人以为云端也在用它。
+            Divider()
+            // ③ 当前那一档的设置。
             if model.translationBackend == .local {
-                Divider()
                 Text(
                     AppModel.translationModelMenuLine(
                         name: model.translationModelName,
                         inherited: model.translationModelIsInherited
                     )
                 )
-                Button("单独指定翻译模型…") {
+                Button("指定模型…") {
                     if let url = model.chooseTranslationModelFolder?() {
                         model.selectTranslationModel(directory: url)
                     }
                 }
-                // 只在真的单独指过时出现：没指过的时候这一项什么都不做，
-                // 摆出来只是噪音。
+                // 只在真的单独指过时出现：没指过时它什么都不做。
                 if !model.translationModelIsInherited {
                     Button("改回跟随校正模型") { model.clearTranslationModel() }
                 }
-            }
+            } else {
+                Text(AppModel.cloudModelMenuLine(model.cloudModel))
+                Menu("选择模型") {
+                    ForEach(CloudTranslationModel.KnownModel.allCases, id: \.rawValue) { known in
+                        Button {
+                            model.selectCloudModel(.known(known))
+                        } label: {
+                            if model.cloudModel == .known(known) {
+                                Label(
+                                    CloudTranslationModel.known(known).menuLabel,
+                                    systemImage: "checkmark"
+                                )
+                            } else {
+                                Text(CloudTranslationModel.known(known).menuLabel)
+                            }
+                        }
+                    }
+                    Divider()
+                    // 上面那张表迟早过时（Google 改名、下线），
+                    // 而用户不该为此等一次发版。
+                    Button("自定义…") { model.promptCloudModel() }
+                }
 
-            // 只在云端开着时出现：云端关的时候有没有 key 与用户无关。
-            if model.translationBackend != .local {
                 Divider()
-                Button("重新检查 API key") { model.recheckCloudAPIKey() }
+                Text(AppModel.cloudAPIKeyMenuLine(hasKey: model.hasCloudAPIKey))
+                Button(model.hasCloudAPIKey ? "更换 API Key…" : "输入 API Key…") {
+                    model.enterCloudAPIKey()
+                }
+                if model.hasCloudAPIKey {
+                    Button("删除 API Key") { model.removeCloudAPIKey() }
+                }
+                Button("重新检查 API Key") { model.recheckCloudAPIKey() }
             }
         }
     }

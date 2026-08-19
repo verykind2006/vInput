@@ -19,6 +19,7 @@ struct TranslationPreference {
         static let outputLanguage = "translation.outputLanguage"
         static let usesCloudBackend = "translation.usesCloudBackend"
         static let modelDirectory = "translation.modelDirectory"
+        static let cloudModel = "translation.cloudModel"
     }
 
     private let defaults: UserDefaults
@@ -67,6 +68,16 @@ struct TranslationPreference {
     /// `qwen3-4b-instruct-2507-4bit`），而这个退回正是
     /// `ModelContainerRegistry` 能省下一份权重的前提：同一个目录 → 同一个键
     /// → 同一份权重。
+    /// 云端用哪个模型。
+    ///
+    /// 存标识符字符串而不是枚举序号，理由与 `outputLanguage` 相同：
+    /// 这张表迟早会变（Google 改名、下线），而用户存下来的选择不该因此
+    /// 指到别的模型上。认不出的值当自定义处理，**不静默退回默认**。
+    var cloudModel: CloudTranslationModel {
+        get { CloudTranslationModel.from(identifier: defaults.string(forKey: Key.cloudModel) ?? "") }
+        nonmutating set { defaults.set(newValue.identifier, forKey: Key.cloudModel) }
+    }
+
     var modelDirectory: URL? {
         get { defaults.url(forKey: Key.modelDirectory) }
         nonmutating set { defaults.set(newValue, forKey: Key.modelDirectory) }

@@ -178,22 +178,52 @@ struct CloudBackendMenuTests {
                 == "翻译后端：云端 Google（每句话都会发出）")
     }
 
-    /// 开关那一项：开启要把后果写在按钮上，关闭不必。
-    @Test("开启的按钮文案自带后果，关闭的不吓人")
-    func toggleLabelCarriesTheConsequence() {
-        let toOpen = AppModel.translationBackendToggleLabel(.local)
-        #expect(toOpen.contains("Google"), "开启那一项没说会发给谁：\(toOpen)")
-        #expect(toOpen.contains("每句话"), "开启那一项没说范围有多大：\(toOpen)")
-        #expect(toOpen.hasSuffix("…"), "点它会先弹确认框，按 macOS 惯例要有省略号：\(toOpen)")
+    /// 二选一那两项：**云端那项要把后果写在选项上。**
+    ///
+    /// 一个会把用户每句话发出去的选项，不该长得和「换个字体」一样。
+    /// 这条守的是措辞本身，不是措辞的位置——2026-08-19 菜单重排把单个
+    /// 「开/关」按钮换成了两个并列选项，规矩不变。
+    @Test("云端那一项自带后果，本机那一项说清不出站")
+    func backendChoiceLabelsCarryTheConsequence() {
+        let cloud = AppModel.backendChoiceLabel(cloud: true)
+        #expect(cloud.contains("Google"), "云端那项没说会发给谁：\(cloud)")
+        #expect(cloud.contains("每句话"), "云端那项没说范围有多大：\(cloud)")
 
-        // 已经开着的三格，按钮都是「关掉」，且不带省略号（关掉不弹框）。
-        for status in [
-            AppModel.TranslationBackendStatus.cloudIdleBecauseChinese, .cloudMissingKey, .cloudActive,
-        ] {
-            let label = AppModel.translationBackendToggleLabel(status)
-            #expect(label.contains("关闭云端翻译"), "\(status) 的按钮不是关掉：\(label)")
-            #expect(!label.hasSuffix("…"), "关掉是一步到位的，不该有省略号：\(label)")
+        let local = AppModel.backendChoiceLabel(cloud: false)
+        #expect(local.contains("不出"), "本机那项没说清文字留在本机：\(local)")
+        // 本机那项不该出现任何厂商名——那会让人以为本机也在联网。
+        #expect(!local.contains("Google"))
+
+        #expect(cloud != local)
+    }
+
+    /// 「模型：…」与「API Key：…」两行。
+    @Test("云端模型行只印标识符，不附任何质量说法")
+    func cloudModelLineMakesNoClaims() {
+        let line = AppModel.cloudModelMenuLine(.known(.flash2))
+        #expect(line.contains("gemini-2.0-flash"))
+        // **不许附质量数字。** 云端一次真实请求都没发过；本机那三个实测数
+        // （1.00 / 0.92 / 0.89）是本机模型的，附到云端上就是编。
+        for claim in ["术语保留", "1.00", "0.92", "0.89", "更好", "更快"] {
+            #expect(!line.contains(claim), "云端模型行附了没有依据的说法：\(claim)")
         }
+    }
+
+    /// **「有 key」不等于「key 是对的」。**
+    ///
+    /// 这行只说 Keychain 里有没有东西。写成「已就绪」会让用户以为验证过了，
+    /// 而截至 2026-08-19 云端一次真实请求都没发过。
+    @Test("API Key 那一行不声称已验证")
+    func apiKeyLineDoesNotClaimValidation() {
+        let has = AppModel.cloudAPIKeyMenuLine(hasKey: true)
+        #expect(has.contains("未验证"), "声称 key 已就绪，而我们从没验过：\(has)")
+
+        let missing = AppModel.cloudAPIKeyMenuLine(hasKey: false)
+        #expect(missing.contains("未配置"))
+        // 没 key 时要说清后果，否则用户只看到「未配置」，不知道会怎样。
+        #expect(missing.contains("中文原文"), "没说清缺 key 时会发生什么：\(missing)")
+
+        #expect(has != missing)
     }
 
     /// **三种「不出站」的状态各自要把「现在不出站」说出来。**
@@ -318,10 +348,21 @@ struct CloudBackendWiringTests {
         let view = try Self.source("Sources/vInput/App/vInputApp.swift")
         let usesTitle = view.contains("AppModel.translationBackendMenuTitle(")
         let usesDetail = view.contains("AppModel.translationBackendDetailLines(")
-        let usesToggle = view.contains("AppModel.translationBackendToggleLabel(")
+        // 2026-08-19 菜单重排：单个「开/关」按钮换成本机/云端两个并列选项
+        // （用户要的是「点开之后可以选本地，也可以选云端」），
+        // `translationBackendToggleLabel` 随之删除，这里改钉新的那个。
+        let usesChoice = view.contains("AppModel.backendChoiceLabel(")
+        // 同一轮加进来的三行文案，一并钉住——漏掉任何一个，
+        // 它就可以被悄悄拼回视图里而这条用例照样绿。
+        let usesLocalModel = view.contains("AppModel.translationModelMenuLine(")
+        let usesCloudModel = view.contains("AppModel.cloudModelMenuLine(")
+        let usesAPIKey = view.contains("AppModel.cloudAPIKeyMenuLine(")
         #expect(usesTitle, "翻译后端子菜单的标题不是从纯函数来的")
         #expect(usesDetail, "翻译后端子菜单的说明行不是从纯函数来的")
-        #expect(usesToggle, "开关那一项的文案不是从纯函数来的")
+        #expect(usesChoice, "本机/云端二选一那两项的文案不是从纯函数来的")
+        #expect(usesLocalModel, "本机模型那一行不是从纯函数来的")
+        #expect(usesCloudModel, "云端模型那一行不是从纯函数来的")
+        #expect(usesAPIKey, "API Key 那一行不是从纯函数来的")
     }
 
     /// **菜单不许读 Keychain。**
@@ -388,5 +429,73 @@ struct CloudBackendWiringTests {
             菜单说的话必须与决定行为的那个判断同源。
             """
         )
+    }
+}
+
+/// 云端模型标识符的存取。
+@Suite("云端模型标识符")
+struct CloudTranslationModelTests {
+    /// **认不出的标识符当自定义，不许静默退回默认。**
+    ///
+    /// 用户填了 `gemini-3-whatever`，我们不认识——但那是他填的，
+    /// 悄悄换成 `gemini-2.0-flash` 之后他会看到菜单上写着别的东西，
+    /// 或者更糟：菜单显示他填的那个，实际发出去的是默认那个。
+    /// 这张表迟早过时（Google 改名、下线），这条路必须留着。
+    @Test("认不出的标识符按自定义保留，不退回默认")
+    func unknownIdentifierIsKept() {
+        let model = CloudTranslationModel.from(identifier: "gemini-9-nonexistent")
+        #expect(model == .custom("gemini-9-nonexistent"))
+        #expect(model.identifier == "gemini-9-nonexistent")
+        #expect(model != .default, "用户填的标识符被静默换成了默认值")
+    }
+
+    /// 预置项要还原成 `.known`，否则菜单上的勾选打不出来。
+    @Test("预置标识符还原成预置项")
+    func knownIdentifierRoundTrips() {
+        for known in CloudTranslationModel.KnownModel.allCases {
+            #expect(CloudTranslationModel.from(identifier: known.rawValue) == .known(known))
+        }
+    }
+
+    /// 空串和纯空白退回默认——那不是「用户填了别的」，是「什么都没填」。
+    @Test("空值退回默认")
+    func emptyFallsBackToDefault() {
+        #expect(CloudTranslationModel.from(identifier: "") == .default)
+        #expect(CloudTranslationModel.from(identifier: "   \n") == .default)
+    }
+
+    /// 首尾空白要 trim：从网页复制标识符带上空格是常事，
+    /// 带着空格发出去只会换回一个看不懂的 4xx。
+    @Test("首尾空白被去掉")
+    func whitespaceIsTrimmed() {
+        #expect(CloudTranslationModel.from(identifier: "  gemini-2.5-flash  ") == .known(.flash25))
+    }
+
+    /// 自定义项的菜单文案**不带任何说明**。
+    ///
+    /// 说明是我们对预置项的描述；用户自己填的那个我们一无所知，
+    /// 附一句上去就是在编。
+    @Test("自定义项不附说明")
+    func customCarriesNoNote() {
+        #expect(CloudTranslationModel.custom("my-model").menuLabel == "my-model")
+        // 预置项则要带上档位说明，否则三项看着一模一样。
+        for known in CloudTranslationModel.KnownModel.allCases {
+            let label = CloudTranslationModel.known(known).menuLabel
+            #expect(label.contains(known.rawValue))
+            #expect(label.contains(known.note), "预置项没带档位说明：\(label)")
+        }
+    }
+
+    /// **预置项的说明里不许有质量或速度的数字。**
+    ///
+    /// 云端一次真实请求都没发过。本机那三个实测数（1.00 / 0.92 / 0.89）
+    /// 是本机模型的，挪到云端上就是编。
+    @Test("预置项的说明不含任何实测口径的数字")
+    func notesMakeNoMeasuredClaims() {
+        for known in CloudTranslationModel.KnownModel.allCases {
+            for claim in ["术语保留", "1.00", "0.92", "0.89", "秒"] {
+                #expect(!known.note.contains(claim), "\(known.rawValue) 的说明里有没依据的数字")
+            }
+        }
     }
 }
