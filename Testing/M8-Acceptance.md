@@ -1,7 +1,7 @@
 # M8 验收清单（多语种输出 / 翻译）
 
 - 日期：2026-08-19
-- 分支：`m8-implementation`
+- 分支：`m8-implementation` → `fix-event-tap-lifetime`（2026-08-19 合并进 main）
 - 自动化：**990 tests / 128 suites 全绿**（M8 开工时 762；合并前 QA 之后补的守卫 +9）
 - 默认后端：`qwen3-4b-instruct-2507-4bit`（**与校正层同一个模型，共用同一份权重**）
 
