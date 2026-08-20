@@ -340,18 +340,91 @@ enum TranslatedNumbers {
         }
     }
 
+    /// 小系数词 → 数值（1–12）。基线实测（2026-08-20）里德语把八百万
+    /// 译成 `acht Millionen`、意语译成 `otto milioni`——系数拼成单词、
+    /// 只认「数字 + 倍词」就把**正确**译文记成丢失。只收 1–12：
+    /// 目标语言的行文习惯里，系数大了就改用数字；组合数词
+    /// （soixante-dix、venticinque）刻意不做，做了就要背六种语言的
+    /// 组合语法，错一条就是新的误报源。没认出来的后果有界：
+    /// 至多把「保住」记成「丢失」，报告里译文就在旁边，人过一眼即知。
+    static func smallWordTable(for target: TranslationTarget) -> [String: Double] {
+        switch target {
+        case .chinese:
+            return [:]
+        case .english:
+            return [
+                "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+                "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+            ]
+        case .spanish:
+            return [
+                "un": 1, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4,
+                "cinco": 5, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9,
+                "diez": 10, "once": 11, "doce": 12,
+            ]
+        case .german:
+            return [
+                "ein": 1, "eine": 1, "einen": 1, "einer": 1, "zwei": 2, "drei": 3,
+                "vier": 4, "fünf": 5, "funf": 5, "sechs": 6, "sieben": 7, "acht": 8,
+                "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12, "zwolf": 12,
+            ]
+        case .portuguese:
+            return [
+                "um": 1, "uma": 1, "dois": 2, "duas": 2, "três": 3, "tres": 3,
+                "quatro": 4, "cinco": 5, "seis": 6, "sete": 7, "oito": 8,
+                "nove": 9, "dez": 10, "onze": 11, "doze": 12,
+            ]
+        case .french:
+            return [
+                "un": 1, "une": 1, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5,
+                "six": 6, "sept": 7, "huit": 8, "neuf": 9, "dix": 10,
+                "onze": 11, "douze": 12,
+            ]
+        case .italian:
+            return [
+                "un": 1, "uno": 1, "una": 1, "due": 2, "tre": 3, "quattro": 4,
+                "cinque": 5, "sei": 6, "sette": 7, "otto": 8, "nove": 9,
+                "dieci": 10, "undici": 11, "dodici": 12,
+            ]
+        }
+    }
+
     /// 译文里所有数值候选。
     ///
     /// 数字串允许包含分组/小数符号（`, . ' 空格 不换行空格`），
     /// 其后跳过空格与连字符去找倍词，倍词可以连乘（mil millones）。
     /// `7-billion-parameter` 里的连字符就是这么接上的——那是 2026-08-19
-    /// 实测里模型真实的输出形态。
+    /// 实测里模型真实的输出形态。系数也可以是 1–12 的单词
+    /// （`acht Millionen`），见 `smallWordTable`；**必须带倍词才算数**——
+    /// 光一个 `eight` 不产生候选，否则译文里每个小词都会变成候选值，
+    /// 判据就宽得没有意义了。
     static func candidateValues(in text: String, target: TranslationTarget) -> [Double] {
         let table = multiplierTable(for: target)
+        let smallWords = smallWordTable(for: target)
         var out: [Double] = []
         let chars = Array(text)
         var i = 0
         while i < chars.count {
+            if chars[i].isLetter {
+                // 系数词（acht Millionen）：整词匹配，且必须带倍词——
+                // 光一个小词不产生候选
+                var n = i
+                var word: [Character] = []
+                while n < chars.count, chars[n].isLetter {
+                    word.append(chars[n])
+                    n += 1
+                }
+                if let coeff = smallWords[String(word).lowercased()] {
+                    let (factor, end, factored) = multiplierChain(chars, from: n, table: table)
+                    if factored {
+                        out.append(coeff * factor)
+                        i = end
+                        continue
+                    }
+                }
+                i = n
+                continue
+            }
             guard chars[i].isASCII, chars[i].isNumber else {
                 i += 1
                 continue
@@ -379,29 +452,37 @@ enum TranslatedNumbers {
             let bases = interpretations(of: String(token))
             out.append(contentsOf: bases)
 
-            // 倍词链
-            var k = j
-            var factor = 1.0
-            var factored = false
-            while true {
-                var m = k
-                while m < chars.count, chars[m] == " " || chars[m] == "-" || chars[m] == "\u{00A0}"
-                { m += 1 }
-                var word: [Character] = []
-                var n = m
-                while n < chars.count, chars[n].isLetter {
-                    word.append(chars[n])
-                    n += 1
-                }
-                guard !word.isEmpty, let f = table[String(word).lowercased()] else { break }
-                factor *= f
-                factored = true
-                k = n
-            }
+            let (factor, end, factored) = multiplierChain(chars, from: j, table: table)
             if factored { out.append(contentsOf: bases.map { $0 * factor }) }
-            i = max(j, k)
+            i = max(j, end)
         }
         return out
+    }
+
+    /// 从 `from` 起跳过空格/连字符逐词找倍词，连乘（mil millones = 10⁹）。
+    private static func multiplierChain(
+        _ chars: [Character], from: Int, table: [String: Double]
+    ) -> (factor: Double, end: Int, factored: Bool) {
+        var k = from
+        var factor = 1.0
+        var factored = false
+        while true {
+            var m = k
+            while m < chars.count, chars[m] == " " || chars[m] == "-" || chars[m] == "\u{00A0}" {
+                m += 1
+            }
+            var word: [Character] = []
+            var n = m
+            while n < chars.count, chars[n].isLetter {
+                word.append(chars[n])
+                n += 1
+            }
+            guard !word.isEmpty, let f = table[String(word).lowercased()] else { break }
+            factor *= f
+            factored = true
+            k = n
+        }
+        return (factor, k, factored)
     }
 
     /// 一个数字串的全部读法。

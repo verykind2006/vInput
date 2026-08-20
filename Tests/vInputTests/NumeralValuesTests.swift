@@ -143,6 +143,27 @@ struct TranslatedNumbersTests {
         #expect(has(12000, "12,000 square meters", .english))
     }
 
+    /// 系数拼成单词的形态。**这两句是 2026-08-20 基线里真实的误报**：
+    /// 德语把八百万（正确地）译成 `acht Millionen`、意语译成
+    /// `otto milioni`，只认「数字 + 倍词」的第一版把它们记成了丢失。
+    /// 光一个小词不带倍词不产生候选——否则译文里每个 `one`/`un` 都成了
+    /// 候选值，判据宽得没有意义。
+    @Test("系数词 + 倍词（acht Millionen）")
+    func spelledOutCoefficients() {
+        func has(_ v: Double, _ text: String, _ t: TranslationTarget) -> Bool {
+            TranslatedNumbers.matches(v, anyOf: TranslatedNumbers.candidateValues(in: text, target: t))
+        }
+        #expect(has(8e6, "der tägliche Nutzerverkehr beträgt etwa acht Millionen", .german))
+        #expect(has(8e6, "un numero di utenti attivi giornalieri di circa otto milioni", .italian))
+        #expect(has(1e9, "eine Milliarde Parameter", .german))
+        #expect(has(2e6, "two million users", .english))
+        // 五千万被错译成 fünf Millionen（基线真实错误）——系数词认出来
+        // 也依然是 5e6，不能等于 5e7
+        #expect(!has(5e7, "überschreitet fünf Millionen", .german))
+        // 光一个小词不算数
+        #expect(!has(8, "acht Stück", .german))
+    }
+
     /// **倍词表按语言分开的理由**：billion 在英文是 10⁹、在德文是 10¹²，
     /// 西语 billón 也是 10¹²。合表就会把「4 Billionen」（差三个数量级的
     /// 错译）记成保住了 4e9。
