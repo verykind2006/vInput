@@ -127,20 +127,21 @@ struct RemoteKeySuppressorTests {
 
     // MARK: - 鼠标那一档
 
-    /// 鼠标语音键的键码没抓到（上一轮扫描的 HID 报文只按 report ID 汇总）。
-    /// 「漏抑制」的后果是输入框被按键垃圾填满、注入的文字被淹没——M3 在
-    /// RC003 上实测过；「多抑制」的后果只是说话那几秒键盘不响应。不对称。
-    @Test("鼠标会话期间无条件抑制未知键码")
-    func mouseSuppressesUnknownKeys() {
+    /// 2026-08-20 收窄：鼠标的按键走 GATT 控制帧不走 HID 键盘，两轮真机
+    /// 全部按键形态零键盘事件——抑制没有对象，**一个键都不吞**。
+    /// 用户说话那几秒的键盘从此照常响应。
+    @Test("鼠标会话期间不吞任何键")
+    func mouseSuppressesNothing() {
         let suppressor = makeSuppressor()
         suppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
         for key in [kVK_F5, kVK_ANSI_A, kVK_Return, kVK_PageUp, kVK_F13, kVK_Space] {
-            #expect(suppressor.shouldSuppress(keyCode: Int64(key)))
+            #expect(!suppressor.shouldSuppress(keyCode: Int64(key)))
         }
     }
 
-    /// Esc 是录音期间唯一的取消键（CancelHotkeyController 只在 .listening
-    /// 期间注册它）。连它一起吞掉等于把用户关在一次录音里。
+    /// Esc 是录音期间唯一的取消键。收窄前它靠 `.allExcept` 的逃生口特判
+    /// 放行，收窄后空集自然吞不到它——这条钉住的是「无论鼠标档将来怎么
+    /// 改，Esc 必须放行」。
     @Test("鼠标会话期间仍然放行 Esc")
     func mouseKeepsEscapeHatch() {
         let suppressor = makeSuppressor()
@@ -159,13 +160,15 @@ struct RemoteKeySuppressorTests {
     }
 
     /// 遥控器与鼠标共用一个抑制器实例（同一个 CGEvent tap）。
-    /// 上一次会话的策略不能粘住——否则用鼠标录一次之后，遥控器那条路
-    /// 会从此吞掉用户的所有按键。
+    /// 上一次会话的策略不能粘住。收窄后两档的方向反过来了：粘住的风险
+    /// 变成「遥控器会话沿用了鼠标的空集，F5 漏出去淹掉注入的文字」——
+    /// 用宽档 `.allExcept` 验粘住（它与空集的差别最大），再验切回
+    /// 默认档后 F5 被吞、A 放行。
     @Test("策略不会在会话之间粘住")
     func policyDoesNotLeakBetweenSessions() {
         let suppressor = makeSuppressor()
 
-        suppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
+        suppressor.beginSuppressing(policy: .allExcept([Int64(kVK_Escape)]))
         #expect(suppressor.shouldSuppress(keyCode: Int64(kVK_ANSI_A)))
         suppressor.endSuppressing()
 
@@ -192,9 +195,11 @@ struct RemoteKeySuppressorTests {
         // 遍历「除 .listening 之外的全部状态」，列表向 `DictationSession` 要而
         // 不是手抄一份：原来这里抄了四格，M8 加 `.translating` 时没有任何东西
         // 会提醒人回来补第五格——而漏掉的那一格恰恰就是没被覆盖的那一格。
+        // 素材用宽档：鼠标档收窄成空集后本来就不吞 A，拿它验「恢复」
+        // 是恒真断言。这条测的是 update 收抑制的行为，不是策略内容。
         for state in DictationSession.State.allCasesInPipelineOrder.filter({ $0 != .listening }) {
             let suppressor = makeSuppressor()
-            suppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
+            suppressor.beginSuppressing(policy: .allExcept([Int64(kVK_Escape)]))
             suppressor.update(for: state)
             #expect(
                 !suppressor.shouldSuppress(keyCode: Int64(kVK_ANSI_A)),
@@ -203,10 +208,13 @@ struct RemoteKeySuppressorTests {
         }
     }
 
+    /// 素材用宽档而不是 `mousePolicy`：鼠标档收窄成空集后本来就什么都
+    /// 不吞，拿它验「listening 期间抑制不被收掉」是恒真。这条测的是
+    /// `update` 的行为，不是某档策略的内容。
     @Test("listening 期间不收")
     func keepsSuppressingWhileListening() {
         let suppressor = makeSuppressor()
-        suppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
+        suppressor.beginSuppressing(policy: .allExcept([Int64(kVK_Escape)]))
         suppressor.update(for: .listening)
         #expect(suppressor.shouldSuppress(keyCode: Int64(kVK_ANSI_A)))
     }

@@ -12,6 +12,9 @@ import IOKit.hid
 final class RemoteHIDListener {
     /// 返回键被按下时触发。
     var onCancelPressed: (() -> Void)?
+    /// 关机键被按下时触发（映射成退格，接线与「录音中忽略」的判断在
+    /// `AppModel`——这一层只认 usage，不该知道注入与会话）。
+    var onPowerPressed: (() -> Void)?
 
     private var manager: IOHIDManager?
     private var pressedUsages: Set<UInt16> = []
@@ -95,6 +98,9 @@ final class RemoteHIDListener {
 
         if Self.didPress(usage: HIDReportParser.backButtonUsage, previous: previous, current: current) {
             onCancelPressed?()
+        }
+        if Self.didPress(usage: HIDReportParser.powerButtonUsage, previous: previous, current: current) {
+            onPowerPressed?()
         }
     }
 

@@ -8,17 +8,27 @@ import Foundation
 /// `ClipboardSink.postCommandV` 的路子——那条路在真机上验证过。
 protocol KeyPoster: Sendable {
     func postReturn()
+    /// 退格。遥控器关机键的映射目标（2026-08-20 侦察后定的，
+    /// 见 `HIDReportParser.powerButtonUsage`）。
+    func postBackspace()
 }
 
 struct SystemKeyPoster: KeyPoster {
     /// nonisolated + Sendable：`CGEvent` 的发送是线程安全的。
     func postReturn() {
-        let returnKey: CGKeyCode = 36  // kVK_Return
+        post(key: 36, name: "回车")  // kVK_Return
+    }
+
+    func postBackspace() {
+        post(key: 51, name: "退格")  // kVK_Delete（Backspace，不是 forward delete）
+    }
+
+    private func post(key: CGKeyCode, name: String) {
         guard
-            let down = CGEvent(keyboardEventSource: nil, virtualKey: returnKey, keyDown: true),
-            let up = CGEvent(keyboardEventSource: nil, virtualKey: returnKey, keyDown: false)
+            let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true),
+            let up = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false)
         else {
-            AppLogger.shared.log("回车注入失败：建不出 CGEvent")
+            AppLogger.shared.log("\(name)注入失败：建不出 CGEvent")
             return
         }
         // **必须显式清零修饰键。**

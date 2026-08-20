@@ -143,6 +143,10 @@ final class AppModel {
     private var translationCoordinator: TranslationAttachmentCoordinator?
     private let hotkey = HotkeyRegistrar()
     private var session: DictationSession?
+
+    /// 关机键映射退格用的注入器。与鼠标桥各持一个 `SystemKeyPoster`
+    /// 同一个形态；替身注入点留给将来的接线测试。
+    private let powerKeyPoster: KeyPoster = SystemKeyPoster()
     private var transcriber: SwitchableTranscriber?
     private var modelRoot: String = ""
 
@@ -317,6 +321,16 @@ final class AppModel {
     /// **静默**返回的——会话没起来，而这边的按键抑制、路由选择、HUD 都已经
     /// 按「开始了」走了一遍，日志里也没有任何一行说明为什么没录上。
     /// 把条件摆到明面上，拒绝时才有话可说。
+    /// 关机键按下时要不要注退格。抽成纯函数以便单测（真 HID 设备进不了
+    /// 测试进程，接线闭包本身只能真机验）。
+    ///
+    /// **录音中忽略**：说话时误碰关机键去删目标应用里的字，比什么都
+    /// 不做更糟——与「会话期间按键抑制」同一条哲学（宁可少动作，
+    /// 不要错动作）。
+    nonisolated static func powerKeyPostsBackspace(dictationIdle: Bool) -> Bool {
+        dictationIdle
+    }
+
     static func voiceDeviceStartAllowed(
         modelLoading: Bool,
         benchRecording: Bool,
@@ -1686,6 +1700,19 @@ final class AppModel {
 
         hidListener.onCancelPressed = { [weak coordinator] in
             coordinator?.handleCancelPressed()
+        }
+        // 关机键 → 退格（2026-08-20 侦察后接的，依据见
+        // HIDReportParser.powerButtonUsage：短按系统零投递，注入即可）。
+        hidListener.onPowerPressed = { [weak self] in
+            guard let self else { return }
+            guard Self.powerKeyPostsBackspace(
+                dictationIdle: (self.session?.state ?? .idle) == .idle)
+            else {
+                AppLogger.shared.log("关机键按下，但正在听写，忽略")
+                return
+            }
+            AppLogger.shared.log("关机键按下，注入退格")
+            self.powerKeyPoster.postBackspace()
         }
         hidListener.start()
         keySuppressor.start()
