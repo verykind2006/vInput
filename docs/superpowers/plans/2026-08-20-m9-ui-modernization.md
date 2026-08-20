@@ -150,9 +150,11 @@ enum VMark {
         CGRect(x: 47.0 / 56, y: 17.0 / 56, width: 7.0 / 56, height: 22.0 / 56),
     ]
 
-    /// 把归一化几何放进目标矩形（假定正方形；非正方形按短边算并居中即可，
-    /// 本批调用处全是正方形，不做额外分支——YAGNI）。
-    nonisolated static func rects(in rect: CGRect) -> [CGRect] {
+    /// 把归一化几何放进目标矩形。**各向异性拉伸，不保持纵横比**——
+    /// 调用方必须传正方形（本批调用处全是）。
+    /// （Task 1 QA 复核后泛化：接受 bar 数组参数，默认 `bars`，
+    /// 让 workingBars 与 VMarkShape 复用同一段变换。）
+    nonisolated static func rects(_ bars: [CGRect] = VMark.bars, in rect: CGRect) -> [CGRect] {
         bars.map { bar in
             CGRect(
                 x: rect.origin.x + bar.origin.x * rect.width,
@@ -276,14 +278,9 @@ enum StatusIcon {
     static func image(for state: State) -> NSImage {
         let side: CGFloat = 18
         let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { rect in
-            let bars = (state == .working ? VMark.workingBars : VMark.bars).map {
-                CGRect(
-                    x: rect.origin.x + $0.origin.x * rect.width,
-                    y: rect.origin.y + $0.origin.y * rect.height,
-                    width: $0.width * rect.width,
-                    height: $0.height * rect.height
-                )
-            }
+            // 缩放走 VMark.rects(_:in:)，不各写一遍（Task 1 QA 复核后泛化的初衷）。
+            let bars = VMark.rects(
+                state == .working ? VMark.workingBars : VMark.bars, in: rect)
             let barColor: NSColor = switch state {
             case .listening: NSColor(red: 1.0, green: 0.584, blue: 0.0, alpha: 1)  // #FF9500
             // 出错是彩图，柱子按当前外观取实色（见 isTemplate 注释）。
@@ -1124,12 +1121,8 @@ struct VMarkShape: Shape {
     let bars: [CGRect]
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        for bar in bars {
-            let r = CGRect(
-                x: rect.minX + bar.minX * rect.width,
-                y: rect.minY + bar.minY * rect.height,
-                width: bar.width * rect.width,
-                height: bar.height * rect.height)
+        // 缩放走 VMark.rects(_:in:)，不各写一遍（Task 1 QA 复核后泛化的初衷）。
+        for r in VMark.rects(bars, in: rect) {
             path.addRoundedRect(in: r, cornerSize: CGSize(width: r.width / 2, height: r.width / 2))
         }
         return path
