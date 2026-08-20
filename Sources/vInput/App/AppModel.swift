@@ -176,6 +176,7 @@ final class AppModel {
     // CancelHotkeyController 本身没有副作用，非 lazy 无影响。
     private let hud: HUDPanel
     private let cancelHotkey: CancelHotkeyController
+    private let zoomHotkeys: ZoomHotkeyController
     private let previewProcessor = SourceBackedAudioProcessor()
     /// 录音开始时刻，用于 HUD 的时长显示。
     private var recordingStartedAt: Date?
@@ -387,6 +388,7 @@ final class AppModel {
     init() {
         hud = HUDPanel(model: hudModel)
         cancelHotkey = CancelHotkeyController(registrar: EscHotkeyRegistrar())
+        zoomHotkeys = ZoomHotkeyController(registrar: CarbonZoomHotkeyRegistrar())
         correctionActivation = CorrectionActivation(preference: correctionPreference)
         // 镜像上次退出时的偏好，菜单打开即是正确状态。
         correctionEnabled = correctionPreference.isEnabled
@@ -494,6 +496,7 @@ final class AppModel {
             }
             self.hudModel.phase = state
             self.cancelHotkey.update(for: state)
+            self.zoomHotkeys.update(for: state)
             // 按键抑制跟着会话状态自己收。**离开 .listening 的出口不止一个**
             // （松开语音键、撞时长上限、转写失败、按 Esc 取消），逐个出口去调
             // endSuppressing() 迟早会漏一个——Esc 那条就漏了，见下面
@@ -610,6 +613,9 @@ final class AppModel {
             self.keySuppressor.endSuppressing()
             Task { await session.cancel() }
         }
+        zoomHotkeys.onIncrease = { [weak self] in self?.hudModel.increaseFontSize() }
+        zoomHotkeys.onDecrease = { [weak self] in self?.hudModel.decreaseFontSize() }
+        zoomHotkeys.onReset = { [weak self] in self?.hudModel.resetFontSize() }
         AppLogger.shared.log("启动完成，模型=\(initial.name) 可用模型=\(availableModels.map(\.name))")
         // 把内容日志的开关状态记下来：排查校正质量时若忘了开，
         // 日志里只有「文本长度 8 字」，会白白浪费一轮真机测试。

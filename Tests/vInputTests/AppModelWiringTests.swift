@@ -247,4 +247,41 @@ struct AppModelWiringTests {
             """
         )
     }
+
+    // MARK: - 缩放热键（⌘±/⌘0）接线
+
+    /// 会话状态变化时必须同步缩放热键控制器——不然它永远停在「未注册」，
+    /// `ZoomHotkeyTests` 那套用例只测 `ZoomHotkeyController` 自身的逻辑，
+    /// 证明不了 `AppModel` 真的在调它（与 keySuppressor 那条同一个理由）。
+    @Test("会话状态变化时同步缩放热键控制器")
+    func stateChangeSyncsZoomHotkeys() throws {
+        let source = try Self.appModelSource()
+        #expect(
+            source.contains("zoomHotkeys.update(for: state)"),
+            """
+            onStateChange 里没有 zoomHotkeys.update(for: state)。
+            少了这一行，⌘±/⌘0 永远不会注册，ZoomHotkeyController 自身的
+            单测再绿也测不出这个漏洞。
+            """
+        )
+    }
+
+    /// ⌘±/⌘0 三个回调必须都接到 HUDViewModel 的三个字号方法上，
+    /// 而不是漏接其中一个或接错方法。
+    @Test("缩放热键的三个回调都接到 HUDViewModel 的字号方法")
+    func zoomHotkeysForwardToHUDFontSizeMethods() throws {
+        let source = try Self.appModelSource()
+        #expect(
+            source.contains("zoomHotkeys.onIncrease = { [weak self] in self?.hudModel.increaseFontSize() }"),
+            "zoomHotkeys.onIncrease 没有接到 hudModel.increaseFontSize()。"
+        )
+        #expect(
+            source.contains("zoomHotkeys.onDecrease = { [weak self] in self?.hudModel.decreaseFontSize() }"),
+            "zoomHotkeys.onDecrease 没有接到 hudModel.decreaseFontSize()。"
+        )
+        #expect(
+            source.contains("zoomHotkeys.onReset = { [weak self] in self?.hudModel.resetFontSize() }"),
+            "zoomHotkeys.onReset 没有接到 hudModel.resetFontSize()。"
+        )
+    }
 }
