@@ -307,6 +307,16 @@ final class AppModel {
         return dictationIdle ? .start : .rejectBusy
     }
 
+    /// 关机键按下时要不要注退格。抽成纯函数以便单测（真 HID 设备进不了
+    /// 测试进程，接线闭包本身只能真机验）。
+    ///
+    /// **录音中忽略**：说话时误碰关机键去删目标应用里的字，比什么都
+    /// 不做更糟——与「会话期间按键抑制」同一条哲学（宁可少动作，
+    /// 不要错动作）。
+    nonisolated static func powerKeyPostsBackspace(dictationIdle: Bool) -> Bool {
+        dictationIdle
+    }
+
     /// 蓝牙设备（遥控器 / 鼠标）的语音键是否可以开始一次听写。
     ///
     /// 抽出来的理由同上，外加一条：这几个条件必须**同时**成立。
@@ -321,16 +331,6 @@ final class AppModel {
     /// **静默**返回的——会话没起来，而这边的按键抑制、路由选择、HUD 都已经
     /// 按「开始了」走了一遍，日志里也没有任何一行说明为什么没录上。
     /// 把条件摆到明面上，拒绝时才有话可说。
-    /// 关机键按下时要不要注退格。抽成纯函数以便单测（真 HID 设备进不了
-    /// 测试进程，接线闭包本身只能真机验）。
-    ///
-    /// **录音中忽略**：说话时误碰关机键去删目标应用里的字，比什么都
-    /// 不做更糟——与「会话期间按键抑制」同一条哲学（宁可少动作，
-    /// 不要错动作）。
-    nonisolated static func powerKeyPostsBackspace(dictationIdle: Bool) -> Bool {
-        dictationIdle
-    }
-
     static func voiceDeviceStartAllowed(
         modelLoading: Bool,
         benchRecording: Bool,
@@ -1779,10 +1779,10 @@ final class AppModel {
                 return
             }
             self.audioRouter?.select(.mouse)
-            // 鼠标也有键盘与 Consumer Control 两个 HID collection，按语音键时
-            // macOS 很可能把按键投递给前台应用（RC003 的 F5 自动重复是同一个
-            // 问题）。**键码还没抓到**，所以这一档是「除 Esc 外全吞」，
-            // 理由与取舍见 RemoteKeySuppressor 的文件头。
+            // 鼠标那一档 2026-08-20 起是空集（不吞任何键）：两轮真机证明
+            // 它的按键走 GATT 控制帧、不产生键盘事件。仍然 begin 是为了
+            // 保住 tap 与按下沿日志——那是唯一的观测通道，证据与取舍见
+            // RemoteKeySuppressor.mousePolicy。
             self.keySuppressor.beginSuppressing(policy: RemoteKeySuppressor.mousePolicy)
             Task {
                 do {

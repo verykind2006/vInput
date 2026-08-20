@@ -149,14 +149,20 @@ struct MouseVoiceSessionTests {
         _ = session.tick(at: at(1 + MouseVoiceSession.orphanStreamGap + 0.1))  // 清零
 
         // 第二段：从 t=10 起持续送流。
-        // 中途（还在流、但不满 30 秒）tick 必须什么都不做——这条断言
-        // 钉的是「退订要求持续满 30 秒」，把阈值删成「有流就退订」
-        // 的变异全靠它抓（变异实测：没有它时那个变异全绿）。
-        for offset in 0...15 {
+        // 中途断言的**选点是挑过的**（QA 变异实测逼出来的）：必须落在
+        // 「距旧起点 ≥30 秒、距新起点 <30 秒」的区间——绝对 35.5 秒
+        // （新流第 25.5 秒）正是。选在重叠区（两个起点都不满 30 秒）的话，
+        // 「burst 清零时只清末包、留下陈旧起点」的变异不可见，而那个
+        // 变异的真实行为是新流只送几秒就撞线退订——刚修掉的误伤以更窄
+        // 的窗口复发。这条断言同时钉住「退订要求持续满 30 秒」
+        // （阈值删成「有流就退订」同样在这里红）。
+        for offset in 0...25 {
             session.noteAudioPacket(at: at(10 + Double(offset)))
         }
-        #expect(session.tick(at: at(10 + 15.5)).isEmpty, "流才 15 秒就退订，阈值没了")
-        for offset in 16...Int(MouseSessionLimits.unpaired) {
+        #expect(
+            session.tick(at: at(10 + 25.5)).isEmpty,
+            "新流才 25 秒就退订——计时起点残留了上一段的旧值，或阈值没了")
+        for offset in 26...Int(MouseSessionLimits.unpaired) {
             session.noteAudioPacket(at: at(10 + Double(offset)))
         }
         #expect(

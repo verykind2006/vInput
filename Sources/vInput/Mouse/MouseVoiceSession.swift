@@ -260,6 +260,14 @@ final class MouseVoiceSession {
                 phase = .idle
                 return [.closedSilentForeign(code: code)]
             }
+            // **这条分支刻意没有流停判据（记录在案的取舍，2026-08-20 QA）。**
+            // `.foreign` 只由 `0x31` / 未知奇数码开启，而 `0x31` 实测过的
+            // 唯一形态是 31 包/秒的持续送流（11 分钟事故），「送几秒就停」
+            // 从未被观测过；它的触发动作至今未知（语音键长按、两键长按、
+            // 三键双击已排除），拿不到样本就不给没见过的形态写分支。
+            // 若将来真机撞见「.foreign 短音频 → 30 秒撞线退订」的误伤，
+            // 把 `.idle` 那套流停判据推广过来即可——早收掉后流若复燃，
+            // 包会落回 `.idle` 由 B1 兜底，方向是安全的。
             guard elapsed >= MouseSessionLimits.unpaired else { return [] }
             let cooldown = enterMuted(at: now)
             return [.stopReceiving(cooldown: cooldown)]

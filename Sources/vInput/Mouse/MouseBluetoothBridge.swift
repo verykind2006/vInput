@@ -241,6 +241,12 @@ final class MouseBluetoothBridge: NSObject {
                 // 长按回车/第三键会开麦几秒（无会话，音频被丢弃）——
                 // 流停了就收掉计时，不退订。写清楚，因为它修的就是
                 // 「静默退订导致语音键失灵」那次误伤。
+                //
+                // **无限流，记录在案的取舍（2026-08-20 QA）**：病态固件
+                // 每 3 秒滴一包能把这行刷到约 20 行/分钟，而这台设备实测
+                // 的失效形态是 31 包/秒的持续流（会被 30 秒线退订），
+                // 「滴包」从未被观测过。真出现时套 `MouseUnknownFrameLog`
+                // 那套时间窗限流即可。
                 log(String(format: "无主音频已停止（持续 %.1f 秒），未退订", duration))
 
             case .ignoredStop(let code, let expected):
