@@ -47,7 +47,7 @@
 - Create: `Sources/vInput/UI/Theme.swift`
 - Test: `Tests/vInputTests/ThemeTests.swift`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```swift
 import CoreGraphics
@@ -98,12 +98,12 @@ struct ThemeTests {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `swift test --filter ThemeTests`
 Expected: 编译错误（`VMark` 不存在）——这也是变异形态之一，算「红」。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 ```swift
 import SwiftUI
@@ -165,11 +165,11 @@ enum VMark {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `swift test --filter ThemeTests` → 逐条 `✓`（5 条）。
 
-- [ ] **Step 5: 变异验证**
+- [x] **Step 5: 变异验证**
 
 逐个做、每个都要看到对应用例红、改回：
 1. `bars[2]` 高度 `24.0/56` 改 `40.0/56` → `vMarkHeightsFormV` 红。
@@ -177,7 +177,7 @@ Run: `swift test --filter ThemeTests` → 逐条 `✓`（5 条）。
 3. `bars[1]` 的 y 改 `10.0/56` → `vMarkBarsShareBaseline` 红。
 4. `rects(in:)` 里 `* rect.width` 改 `* 56` → `vMarkScalesToRect` 红。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Sources/vInput/UI/Theme.swift Tests/vInputTests/ThemeTests.swift
