@@ -41,6 +41,52 @@ struct ThemeTests {
         let rects = VMark.rects(in: CGRect(x: 10, y: 20, width: 100, height: 100))
         #expect(rects.count == 5)
         #expect(abs(rects[0].origin.x - (10 + 0.0357 * 100)) < 0.1)
+        #expect(abs(rects[0].origin.y - (20 + (4.0 / 56) * 100)) < 0.1)
         #expect(abs(rects[0].height - 85.7) < 0.1)
+    }
+
+    // MARK: - workingBars（「处理中」波形变体）
+
+    @Test func workingBarsHasFiveBars() {
+        #expect(VMark.workingBars.count == 5)
+    }
+
+    /// 中-高-低-高-中：第 1/3 根（index 1、3）最高，中间（index 2）最矮，
+    /// 两端（index 0、4）居中。钉字面量，不互相比较。
+    @Test func workingBarsHeightsAreCenterDip() {
+        let h = VMark.workingBars.map(\.height)
+        #expect(abs(h[0] - 0.393) < 0.001)
+        #expect(abs(h[1] - 0.679) < 0.001)
+        #expect(abs(h[2] - 0.286) < 0.001)
+        #expect(h[1] > h[0])
+        #expect(h[0] > h[2])
+    }
+
+    /// 左右镜像：与 vMarkIsSymmetric 同样的判据，套在 workingBars 上。
+    @Test func workingBarsIsSymmetric() {
+        let b = VMark.workingBars
+        for i in 0..<2 {
+            let j = 4 - i
+            #expect(abs(b[i].height - b[j].height) < 0.001)
+            #expect(abs(b[i].width - b[j].width) < 0.001)
+            #expect(abs((b[i].midX + b[j].midX) - 1.0) < 0.001)
+        }
+    }
+
+    /// 「垂直居中」是这个变体的定义性质：每根柱子的中点都落在 0.5。
+    @Test func workingBarsAreVerticallyCentered() {
+        for bar in VMark.workingBars {
+            #expect(abs(bar.midY - 0.5) < 0.001)
+        }
+    }
+
+    // MARK: - rects(_:in:) 参数化
+
+    /// `rects` 必须真的按传入的几何缩放，不能悄悄退回 `bars`——
+    /// 传 `workingBars` 进去，结果要是 workingBars 缩放后的值。
+    @Test func rectsScalesGivenBarsNotDefault() {
+        let rects = VMark.rects(VMark.workingBars, in: CGRect(x: 10, y: 20, width: 100, height: 100))
+        #expect(rects.count == 5)
+        #expect(abs(rects[0].height - (22.0 / 56) * 100) < 0.1)
     }
 }

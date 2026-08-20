@@ -42,9 +42,11 @@ enum VMark {
         CGRect(x: 47.0 / 56, y: 17.0 / 56, width: 7.0 / 56, height: 22.0 / 56),
     ]
 
-    /// 把归一化几何放进目标矩形（假定正方形；非正方形按短边算并居中即可，
-    /// 本批调用处全是正方形，不做额外分支——YAGNI）。
-    static func rects(in rect: CGRect) -> [CGRect] {
+    /// 把一组归一化几何（默认 `bars`，也可传 `workingBars` 或未来的其他变体）
+    /// 放进目标矩形。是各向异性拉伸，不做等比缩放：非正方形传入时 x/y 会按
+    /// 各自边长独立缩放，不保持长宽比，也不居中裁切——调用方必须传正方形
+    /// （本批 M9 调用处全部如此）。
+    static func rects(_ bars: [CGRect] = VMark.bars, in rect: CGRect) -> [CGRect] {
         bars.map { bar in
             CGRect(
                 x: rect.origin.x + bar.origin.x * rect.width,
