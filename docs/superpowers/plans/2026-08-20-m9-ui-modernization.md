@@ -452,10 +452,11 @@ Run: `swift test --filter HUDFontZoomTests` → 编译错误（新成员不存�
         (size * 26 / 15).rounded()
     }
 
-    /// 每行字数估算随字号反比（现值 15→22，恒定积 330）。
-    /// 字号放大后不缩小行宽估算的话，tailLines 会把一行截给两行显示。
+    /// 每行字数估算随字号反比（现值 15→22，恒定积 330）。**刻意向下取整**：
+    /// 低估每行字数 → 提前折行 → 永远不会溢出文本框；四舍五入会在 24pt 时
+    /// 估出 14 字（13.75），与钉死的测试值 13 矛盾（派工时订正）。
     nonisolated static func charsPerLine(forFontSize size: CGFloat) -> Int {
-        max(1, Int((330 / size).rounded()))
+        max(1, Int(330 / size))
     }
 ```
 
