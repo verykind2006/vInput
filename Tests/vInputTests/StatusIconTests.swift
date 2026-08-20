@@ -29,7 +29,7 @@ struct StatusIconTests {
     }
 
     @Test @MainActor func imagesAreMenuBarSizedAndFlagged() {
-        for state in [StatusIcon.State.idle, .listening, .working, .error, .loadingModel] {
+        for state in StatusIcon.State.allCases {
             let image = StatusIcon.image(for: state)
             #expect(image.size == NSSize(width: 18, height: 18))
             #expect(image.isTemplate == StatusIcon.isTemplate(state))
