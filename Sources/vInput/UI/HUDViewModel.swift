@@ -15,10 +15,13 @@ final class HUDViewModel {
 
     // MARK: - 字号缩放（M9，用户要求 ⌘＋/⌘－ 可调）
 
-    static let minFontSize: CGFloat = 12
-    static let maxFontSize: CGFloat = 24
-    static let defaultFontSize: CGFloat = 15
-    static let fontSizeDefaultsKey = "hud.previewFontSize"
+    // nonisolated：被 nonisolated 的 clampFontSize 引用。不标的话在 Swift 5
+    // 模式下是警告、Swift 6 语言模式下是硬错误（Task 5 规格审查抓到的
+    // Task 3 遗留债）。
+    nonisolated static let minFontSize: CGFloat = 12
+    nonisolated static let maxFontSize: CGFloat = 24
+    nonisolated static let defaultFontSize: CGFloat = 15
+    nonisolated static let fontSizeDefaultsKey = "hud.previewFontSize"
 
     private let defaults: UserDefaults
     private(set) var fontSize: CGFloat
