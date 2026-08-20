@@ -18,16 +18,20 @@ final class HUDPanel {
     private var panel: NSPanel?
     private let model: HUDViewModel
 
-    /// resize 通知的订阅凭证。`nonisolated(unsafe)`：只在 deinit（nonisolated）
-    /// 里读，与 `RemoteKeySuppressor.tapHandle` 同一个理由——那时已经没有
-    /// 别的引用会并发碰它。
-    private nonisolated(unsafe) var resizeObserver: NSObjectProtocol?
+    /// resize 通知的订阅凭证。
+    ///
+    /// **不需要 `nonisolated(unsafe)`**：本类是 `@MainActor` 隔离的普通类
+    /// （非 actor），编译器本来就允许 `deinit` 读自己的存储属性——deinit 时
+    /// 可证明没有别的引用。加了逃生舱反而把这个位置的并发检查整个关掉：
+    /// 以后谁从后台线程碰它，编译器一声不吭。（Task 5 复核实测：两种语言
+    /// 模式下不加都编译干净。）
+    private var resizeObserver: NSObjectProtocol?
 
     init(model: HUDViewModel) {
         self.model = model
     }
 
-    /// **面板必须活得比它的 resize 订阅短。** 没有这个 `deinit`，通知中心会
+    /// **resize 订阅不能活得比面板长。** 没有这个 `deinit`，通知中心会
     /// 一直攥着已经没人用的 observer token，回调里的 `[weak self]` 虽然不会
     /// 崩，但订阅本身永远不会摘掉。
     deinit {

@@ -91,6 +91,14 @@ struct HUDPanelTests {
             source.contains("NSWindow.didResizeNotification"),
             "订阅的通知名不是 NSWindow.didResizeNotification，检查有没有走错通知。"
         )
+        // 作用域必须钉住：`object: nil` 会收到**任何**窗口的 resize，而本仓库
+        // 确实还有第二个窗口（BenchRecordingWindow），那样会把它一并拖到 HUD
+        // 的位置上。这一行原本落在断言之外——正是本仓库反复栽的「判据看着在
+        // 检查什么、其实没检查」。
+        #expect(
+            source.contains("object: panel"),
+            "resize 订阅没有限定 object: panel，会收到其他窗口（如 BenchRecordingWindow）的 resize。"
+        )
     }
 
     @Test("resizeObserver 在 deinit 里被摘掉")
