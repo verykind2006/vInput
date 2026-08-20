@@ -59,6 +59,36 @@ struct TranslationPipelineTests {
         #expect(result.annotation == nil)
     }
 
+    /// **数词改写真的接上了**——「值对了」和「接上了」是两件事
+    /// （M8 攒的教训），`RewriteAsDigitsTests` 只证明前者，这条证明后者：
+    /// 翻译器收到的必须是改写后的文本。改写本身的规则在那边测，
+    /// 这里只挑一条有数词的。
+    @Test("翻译器收到的是数词改写后的文本")
+    func translatorReceivesRewrittenNumerals() async {
+        let fake = FakeTranslator(.succeed("Contract amount is 4600000, paid in three parts."))
+        let pipeline = TranslationPipeline(translator: fake)
+
+        let result = await pipeline.translate("合同金额四百六十万，分三期付款。", to: .english)
+
+        #expect(await fake.receivedTexts == ["合同金额4600000，分三期付款。"])
+        #expect(result.text == "Contract amount is 4600000, paid in three parts.")
+        #expect(result.annotation == nil)
+    }
+
+    /// 失败路径退回的必须是**未改写的原文**——用户要看到的是他说的话，
+    /// 不是「合同金额4600000」这种半成品。
+    @Test("失败时退回的是未改写的中文原文")
+    func failureFallsBackToUnrewrittenSource() async {
+        let source = "合同金额四百六十万，分三期付款。"
+        let pipeline = TranslationPipeline(
+            translator: FakeTranslator(.fail(.engineFailed("boom"))))
+
+        let result = await pipeline.translate(source, to: .english)
+
+        #expect(result.text == source)
+        #expect(result.annotation == .failed("boom"))
+    }
+
     // MARK: - 失败路径，全部退回中文原文
 
     /// 闸门那一格的守卫。素材是「整段没译回来」——译文就是原文，

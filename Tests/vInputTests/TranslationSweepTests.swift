@@ -25,6 +25,11 @@ struct TranslationSweepConfig {
     /// 用「换语料」而不是「往 manifest 里加条目」，是因为 manifest 的每一条
     /// 都假设有对应录音。
     let corpus: URL?
+    /// 翻译前先做数词改写（`ChineseNumerals.rewriteAsDigits`，与生产
+    /// `TranslationPipeline` 同一个函数）。默认关——开关两轮对照才是
+    /// 「改写有没有用」的证据。度量的分母永远取**原文**：量的是
+    /// 「用户说的数词有没有活到译文里」，与走没走改写无关。
+    let rewriteNumerals: Bool
 
     private struct Raw: Decodable {
         let modelDirectory: String
@@ -33,6 +38,7 @@ struct TranslationSweepConfig {
         let promptVariant: String?
         let maxTokens: Int?
         let corpus: String?
+        let rewriteNumerals: Bool?
     }
 
     static func load(from url: URL) -> TranslationSweepConfig? {
@@ -63,7 +69,8 @@ struct TranslationSweepConfig {
             limit: raw.limit,
             promptVariant: variant,
             maxTokens: raw.maxTokens ?? MLXTranslator.defaultMaxTokens,
-            corpus: raw.corpus.map { URL(fileURLWithPath: $0) }
+            corpus: raw.corpus.map { URL(fileURLWithPath: $0) },
+            rewriteNumerals: raw.rewriteNumerals ?? false
         )
     }
 
@@ -237,6 +244,22 @@ struct TranslationSweepGateTests {
         #expect(try #require(TranslationSweepConfig.load(from: without)).corpus == nil)
         #expect(
             try #require(TranslationSweepConfig.load(from: with)).corpus?.path == "/tmp/digits.json")
+    }
+
+    /// 数词改写缺省必须是关——这个开关的意义就是开关两轮对照，
+    /// 缺省悄悄变开的话，「基线」那轮跑的其实是改写后的，结论整个作废。
+    @Test("数词改写缺省为关，给了才开")
+    func parsesRewriteNumerals() throws {
+        let without = try marker(#"{"modelDirectory":"/tmp/q","targets":["en"]}"#)
+        let with = try marker(
+            #"{"modelDirectory":"/tmp/q","targets":["en"],"rewriteNumerals":true}"#)
+        defer {
+            try? FileManager.default.removeItem(at: without.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: with.deletingLastPathComponent())
+        }
+
+        #expect(try #require(TranslationSweepConfig.load(from: without)).rewriteNumerals == false)
+        #expect(try #require(TranslationSweepConfig.load(from: with)).rewriteNumerals == true)
     }
 
     /// 语料文件读不到要抛，不能悄悄退回 manifest.json——那会写出一份标着
@@ -428,6 +451,7 @@ struct TranslationSweepTests {
                 + (config.maxTokens == MLXTranslator.defaultMaxTokens ? "（生产默认值）" : "（**已改**）"),
             "语言：\(config.targets.map(\.rawValue).joined(separator: " "))",
             "语料：\(config.corpus?.lastPathComponent ?? "manifest.json")",
+            "数词改写：\(config.rewriteNumerals ? "开（生产路径，翻译前 四百六十万 → 4600000）" : "关（模型自己换算）")",
             "样本：\(entries.count) 条标准文本"
                 + (config.limit == nil ? "（全量）" : "（limit=\(config.limit!)，共 \(manifest.entries.count) 条）"),
             "模型加载：\(Self.f(loadElapsed)) 秒",
@@ -467,10 +491,15 @@ struct TranslationSweepTests {
             var rows: [Row] = []
             for entry in entries {
                 let started = Date()
+                // 与生产 `TranslationPipeline` 同一个改写函数；度量仍拿
+                // entry.text（原文）当分母——量端到端，不量中间态。
+                let input =
+                    config.rewriteNumerals
+                    ? ChineseNumerals.rewriteAsDigits(entry.text) : entry.text
                 var output = ""
                 var failure: String?
                 do {
-                    output = try await translator.translate(entry.text, to: target)
+                    output = try await translator.translate(input, to: target)
                 } catch {
                     // 一条失败不该让整轮白跑——报告才是产物。失败原样记进表里，
                     // 汇总里单列一格。

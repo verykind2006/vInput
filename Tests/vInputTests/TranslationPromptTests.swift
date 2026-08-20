@@ -52,6 +52,11 @@ struct TranslationPromptTests {
                 "Keep technical terms, product names, and code identifiers exactly as they appear."
             ))
         #expect(prompt.contains("Keep all numbers exactly as they appear."))
+        // 中文数词的换算规则（万=10⁴、亿=10⁸）**试过、无效、撤了**——
+        // 前后对照 33/192 → 40/192，依据见 TranslationPrompt 的类型注释与
+        // Bench/reports/numerals/。这里断言它不在，免得哪天被凭直觉加回来
+        // 而不看当时的数据。要再试，必须先跑数词语料的前后对照。
+        #expect(!prompt.contains("Convert Chinese number words"))
     }
 
     /// 提示词里唯一随语言变化的东西只能是语言名。

@@ -50,8 +50,15 @@ enum ChineseNumerals {
 
     /// 全文扫描，返回所有该报告的数词（≥1000 或百分比）。
     static func reportableValues(in text: String) -> [Occurrence] {
-        var out: [Occurrence] = []
-        let chars = Array(text)
+        scan(Array(text)).map(\.occurrence)
+    }
+
+    /// 扫描的唯一实现。度量（`reportableValues`）与改写
+    /// （`rewriteAsDigits`）**共用它，不许各抄一份**——分叉的两个方向都
+    /// 致命：改写动了度量没看见的数词，或者度量把改写不动的记成丢失。
+    /// M6 的全半角度量在同一款坑里栽过。
+    private static func scan(_ chars: [Character]) -> [(range: Range<Int>, occurrence: Occurrence)] {
+        var out: [(Range<Int>, Occurrence)] = []
         var i = 0
         while i < chars.count {
             // 「百分之」优先于普通数词：它的「百」不是数词的一部分，
@@ -61,8 +68,10 @@ enum ChineseNumerals {
                 let runStart = i + 3
                 let runEnd = endOfRun(chars, from: runStart)
                 if runEnd > runStart, let v = value(of: String(chars[runStart..<runEnd])) {
-                    out.append(
-                        Occurrence(text: String(chars[start..<runEnd]), value: v, isPercent: true))
+                    out.append((
+                        start..<runEnd,
+                        Occurrence(text: String(chars[start..<runEnd]), value: v, isPercent: true)
+                    ))
                     i = runEnd
                     continue
                 }
@@ -78,13 +87,54 @@ enum ChineseNumerals {
                 // 这里只管含中文数词字符的。
                 guard run.contains(where: { !$0.isASCII }) else { continue }
                 if let v = value(of: run), v >= reportingThreshold {
-                    out.append(Occurrence(text: run, value: v, isPercent: false))
+                    out.append((
+                        runStart..<i,
+                        Occurrence(text: run, value: v, isPercent: false)
+                    ))
                 }
                 continue
             }
             i += 1
         }
         return out
+    }
+
+    /// 翻译前的确定性改写：把解析得出的数词替换成阿拉伯数字。
+    ///
+    /// **这是数量级错的修法本体，提示词不是。** 2026-08-20 前后对照：
+    /// 给提示词加「万=10⁴、亿=10⁸」的换算定义，真错 33/192 → 40/192，
+    /// 一点用没有——qwen3-4b 不是不知道万是多少，是换算不稳。而「照抄
+    /// 阿拉伯数字」它实测可靠（digits 语料 12/12）。所以把换算从模型
+    /// 手里拿走：四百六十万 → 4600000、96万8 → 968000、百分之三十 → 30%，
+    /// 模型只做它擅长的那半。
+    ///
+    /// 改写范围与 `reportableValues` 完全一致——**共用同一个 `scan`**：
+    /// 解析不出的（一个亿）、低于 1000 的（三台）原样留给模型——改写只在
+    /// 「解析器无疑读对了」的地方动手，这正是解析器判据窄的回报。
+    /// 输出不带千分位分组：分组符号在六种目标语言里习惯不同（1,000 对
+    /// 1.000 对 1 000），带哪种都会有一半场景要模型再转一次。
+    static func rewriteAsDigits(_ text: String) -> String {
+        let chars = Array(text)
+        let hits = scan(chars)
+        guard !hits.isEmpty else { return text }
+        var out = ""
+        var i = 0
+        for (range, occurrence) in hits {
+            out.append(contentsOf: chars[i..<range.lowerBound])
+            out += formatted(occurrence.value) + (occurrence.isPercent ? "%" : "")
+            i = range.upperBound
+        }
+        out.append(contentsOf: chars[i...])
+        return out
+    }
+
+    /// 数值 → 文本。整数不带小数点；小数按最短写法（45.6 不是 45.60）。
+    private static func formatted(_ value: Double) -> String {
+        if value == value.rounded(), abs(value) < 1e15 {
+            return String(Int(value))
+        }
+        // 数词的小数位来自「点」后逐位累积，最多几位；%g 去掉浮点尾巴
+        return String(format: "%g", value)
     }
 
     /// 数词串的右边界。ASCII 小数点只在两侧都是 ASCII 数字时属于数词
@@ -340,13 +390,15 @@ enum TranslatedNumbers {
         }
     }
 
-    /// 小系数词 → 数值（1–12）。基线实测（2026-08-20）里德语把八百万
-    /// 译成 `acht Millionen`、意语译成 `otto milioni`——系数拼成单词、
-    /// 只认「数字 + 倍词」就把**正确**译文记成丢失。只收 1–12：
-    /// 目标语言的行文习惯里，系数大了就改用数字；组合数词
-    /// （soixante-dix、venticinque）刻意不做，做了就要背六种语言的
-    /// 组合语法，错一条就是新的误报源。没认出来的后果有界：
-    /// 至多把「保住」记成「丢失」，报告里译文就在旁边，人过一眼即知。
+    /// 系数词 → 数值（1–20 与整十，单词形态）。基线实测（2026-08-20）里
+    /// 德语把八百万译成 `acht Millionen`、意语译成 `otto milioni`；
+    /// 提示词对照轮里英语把七十亿（错译成 7×10¹⁰ 时）写成
+    /// `seventy billion`——系数拼成单词，只认「数字 + 倍词」既会把正确
+    /// 译文记成丢失，也会让错译逃过按值判定。收整词能查表的这一档；
+    /// **组合数词**（soixante-dix、venticinque、cuatro millones
+    /// seiscientos mil 的 seiscientos）刻意不做——那要背六种语言的组合
+    /// 语法，错一条就是新的误报源。没认出来的后果有界：至多把「保住」
+    /// 记成「丢失」，报告里译文就在旁边，人过一眼即知。
     static func smallWordTable(for target: TranslationTarget) -> [String: Double] {
         switch target {
         case .chinese:
@@ -354,37 +406,61 @@ enum TranslatedNumbers {
         case .english:
             return [
                 "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
-                "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+                "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+                "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+                "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+                "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+                "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
             ]
         case .spanish:
             return [
                 "un": 1, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4,
                 "cinco": 5, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9,
-                "diez": 10, "once": 11, "doce": 12,
+                "diez": 10, "once": 11, "doce": 12, "trece": 13, "catorce": 14,
+                "quince": 15, "dieciséis": 16, "dieciseis": 16, "diecisiete": 17,
+                "dieciocho": 18, "diecinueve": 19, "veinte": 20, "treinta": 30,
+                "cuarenta": 40, "cincuenta": 50, "sesenta": 60, "setenta": 70,
+                "ochenta": 80, "noventa": 90,
             ]
         case .german:
             return [
                 "ein": 1, "eine": 1, "einen": 1, "einer": 1, "zwei": 2, "drei": 3,
                 "vier": 4, "fünf": 5, "funf": 5, "sechs": 6, "sieben": 7, "acht": 8,
                 "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12, "zwolf": 12,
+                "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15, "funfzehn": 15,
+                "sechzehn": 16, "siebzehn": 17, "achtzehn": 18, "neunzehn": 19,
+                "zwanzig": 20, "dreißig": 30, "dreissig": 30, "vierzig": 40,
+                "fünfzig": 50, "funfzig": 50, "sechzig": 60, "siebzig": 70,
+                "achtzig": 80, "neunzig": 90,
             ]
         case .portuguese:
             return [
                 "um": 1, "uma": 1, "dois": 2, "duas": 2, "três": 3, "tres": 3,
                 "quatro": 4, "cinco": 5, "seis": 6, "sete": 7, "oito": 8,
-                "nove": 9, "dez": 10, "onze": 11, "doze": 12,
+                "nove": 9, "dez": 10, "onze": 11, "doze": 12, "treze": 13,
+                "catorze": 14, "quatorze": 14, "quinze": 15, "dezesseis": 16,
+                "dezasseis": 16, "dezessete": 17, "dezassete": 17, "dezoito": 18,
+                "dezenove": 19, "dezanove": 19, "vinte": 20, "trinta": 30,
+                "quarenta": 40, "cinquenta": 50, "sessenta": 60, "setenta": 70,
+                "oitenta": 80, "noventa": 90,
             ]
         case .french:
             return [
                 "un": 1, "une": 1, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5,
                 "six": 6, "sept": 7, "huit": 8, "neuf": 9, "dix": 10,
-                "onze": 11, "douze": 12,
+                "onze": 11, "douze": 12, "treize": 13, "quatorze": 14,
+                "quinze": 15, "seize": 16, "vingt": 20, "trente": 30,
+                "quarante": 40, "cinquante": 50, "soixante": 60,
             ]
         case .italian:
             return [
                 "un": 1, "uno": 1, "una": 1, "due": 2, "tre": 3, "quattro": 4,
                 "cinque": 5, "sei": 6, "sette": 7, "otto": 8, "nove": 9,
-                "dieci": 10, "undici": 11, "dodici": 12,
+                "dieci": 10, "undici": 11, "dodici": 12, "tredici": 13,
+                "quattordici": 14, "quindici": 15, "sedici": 16,
+                "diciassette": 17, "diciotto": 18, "diciannove": 19,
+                "venti": 20, "trenta": 30, "quaranta": 40, "cinquanta": 50,
+                "sessanta": 60, "settanta": 70, "ottanta": 80, "novanta": 90,
             ]
         }
     }

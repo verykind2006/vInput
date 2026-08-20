@@ -157,6 +157,23 @@ struct TranslationPipeline: Sendable {
             return TranslationResult(text: text, annotation: nil)
         }
 
+        // **先做确定性改写：中文数词 → 阿拉伯数字（四百六十万 → 4600000）。**
+        //
+        // 这是数量级错的修法本体。2026-08-20 实测（qwen3-4b × 六语 × 20 条
+        // 数词语料）：模型自己换算错 33/192 ≈ 17%（两万三→230,000、96万8
+        // 六语全错），给提示词加换算定义毫无效果（33→40）；而「照抄阿拉伯
+        // 数字」它可靠（digits 语料 12/12）。所以换算不交给模型。
+        //
+        // 三条边界：
+        // - **给翻译器与闸门的是改写后的**（那才是模型真实的输入）；
+        //   **所有失败路径退回的仍是 `text` 原文**——用户要看到的是他说的话。
+        // - 解析不出的形态（一个亿）原样进模型，行为与从前相同。
+        // - 目标是中文时上面已经原样返回，改写根本不会发生。
+        let rewritten = ChineseNumerals.rewriteAsDigits(text)
+        if rewritten != text {
+            AppLogger.shared.log("翻译前数词改写：\(text.count) 字 → \(rewritten.count) 字")
+        }
+
         // **不在这里等加载。** 加载要几十秒，而调用方带着注入预算，
         // 等下去只会把注入一起拖住（M4 同款处理，见 `CorrectionPipeline.correct`）。
         // 这里连 `prepare()` 都不能顺手 await 一下：那正是「等加载」本身。
@@ -171,17 +188,18 @@ struct TranslationPipeline: Sendable {
         //
         // 算在 do 外面，因为超时那条 catch 要把它写进日志——只写「超时」
         // 而不写预算和字数，事后无从判断该把系数调到多少。
-        let budget = max(timeout, TranslationBudget.scaled(forCharacters: text.count))
+        // 预算按改写后的字数算——那才是模型要处理的长度。
+        let budget = max(timeout, TranslationBudget.scaled(forCharacters: rewritten.count))
         let started = ContinuousClock.now
         let output: String
         do {
             output = try await withTimeout(budget) {
-                try await translator.translate(text, to: target)
+                try await translator.translate(rewritten, to: target)
             }
         } catch is TimedOut {
             // 记耗时：只写「超时」看不出实际要多久，也就无从判断预算该调到多少。
             AppLogger.shared.log(
-                "翻译超时：目标=\(target.rawValue) 字数=\(text.count) 预算=\(budget) 耗时 \(ContinuousClock.now - started)")
+                "翻译超时：目标=\(target.rawValue) 字数=\(rewritten.count) 预算=\(budget) 耗时 \(ContinuousClock.now - started)")
             return TranslationResult(text: text, annotation: .timedOut)
         } catch let error as TranslatorError {
             switch error {
@@ -212,7 +230,9 @@ struct TranslationPipeline: Sendable {
             return TranslationResult(text: text, annotation: .failed(String(describing: error)))
         }
 
-        switch gate.check(source: text, translation: output, target: target) {
+        // 闸门的 source 用改写后的：长度比比的是「模型的输入对输出」，
+        // 拿改写前的原文去比会把改写本身的长度变化算到译文头上。
+        switch gate.check(source: rewritten, translation: output, target: target) {
         case .pass:
             AppLogger.shared.log("翻译完成：目标=\(target.rawValue) 耗时 \(ContinuousClock.now - started)")
             return TranslationResult(text: output, annotation: nil)

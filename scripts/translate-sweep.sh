@@ -25,6 +25,10 @@
 #                    是补的数字语料，纯文本无录音，专门喂「数字丢失」那一列。
 #                    路径可以是相对仓库根的。文件读不到会让整轮报错，
 #                    不会悄悄退回 manifest。
+#   --rewrite-numerals
+#                    翻译前先做数词改写（ChineseNumerals.rewriteAsDigits，
+#                    与生产 TranslationPipeline 同一个函数）。默认关——
+#                    开关两轮对照才是「改写有没有用」的证据。
 #   --variant NAME   提示词变体：english-language-name（生产默认）或
 #                    chinese-language-name（对照）。名字写错会让整轮不跑，
 #                    不会悄悄退回默认值——退回默认值就会写出一份标着
@@ -58,12 +62,14 @@ LIMIT=""
 MAX_TOKENS=""
 VARIANT=""
 CORPUS=""
+REWRITE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --limit)       LIMIT="$2"; shift 2 ;;
     --max-tokens)  MAX_TOKENS="$2"; shift 2 ;;
     --variant)     VARIANT="$2"; shift 2 ;;
     --corpus)      CORPUS="$2"; shift 2 ;;
+    --rewrite-numerals) REWRITE=1; shift ;;
     -h|--help)     usage ;;
     -*)            print -u2 "未知选项：$1"; usage ;;
     *)             LANGS+=("$1"); shift ;;
@@ -80,6 +86,7 @@ FIELDS="\"modelDirectory\":\"$MODEL\",\"targets\":[$TARGETS]"
 [[ -n "$LIMIT" ]]      && FIELDS="$FIELDS,\"limit\":$LIMIT"
 [[ -n "$MAX_TOKENS" ]] && FIELDS="$FIELDS,\"maxTokens\":$MAX_TOKENS"
 [[ -n "$VARIANT" ]]    && FIELDS="$FIELDS,\"promptVariant\":\"$VARIANT\""
+[[ -n "$REWRITE" ]]    && FIELDS="$FIELDS,\"rewriteNumerals\":true"
 if [[ -n "$CORPUS" ]]; then
   # 存进标记文件的必须是绝对路径：测试进程的 cwd 不是仓库根（M4 踩过），
   # 相对路径会变成「文件不存在」。
