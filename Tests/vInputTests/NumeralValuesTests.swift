@@ -134,6 +134,18 @@ struct RewriteAsDigitsTests {
             ("去年亏了一个亿。", "去年亏了一个亿。"),
             ("这个方案的报价是 128000 元。", "这个方案的报价是 128000 元。"),
             ("千万别答应他。", "千万别答应他。"),
+            // 约数形态整串不动——量级单位在 多/几/来/余 后面，解析器只吃
+            // 得到半个数词。2026-08-20 QA 实测「百分之十几」曾被改写成
+            // 「10%几」，语义直接损坏，比不改写更糟
+            ("涨了百分之十几。", "涨了百分之十几。"),
+            ("一千几百万的样子。", "一千几百万的样子。"),
+            ("预算两千多万。", "预算两千多万。"),
+            ("有几十万用户。", "有几十万用户。"),
+            ("数百万的预算。", "数百万的预算。"),
+            ("库存十余万件。", "库存十余万件。"),
+            ("大概三十来万。", "大概三十来万。"),
+            // 「约/大约」不拖累后面的完整数词——它以数字开头，值无疑是对的
+            ("大约四百六十万。", "大约4600000。"),
         ] as [(String, String)])
     func rewrites(source: String, expected: String) {
         #expect(ChineseNumerals.rewriteAsDigits(source) == expected, "「\(source)」")
@@ -327,6 +339,20 @@ struct LostNumeralsTests {
                 target: .english
             ).isEmpty)
     }
+
+    /// 约数形态也不进分母——「两千多万」的正确译文是 over twenty
+    /// million，里面理所当然没有 2000，把 两千 当分母就是**必然误报**，
+    /// 违反「凡报出来的都无疑是错的」（2026-08-20 QA 发现）。
+    @Test("约数形态不进分母")
+    func approximateFormsNeverReport() {
+        #expect(TranslationMetrics.numeralsIn("预算两千多万。").isEmpty)
+        #expect(TranslationMetrics.numeralsIn("有几十万用户。").isEmpty)
+        #expect(
+            TranslationMetrics.lostNumerals(
+                source: "预算两千多万。", translation: "A budget of over twenty million.",
+                target: .english
+            ).isEmpty)
+    }
 }
 
 // 变异验证记录（2026-08-20，每处改坏 → 跑 --filter NumeralValues →
@@ -349,3 +375,14 @@ struct LostNumeralsTests {
 // | 13 | 个位/简写分界坍缩 | 抓到（一百零五 → 150）。**这条变异顺带挖出解析器真 bug**：初版把「零后接单位」一律拒绝，连一万零五百都被拒，已修 |
 // | 14 | 「零后必须接数字」删除 | 抓到（一百零十五——尾部守卫救不了这条） |
 // | 15 | 单位分支复位 digitAfterZero | **等价变异**——数字读入时每次重新赋值，该复位是死代码，已删 |
+// | 16 | 系数词分支停用 | 抓到（acht Millionen 用例） |
+// | 17 | 系数词「必须带倍词」放松 | 抓到（acht Stück 不产生候选） |
+// | 18–20 | 改写器：% 后缀 / 间隙文本 / 整数格式 | 各自抓到（改写表驱动用例） |
+// | 21 | 管线不改写（translate 传原文） | 抓到（翻译器收到改写后文本） |
+//
+// 独立 QA（2026-08-20，另一名代理亲手做，不照抄本表）：9 处变异抓 7、
+// 存活 2——闸门拒绝与超时路径改回 rewritten 无测试红，成因是那两条用例
+// 素材不含数词。已补三条「退回未改写原文」用例（素材带数词）并复验：
+// 同样的两处变异现在当场红。QA 同时发现约数形态（两千多万、几十万、
+// 百分之十几）被吃掉半个数词，scan 加 approxTrailing/approxLeading 整串
+// 放弃；三处新守卫的变异（尾随/前置/百分比分支各删一处）全部抓到。

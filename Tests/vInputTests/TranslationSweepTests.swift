@@ -371,7 +371,10 @@ struct TranslationSweepTests {
         var sourceHan: Int { TranslationMetrics.residualHanCount(entry.text) }
         var outputHan: Int { TranslationMetrics.residualHanCount(output) }
         var terms: [String] { BenchMetrics.technicalTerms(in: entry.text) }
-        var sourceDigits: [String] { TranslationMetrics.digitsIn(entry.text) }
+        /// 分母与 `lostDigits` 的分子同口径（`copyableDigits`）：
+        /// 「128万」的 128 不可能被记丢（它归数值判据管），
+        /// 就不该出现在这一列的分母里撑大它。
+        var sourceDigits: [String] { TranslationMetrics.copyableDigits(in: entry.text) }
 
         var termRate: Double {
             TranslationMetrics.termPreservationRate(source: entry.text, translation: output)

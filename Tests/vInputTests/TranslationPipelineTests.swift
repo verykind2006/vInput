@@ -77,7 +77,12 @@ struct TranslationPipelineTests {
 
     /// 失败路径退回的必须是**未改写的原文**——用户要看到的是他说的话，
     /// 不是「合同金额4600000」这种半成品。
-    @Test("失败时退回的是未改写的中文原文")
+    ///
+    /// **三条返回路径各守一条，缺一不可**（2026-08-20 QA 变异实测：只有
+    /// 引擎错误这条被守着时，把闸门拒绝与超时两处的 `text` 改成
+    /// `rewritten`，全量测试照样全绿——其余用例的素材不含数词，
+    /// `rewritten == text`，变异不可见）。所以这三条的素材都必须带数词。
+    @Test("引擎失败时退回的是未改写的中文原文")
     func failureFallsBackToUnrewrittenSource() async {
         let source = "合同金额四百六十万，分三期付款。"
         let pipeline = TranslationPipeline(
@@ -87,6 +92,33 @@ struct TranslationPipelineTests {
 
         #expect(result.text == source)
         #expect(result.annotation == .failed("boom"))
+    }
+
+    /// 同上：闸门拒绝那条。译文整段是中文（残留汉字 14 个）必被拦下，
+    /// 拦下后拿回的必须是带数词的原话。
+    @Test("闸门拦下时退回的是未改写的中文原文")
+    func gateRejectFallsBackToUnrewrittenSource() async {
+        let source = "合同金额四百六十万，分三期付款。"
+        let pipeline = TranslationPipeline(
+            translator: FakeTranslator(.succeed("合同金额四百六十万，分三期付款。")))
+
+        let result = await pipeline.translate(source, to: .english)
+
+        #expect(result.text == source)
+        #expect(result.annotation == .rejected(.residualHan(count: 14)))
+    }
+
+    /// 同上：超时那条。
+    @Test("超时时退回的是未改写的中文原文")
+    func timeoutFallsBackToUnrewrittenSource() async {
+        let source = "合同金额四百六十万，分三期付款。"
+        let pipeline = TranslationPipeline(
+            translator: FakeTranslator(.hang), timeout: .milliseconds(50))
+
+        let result = await pipeline.translate(source, to: .english)
+
+        #expect(result.text == source)
+        #expect(result.annotation == .timedOut)
     }
 
     // MARK: - 失败路径，全部退回中文原文

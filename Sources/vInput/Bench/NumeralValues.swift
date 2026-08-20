@@ -53,6 +53,17 @@ enum ChineseNumerals {
         scan(Array(text)).map(\.occurrence)
     }
 
+    /// 约数标记。数词串**尾部紧跟**它们时（两千多万、一千几百万、
+    /// 三十来万、十余万），量级单位还在标记后面，解析器只吃得到半个数词，
+    /// 读出的值必错——2026-08-20 QA 实测「涨了百分之十几」被改写成
+    /// 「涨了10%几」，语义直接损坏。整串放弃：不改写、不进分母。
+    private static let approxTrailing: Set<Character> = ["多", "几", "来", "余"]
+    /// 串**以单位开头**且前一个字是它们时（几十万、数百万、好几千万），
+    /// 系数在标记里，串里只有单位——同样只吃得到半个数词。
+    /// 只在以单位开头时看前缀：「大约四百六十万」的约不该把后面完整的
+    /// 数词也拖下水（它以数字开头，值无疑是对的）。
+    private static let approxLeading: Set<Character> = ["几", "数"]
+
     /// 扫描的唯一实现。度量（`reportableValues`）与改写
     /// （`rewriteAsDigits`）**共用它，不许各抄一份**——分叉的两个方向都
     /// 致命：改写动了度量没看见的数词，或者度量把改写不动的记成丢失。
@@ -67,7 +78,10 @@ enum ChineseNumerals {
                 let start = i
                 let runStart = i + 3
                 let runEnd = endOfRun(chars, from: runStart)
-                if runEnd > runStart, let v = value(of: String(chars[runStart..<runEnd])) {
+                if runEnd > runStart,
+                    !(runEnd < chars.count && approxTrailing.contains(chars[runEnd])),
+                    let v = value(of: String(chars[runStart..<runEnd]))
+                {
                     out.append((
                         start..<runEnd,
                         Occurrence(text: String(chars[start..<runEnd]), value: v, isPercent: true)
@@ -86,6 +100,13 @@ enum ChineseNumerals {
                 // 纯 ASCII 数字串是 `lostDigits` 的地盘（原样保留即正确）；
                 // 这里只管含中文数词字符的。
                 guard run.contains(where: { !$0.isASCII }) else { continue }
+                // 约数形态整串放弃（判据见 approxTrailing / approxLeading）
+                let followedByApprox = i < chars.count && approxTrailing.contains(chars[i])
+                let startsWithUnit =
+                    sectionUnits[chars[runStart]] != nil || bigUnits[chars[runStart]] != nil
+                let precededByApprox =
+                    startsWithUnit && runStart > 0 && approxLeading.contains(chars[runStart - 1])
+                guard !followedByApprox, !precededByApprox else { continue }
                 if let v = value(of: run), v >= reportingThreshold {
                     out.append((
                         runStart..<i,
