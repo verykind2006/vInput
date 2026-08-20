@@ -15,6 +15,31 @@ final class HUDViewModel {
     /// 波形柱数。
     static let barCount = 24
 
+    // MARK: - 字号缩放（M9，用户要求 ⌘＋/⌘－ 可调）
+
+    static let minFontSize: CGFloat = 12
+    static let maxFontSize: CGFloat = 24
+    static let defaultFontSize: CGFloat = 15
+    static let fontSizeDefaultsKey = "hud.previewFontSize"
+
+    private let defaults: UserDefaults
+    var fontSize: CGFloat
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let stored = defaults.double(forKey: Self.fontSizeDefaultsKey)
+        self.fontSize = stored == 0 ? Self.defaultFontSize : Self.clampFontSize(CGFloat(stored))
+    }
+
+    func increaseFontSize() { setFontSize(fontSize + 1) }
+    func decreaseFontSize() { setFontSize(fontSize - 1) }
+    func resetFontSize() { setFontSize(Self.defaultFontSize) }
+
+    private func setFontSize(_ raw: CGFloat) {
+        fontSize = Self.clampFontSize(raw)
+        defaults.set(Double(fontSize), forKey: Self.fontSizeDefaultsKey)
+    }
+
     var phase: DictationSession.State = .idle
     var preview: PreviewText = .empty
     var elapsed: TimeInterval = 0
@@ -33,13 +58,33 @@ final class HUDViewModel {
 
     var durationText: String { Self.formatDuration(elapsed) }
     var confirmedLines: [String] {
-        Self.tailLines(preview.confirmed, maxLines: Self.maxLines, charsPerLine: Self.charsPerLine)
+        Self.tailLines(
+            preview.confirmed,
+            maxLines: Self.maxLines,
+            charsPerLine: Self.charsPerLine(forFontSize: fontSize)
+        )
     }
     var unconfirmedText: String { preview.unconfirmed }
     var bars: [Float] { Self.waveformBars(from: energy, barCount: Self.barCount) }
     var statusText: String { Self.statusLabel(for: phase, previewDegraded: previewDegraded) }
 
     // MARK: - 纯函数
+
+    nonisolated static func clampFontSize(_ size: CGFloat) -> CGFloat {
+        min(maxFontSize, max(minFontSize, size))
+    }
+
+    /// 行高随字号等比（现值 15→26），文本框高度由它 × maxLines 得出。
+    nonisolated static func lineHeight(forFontSize size: CGFloat) -> CGFloat {
+        (size * 26 / 15).rounded()
+    }
+
+    /// 每行字数估算随字号反比（现值 15→22，恒定积 330）。**刻意向下取整**：
+    /// 低估每行字数 → 提前折行 → 永远不会溢出文本框；四舍五入会在 24pt 时
+    /// 估出 14 字（13.75），实际装不下。
+    nonisolated static func charsPerLine(forFontSize size: CGFloat) -> Int {
+        max(1, Int(330 / size))
+    }
 
     nonisolated static func formatDuration(_ seconds: TimeInterval) -> String {
         let total = max(0, Int(seconds))
