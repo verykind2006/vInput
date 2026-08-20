@@ -96,15 +96,72 @@ struct MouseVoiceSessionTests {
         )
 
         // 设备此后才开始送流。原实现从这里起就彻底失去兜底。
+        // **持续喂包**（每秒一包）——0x31 的真实形态是 31 包/秒不停；
+        // 只喂两包再等 30 秒的话，流停判据（orphanStreamGap）会先把
+        // 计时清零，而那是「长按按键的短音频」该走的路，不是这条。
         let streamStart = MouseVoiceSession.silentForeignGrace + 2
-        session.noteAudioPacket(at: at(streamStart))
-        session.noteAudioPacket(at: at(streamStart + 1))
+        for offset in 0...Int(MouseSessionLimits.unpaired) {
+            session.noteAudioPacket(at: at(streamStart + Double(offset)))
+        }
 
-        #expect(session.tick(at: at(streamStart + MouseSessionLimits.unpaired - 1)).isEmpty)
         #expect(
             session.tick(at: at(streamStart + MouseSessionLimits.unpaired))
                 == [.stopReceiving(cooldown: MouseSessionLimits.initialCooldown)],
             "晚到的流必须照样被退订，否则麦克风无限期开着且零日志"
+        )
+    }
+
+    /// **一段停了的短音频不许触发退订——2026-08-20 真机抓到的误伤。**
+    ///
+    /// 实测链条：长按鼠标回车键 3.4 秒（`0x27` 不开会话，正确），期间
+    /// 鼠标开麦送流，包在 `.idle` 下走 B1 记账；音频停了计时不清零，
+    /// 30 秒后（13:24:49 日志实录）按「持续送流」退订 + 冷却 10 秒——
+    /// 之后按语音键没反应。**这正是「无法使用鼠标收音」的形态。**
+    @Test("长按按键的短音频停止后不退订，计时清零")
+    func shortOrphanBurstDoesNotTriggerProtection() {
+        let session = MouseVoiceSession()
+        // 约 3.5 秒的无主音频。步长取 0.5——二进制精确，`duration` 的
+        // 相等断言才不会被浮点累加误差弄脆（判据看时刻不看包数）。
+        for i in 0...7 {
+            session.noteAudioPacket(at: at(Double(i) * 0.5))
+        }
+        // 音频停了。空档 5 秒后的 tick 必须已把计时收掉——**这里刻意写
+        // 死 5 秒这个数，不引用 orphanStreamGap**：引用常量的断言会跟着
+        // 常量自适应，把 gap 改成 600 秒（等于把修好的判据又改虚）测试
+        // 照样绿（变异实测）。5 秒是真实场景的尺度：长按键的音频停了、
+        // 用户随即去按语音键，中间就是几秒。
+        #expect(
+            session.tick(at: at(3.5 + 5.0))
+                == [.closedOrphanBurst(duration: 3.5)]
+        )
+        // 30 秒线上什么都不发生——计时已经清零了。
+        #expect(session.tick(at: at(MouseSessionLimits.unpaired)).isEmpty)
+        #expect(session.tick(at: at(MouseSessionLimits.unpaired + 10)).isEmpty)
+    }
+
+    /// 清零之后新的一段流要**重新**计时：第二段若真是持续送流，
+    /// 保护照常在它自己的 30 秒线上触发——流停判据不能把 B1 的兜底修没了。
+    @Test("清零后新的持续流重新计时并照常退订")
+    func newStreamAfterBurstRestartsTiming() {
+        let session = MouseVoiceSession()
+        session.noteAudioPacket(at: at(0))
+        session.noteAudioPacket(at: at(1))
+        _ = session.tick(at: at(1 + MouseVoiceSession.orphanStreamGap + 0.1))  // 清零
+
+        // 第二段：从 t=10 起持续送流。
+        // 中途（还在流、但不满 30 秒）tick 必须什么都不做——这条断言
+        // 钉的是「退订要求持续满 30 秒」，把阈值删成「有流就退订」
+        // 的变异全靠它抓（变异实测：没有它时那个变异全绿）。
+        for offset in 0...15 {
+            session.noteAudioPacket(at: at(10 + Double(offset)))
+        }
+        #expect(session.tick(at: at(10 + 15.5)).isEmpty, "流才 15 秒就退订，阈值没了")
+        for offset in 16...Int(MouseSessionLimits.unpaired) {
+            session.noteAudioPacket(at: at(10 + Double(offset)))
+        }
+        #expect(
+            session.tick(at: at(10 + MouseSessionLimits.unpaired))
+                == [.stopReceiving(cooldown: MouseSessionLimits.initialCooldown)]
         )
     }
 

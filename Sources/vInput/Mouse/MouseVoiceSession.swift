@@ -85,6 +85,12 @@ enum MouseSessionAction: Equatable {
     /// 会话被它结束了。同时它也是发现新按键的线索：出现一次，
     /// 就说明鼠标上有个键我们还不认识。
     case ignoredStop(code: UInt8, expected: UInt8)
+    /// 一段无主音频自己停了（空档超过 `orphanStreamGap`），计时已清零，
+    /// **没有退订**。`duration` 是这段流从首包到末包的时长。
+    ///
+    /// 有这个动作同样是为了日志不说谎：这条路径修的就是一次静默误伤
+    /// （见 `orphanAudioLastPacketAt` 的注释），修完不能又静默。
+    case closedOrphanBurst(duration: TimeInterval)
 }
 
 /// 会话时长上限与冷却时间。集中在一处，理由见文件头。
@@ -222,10 +228,19 @@ final class MouseVoiceSession {
         case .idle:
             // 没有会话却持续来音频包：设备在自说自话。这是 B1 的兜底，
             // 也覆盖「退订恢复后设备还在发陈旧流」那一档。
-            guard let since = orphanAudioStartedAt,
-                  now.timeIntervalSince(since) >= MouseSessionLimits.unpaired
+            guard let since = orphanAudioStartedAt, let last = orphanAudioLastPacketAt
             else { return [] }
+            // **流停了就撤销计时，不退订。** 判据是空档，不是总时长——
+            // 「还在不在流」与「流了多久」是两个独立的问题，
+            // 原实现只看后者，误伤见 `orphanAudioLastPacketAt`。
+            if now.timeIntervalSince(last) > Self.orphanStreamGap {
+                orphanAudioStartedAt = nil
+                orphanAudioLastPacketAt = nil
+                return [.closedOrphanBurst(duration: last.timeIntervalSince(since))]
+            }
+            guard now.timeIntervalSince(since) >= MouseSessionLimits.unpaired else { return [] }
             orphanAudioStartedAt = nil
+            orphanAudioLastPacketAt = nil
             let cooldown = enterMuted(at: now)
             return [.stopReceiving(cooldown: cooldown)]
 
@@ -274,6 +289,25 @@ final class MouseVoiceSession {
     /// 这里照样兜得住。
     private var orphanAudioStartedAt: Date?
 
+    /// 无主音频**最后一包**的时刻。与起始时刻配对，缺一不可。
+    ///
+    /// **只记起始不记末包，是 2026-08-20 真机抓到的一次静默误伤的根因**：
+    /// 长按鼠标回车键 3.4 秒，期间鼠标开麦送流（M7 就实测过按键会短暂
+    /// 开麦），这些包在 `.idle` 下走 B1 记账；音频停了计时却不清零，
+    /// 30 秒后照样按「持续送流」退订 + 冷却 10 秒——之后按语音键没反应。
+    /// **这正是用户报过的「无法使用鼠标收音」的形态**（冷却翻倍最长
+    /// 300 秒，误伤窗口足够长到被撞上）。
+    ///
+    /// B1 防的是「持续在流」（0x31 事故是 11 分钟不停）；一段停了的
+    /// 短音频不构成那个威胁，判据必须能把两者分开。
+    private var orphanAudioLastPacketAt: Date?
+
+    /// 无主音频的「流停」判据：超过这个空档没有新包就算这段流结束。
+    /// 音频包实测 31.25 包/秒，正常送流的包间隔是 32 毫秒——2 秒的空档
+    /// 比它宽 60 倍，不会把一次丢包误判成停止；与 BLE 扫描器的分段判据
+    /// 用同一个数（提交 `97af648`），同一支设备两处对得上。
+    static let orphanStreamGap: TimeInterval = 2
+
     /// 当前这次非听写会话有没有真的收到过音频包。
     ///
     /// 桥每收到一个音频包就调 `noteAudioPacket()`——**在 `acceptsAudio`
@@ -290,11 +324,15 @@ final class MouseVoiceSession {
         case .foreign:
             foreignSawAudio = true
             orphanAudioStartedAt = nil
+            orphanAudioLastPacketAt = nil
         case .idle:
-            // 没有会话却在收音频——B1 那条路径。开始计时。
+            // 没有会话却在收音频——B1 那条路径。开始计时，并记录末包时刻
+            // （tick 靠它判「流还在不在」）。
             if orphanAudioStartedAt == nil { orphanAudioStartedAt = now }
+            orphanAudioLastPacketAt = now
         case .dictating, .muted:
             orphanAudioStartedAt = nil
+            orphanAudioLastPacketAt = nil
         }
     }
 

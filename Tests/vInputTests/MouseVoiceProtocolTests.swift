@@ -124,14 +124,25 @@ struct MouseVoiceProtocolTests {
 /// 突然变成「不认识的 17 字节帧」——极难往电量上想。
 /// 鼠标上那个多余的按键映射成回车（用户 2026-08-18 指定）。
 ///
-/// 实测：按一下发 `0x27`、松开发 `0x28`，两次按键完全一致
-/// （日志 16:01:18 与 16:01:20）。
+/// 固件形态三档（2026-08-20 真机逐动作对照）：极轻点单发 `0x43`、
+/// 正常点击松开时 `0x27`+`0x28` 连发、长按 `0x27`…`0x28` 沿对。
 @Suite("鼠标的回车键")
 struct MouseEnterKeyTests {
     @Test("0x27 是回车键，不是普通开始码")
     func classifiesEnterKey() {
         #expect(MouseVoiceProtocol.classify(code: 0x27) == .enterKey)
         #expect(MouseVoiceProtocol.enterKeyCode == 0x27)
+    }
+
+    /// **极轻点也是一次回车。** `0x43` 此前被当成第三个键忽略，后果是
+    /// 轻点回车没反应、用户补按一下——M7 日志里「`0x43` 总在 `0x27` 前
+    /// 0.7–1.9 秒」正是这个行为的痕迹（2026-08-20 真机对照定案）。
+    @Test("0x43（极轻点）也是回车键")
+    func classifiesLightTapAsEnter() {
+        #expect(MouseVoiceProtocol.classify(code: 0x43) == .enterKey)
+        let session = MouseVoiceSession()
+        #expect(session.handleControl(code: 0x43, at: Date()) == [.pressEnter])
+        #expect(!session.isDictating)
     }
 
     /// **回车不开会话。** 它没有「按住」的语义，配对的 0x28 直接忽略——
@@ -169,10 +180,11 @@ struct MouseEnterKeyTests {
 /// 长按发 `0x23` → `0x24`。会话层的行为在 MouseVoiceSessionTests 里测。
 @Suite("第三个键：刻意无功能")
 struct MouseThirdButtonTests {
-    @Test("它的四个码全部被忽略")
+    /// 2026-08-20 真机对照后 `0x43` 移出了这张名单——它是回车键的
+    /// 极轻点单码，归回车那组测（见 `EnterKeyTests`）。
+    @Test("它的三个码全部被忽略")
     func classifiesAsIgnored() {
         #expect(MouseVoiceProtocol.classify(code: 0x41) == .ignored)
-        #expect(MouseVoiceProtocol.classify(code: 0x43) == .ignored)
         #expect(MouseVoiceProtocol.classify(code: 0x23) == .ignored)
         #expect(MouseVoiceProtocol.classify(code: 0x24) == .ignored)
     }
