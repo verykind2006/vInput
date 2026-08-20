@@ -144,6 +144,7 @@ private extension BenchCategory {
         // （见 BenchCategory.digits / .longform）。写在这里只是为了让这个
         // switch 保持穷尽——加了新类别却忘了给名字，编译就过不去。
         case .digits: "数字金额"
+        case .numerals: "中文数词"
         case .longform: "长段口述"
         }
     }

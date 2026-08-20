@@ -28,6 +28,16 @@ enum BenchCategory: String, Codable, CaseIterable, Sendable {
     /// `Bench/translate-digits.json`，由 `--corpus` 指定。
     case digits
 
+    /// 中文数词（万/亿/百分之）。**只喂翻译层，没有录音。**
+    ///
+    /// 与 `digits` 分开的理由：那一类考「阿拉伯数字原样保留」
+    /// （`lostDigits`，字符串比对），这一类考「中文数词换算成正确数值」
+    /// （`lostNumerals`，数值比对）——2026-08-19 实测里「四十亿」被译成
+    /// `40 billion`（差十倍），`digits` 那一类完全看不见这种错，因为
+    /// 「四十亿」里一个 ASCII 数字都没有。报价的中文口语说金额几乎全用
+    /// 万/亿，风险恰好集中在这半边。住在 `Bench/translate-numerals.json`。
+    case numerals
+
     /// 长段口述。**不进 `manifest.json`**，理由同 `digits`。
     ///
     /// 存在的理由是一个真缺口：基准集 26 条的中文字数是 15–64、中位 37，

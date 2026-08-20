@@ -272,6 +272,28 @@ struct TranslationSweepGateTests {
         }
     }
 
+    /// 仓库自带的中文数词语料要能解析，而且**每条都真的含可解析的数词**。
+    ///
+    /// 与上面数字语料同一条理由：这份语料存在的全部意义就是让
+    /// `lostNumerals` 的分母非空。数词是否「可解析」由 `ChineseNumerals`
+    /// 说了算——哪天有人往里加了「一个亿」这种解析器不认的形态，
+    /// 那一条的分母静默归零，语料看着变厚实际什么都没考到。
+    @Test("仓库里的数词语料可解析且每条分母非空")
+    func repositoryNumeralsCorpusHasNumerals() throws {
+        let url = TranslationSweepConfig.markerURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("translate-numerals.json")
+        let manifest = try JSONDecoder().decode(
+            BenchManifest.self, from: try Data(contentsOf: url))
+        #expect(manifest.entries.count >= 15, "数词语料只有 \(manifest.entries.count) 条")
+        for entry in manifest.entries {
+            #expect(
+                !TranslationMetrics.numeralsIn(entry.text).isEmpty,
+                "\(entry.id) 里没有可解析的中文数词，它在这份语料里读不出任何东西")
+            #expect(entry.category == .numerals)
+        }
+    }
+
     /// `markerURL` 从 `#filePath` 回溯三级到仓库根。
     ///
     /// **不只比对字符串**——比对路径尾巴的话，回溯层数少一级、多一级都
@@ -314,6 +336,9 @@ struct TranslationSweepTests {
     /// 一条样本跑一种语言的结果。
     private struct Row {
         let entry: BenchEntry
+        /// 数词按值比对要查目标语言的倍词表（billion 在英德两语差三个
+        /// 数量级），所以 Row 必须知道自己是哪种语言的。
+        let target: TranslationTarget
         let output: String
         let elapsed: TimeInterval
         let error: String?
@@ -343,6 +368,16 @@ struct TranslationSweepTests {
         }
         var lostDigits: [String] {
             TranslationMetrics.lostDigits(source: entry.text, translation: output)
+        }
+        var sourceNumerals: [ChineseNumerals.Occurrence] {
+            TranslationMetrics.numeralsIn(entry.text)
+        }
+        /// 中文数词按**数值**比对（四十亿 ↔ 4 billion / 4.000 millones）。
+        /// 「40 billion」这种差数量级的错译就落在这一格，
+        /// `lostDigits` 对它是全盲的。
+        var lostNumerals: [String] {
+            TranslationMetrics.lostNumerals(
+                source: entry.text, translation: output, target: target)
         }
         var lengthRatio: Double {
             TranslationMetrics.lengthRatio(source: entry.text, translation: output)
@@ -401,8 +436,11 @@ struct TranslationSweepTests {
             "  汉字 a/b   译文里的汉字数 / 原文里的汉字数。b 是分母，a 接近 b 就是把原文抄了一遍。",
             "  术语 a/b   原样保留的技术词 / 原文里的技术词。**b=0 时这条按 1.0 计**，",
             "             汇总里的平均值因此只对「分母非空」的条目才有意义。",
-            "  数字       只统计原文里已是阿拉伯数字的那些。分母为 0 就说明这批素材",
-            "             压根考不到数字，那一列的 0 读不出任何东西。",
+            "  数字       只统计原文里已是阿拉伯数字、译文该原样保留的那些。分母为 0",
+            "             就说明这批素材压根考不到数字，那一列的 0 读不出任何东西。",
+            "  数词       中文数词（万/亿/百分之）按**数值**比对：四十亿 ↔ 4 billion /",
+            "             4.000 millones 都算保住，40 billion 算丢——差数量级的错译",
+            "             全落在这一格，「数字」那一列对它是全盲的。分母同样可能为 0。",
             "  截断       译文不以句末标点收尾，见 `TruncationSignal` 的注释。",
             "             它是信号不是判决，报告里同时打印译文，由人过一眼。",
             "",
@@ -439,7 +477,7 @@ struct TranslationSweepTests {
                     failure = "\(error)"
                 }
                 let row = Row(
-                    entry: entry, output: output,
+                    entry: entry, target: target, output: output,
                     elapsed: Date().timeIntervalSince(started), error: failure)
                 rows.append(row)
                 totalRuns += 1
@@ -451,6 +489,7 @@ struct TranslationSweepTests {
                 if row.looksCopied { flags.append("⚠抄原文") }
                 if row.truncated && row.error == nil { flags.append("✂截断") }
                 if !row.lostDigits.isEmpty { flags.append("🔢丢数字\(row.lostDigits.joined(separator: ","))") }
+                if !row.lostNumerals.isEmpty { flags.append("💰丢数词\(row.lostNumerals.joined(separator: ","))") }
                 let mark = flags.isEmpty ? "✅" : flags.joined(separator: " ")
 
                 lines.append(
@@ -459,6 +498,9 @@ struct TranslationSweepTests {
                         + "  汉字 \(row.outputHan)/\(row.sourceHan)"
                         + "  术语 \(row.terms.filter(row.output.contains).count)/\(row.terms.count)"
                         + (row.caseOnlyTerms > 0 ? "(另 \(row.caseOnlyTerms) 个只差大小写)" : "")
+                        + (row.sourceNumerals.isEmpty
+                            ? ""
+                            : "  数词 \(row.sourceNumerals.count - row.lostNumerals.count)/\(row.sourceNumerals.count)")
                         + "  长度比 \(Self.f(row.lengthRatio, 2))"
                         + "  译文 \(row.output.count) 字")
                 lines.append("   原文：\(row.entry.text)")
@@ -536,6 +578,13 @@ struct TranslationSweepTests {
             out.append("  数字丢失      原文共 0 个阿拉伯数字——**分母为 0，这一列读不出任何东西**")
         } else {
             out.append("  数字丢失      \(lost) / 原文共 \(sourceDigits) 个")
+        }
+        let sourceNumerals = ok.map { $0.sourceNumerals.count }.reduce(0, +)
+        let lostNumerals = ok.map { $0.lostNumerals.count }.reduce(0, +)
+        if sourceNumerals == 0 {
+            out.append("  数词丢失      原文共 0 个可解析的中文数词——**分母为 0，这一列读不出任何东西**")
+        } else {
+            out.append("  数词丢失      \(lostNumerals) / 原文共 \(sourceNumerals) 个（按数值比对）")
         }
         out.append(
             "  长度比        均 \(f(ratios.reduce(0, +) / Double(ratios.count), 2))"

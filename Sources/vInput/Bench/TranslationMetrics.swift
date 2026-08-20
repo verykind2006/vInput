@@ -127,9 +127,72 @@ enum TranslationMetrics {
     /// **数字译错是报价场景最贵的错**，而它恰好是可机器检的少数几件事之一。
     /// 只查原文已经是阿拉伯数字的那些——中文数字（「五百」）译成 `500`
     /// 是正确行为，不该被算成不一致。
+    ///
+    /// **带中文数量单位的混写数字不归这条管**：「128万」的正确译文是
+    /// `1.28 million`，里面既没有 `128` 也没有 `万`——要求 128 原样出现
+    /// 就是把正确译文记成丢失。这一类（数字串紧邻 万/亿/千/百，
+    /// 或紧跟在 万/亿 之后的简写尾数「3万5」的 5）由 `lostNumerals`
+    /// 按**数值**比对，见 `ChineseNumerals`。
     static func lostDigits(source: String, translation: String) -> [String] {
         let inTranslation = Set(digitsIn(translation))
-        return digitsIn(source).filter { !inTranslation.contains($0) }
+        return copyableDigits(in: source).filter { !inTranslation.contains($0) }
+    }
+
+    /// 原文里「译文应当原样保留」的阿拉伯数字串。
+    /// `digitsIn` 减去与中文数量单位粘着的那些（理由见 `lostDigits`）。
+    /// 排除时把小数一起排掉：「4.5亿」整个属于数值比对，
+    /// 不能把 `4` 留下来当成一个要原样保留的数。
+    static func copyableDigits(in text: String) -> [String] {
+        var out: [String] = []
+        let chars = Array(text)
+        var i = 0
+        while i < chars.count {
+            guard chars[i].isASCII, chars[i].isNumber else {
+                i += 1
+                continue
+            }
+            // 整个 ASCII 数字串（内部小数点两侧都是数字时含小数点）
+            var j = i
+            while j < chars.count {
+                if chars[j].isASCII, chars[j].isNumber { j += 1; continue }
+                if chars[j] == ".", j + 1 < chars.count, chars[j + 1].isASCII,
+                    chars[j + 1].isNumber, j > i
+                { j += 1; continue }
+                break
+            }
+            let followedByUnit = j < chars.count && "万亿千百".contains(chars[j])
+            let precededByUnit = i > 0 && "万亿".contains(chars[i - 1])
+            if !followedByUnit && !precededByUnit {
+                // 按 `digitsIn` 的粒度切开（小数点两侧各算一段），
+                // 译文那一侧仍用 `digitsIn`，两侧粒度必须一致
+                out.append(
+                    contentsOf: String(chars[i..<j]).split(separator: ".").map(String.init))
+            }
+            i = j
+        }
+        return out
+    }
+
+    /// 原文里该报告的中文数词（≥1000 或百分比），作为 `lostNumerals` 的分母。
+    static func numeralsIn(_ text: String) -> [ChineseNumerals.Occurrence] {
+        ChineseNumerals.reportableValues(in: text)
+    }
+
+    /// 原文里有、译文里**按数值**找不到的中文数词。
+    ///
+    /// **「四十亿被译成 40 billion」这一类差数量级的错，上面那条
+    /// `lostDigits` 完全看不见**——「四十亿」里一个 ASCII 数字都没有，
+    /// 2026-08-19 长文本实测里它就这么静默漏过去了。这里把原文数词
+    /// 折算成数值（`ChineseNumerals`），在译文里找「数字 + 倍词」
+    /// （`TranslatedNumbers`，倍词表按语言分，德语 Billion 是 10¹²），
+    /// 值对不上才报。返回的是原文里那段数词，报告里逐字打印。
+    static func lostNumerals(
+        source: String, translation: String, target: TranslationTarget
+    ) -> [String] {
+        let candidates = TranslatedNumbers.candidateValues(in: translation, target: target)
+        return numeralsIn(source)
+            .filter { !TranslatedNumbers.matches($0.value, anyOf: candidates) }
+            .map(\.text)
     }
 
     /// 译文看起来像是把原文原样抄了一遍。

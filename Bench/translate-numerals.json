@@ -1,0 +1,116 @@
+{
+  "_说明": [
+    "中文数词语料：万/亿/百分之/混写/口语简写，纯文本无录音。",
+    "用 ./scripts/translate-sweep.sh --corpus Bench/translate-numerals.json 指定。",
+    "存在的理由：2026-08-19 长文本实测里「四十亿」被译成 40 billion（差十倍），",
+    "而 translate-digits.json 考的是「阿拉伯数字原样保留」，对这类错零覆盖——",
+    "「四十亿」里一个 ASCII 数字都没有。中文口语说金额几乎全用万/亿，",
+    "报价场景的风险恰好集中在这半边。",
+    "判据是 TranslationMetrics.lostNumerals（数值比对，非字符串比对）。",
+    "每条至少含一个 ChineseNumerals 解析得出的数词（TranslationSweepGateTests 守着）；",
+    "刻意不收「一个亿」这类带量词的形态——解析器不认它们（理由见 ChineseNumerals 注释）。",
+    "numeral-01 就是 2026-08-19 抓到那个 bug 的句式。"
+  ],
+  "entries": [
+    {
+      "id": "numeral-01",
+      "category": "numerals",
+      "text": "那个大模型有七十亿参数，小的那个只有四十亿。"
+    },
+    {
+      "id": "numeral-02",
+      "category": "numerals",
+      "text": "这个项目总预算四十亿，第一期先拨七亿。"
+    },
+    {
+      "id": "numeral-03",
+      "category": "numerals",
+      "text": "全年营收一百二十八万，比去年多了三十五万。"
+    },
+    {
+      "id": "numeral-04",
+      "category": "numerals",
+      "text": "这批设备总价三千五百万，首付百分之三十。"
+    },
+    {
+      "id": "numeral-05",
+      "category": "numerals",
+      "text": "单价两万三，起订八十台，总价一百八十四万。"
+    },
+    {
+      "id": "numeral-06",
+      "category": "numerals",
+      "text": "库存还有12万件，每天出货四千件左右。"
+    },
+    {
+      "id": "numeral-07",
+      "category": "numerals",
+      "text": "注册用户突破五千万，日活大概八百万。"
+    },
+    {
+      "id": "numeral-08",
+      "category": "numerals",
+      "text": "这轮融资两亿美元，投后估值二十亿。"
+    },
+    {
+      "id": "numeral-09",
+      "category": "numerals",
+      "text": "厂房一万二千平方米，月租十八万。"
+    },
+    {
+      "id": "numeral-10",
+      "category": "numerals",
+      "text": "报价单上写的是96万8，不含运费。"
+    },
+    {
+      "id": "numeral-11",
+      "category": "numerals",
+      "text": "良品率百分之九十八点五，剩下的算损耗。"
+    },
+    {
+      "id": "numeral-12",
+      "category": "numerals",
+      "text": "他们开价1.5亿，我们最多出一亿二。"
+    },
+    {
+      "id": "numeral-13",
+      "category": "numerals",
+      "text": "这条产线一天能出两万五千件。"
+    },
+    {
+      "id": "numeral-14",
+      "category": "numerals",
+      "text": "合同金额四百六十万，分三期付款。"
+    },
+    {
+      "id": "numeral-15",
+      "category": "numerals",
+      "text": "去年出口额二点六亿美元，今年目标三亿。"
+    },
+    {
+      "id": "numeral-16",
+      "category": "numerals",
+      "text": "预算砍到八千万以内，团队控制在两百人。"
+    },
+    {
+      "id": "numeral-17",
+      "category": "numerals",
+      "text": "那栋楼去年卖了六千八百万。"
+    },
+    {
+      "id": "numeral-18",
+      "category": "numerals",
+      "text": "贷款利率百分之四点二五，期限十年。"
+    },
+    {
+      "id": "numeral-19",
+      "category": "numerals",
+      "text": "差不多有一千三百万用户还在用旧版本。"
+    },
+    {
+      "id": "numeral-20",
+      "category": "numerals",
+      "text": "押金一万五，房租每月九千八。"
+    }
+  ]
+}
