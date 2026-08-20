@@ -68,3 +68,4 @@ Bench/whisper-translate.txt
 
 # 云端翻译端到端体检的本机开关，见 Tests/vInputTests/GeminiE2ETests.swift
 Testing/.gemini-e2e-enabled
+.superpowers/
