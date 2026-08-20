@@ -13,6 +13,9 @@ protocol ZoomHotkeyRegistering: AnyObject {
 }
 
 /// 用 Carbon 注册 ⌘=（键帽上的 ⌘＋，不带 shift）、⌘-、⌘0。
+///
+/// `kVK_ANSI_*` 是**物理键位**码：非 ANSI 布局（如 AZERTY）上 ⌘= 落在
+/// 别的键帽上。Carbon 全局热键天然按键位走，这里只记录这个局限，不做映射。
 @MainActor
 final class CarbonZoomHotkeyRegistrar: ZoomHotkeyRegistering {
     private let increaseRegistrar = HotkeyRegistrar()
@@ -45,11 +48,15 @@ final class CarbonZoomHotkeyRegistrar: ZoomHotkeyRegistering {
     }
 }
 
-/// 按会话状态管理缩放热键：**仅 HUD 可见（非 idle）时注册**。
+/// 按会话状态管理缩放热键：**会话进行中（非 idle）时注册**。
 ///
 /// ⌘＋/⌘－ 是各应用的高频缩放键，长期占用等于劫持——注册窗口必须
 /// 收窄到用户正对着 HUD 的那几秒（与 CancelHotkeyController 同一条哲学，
 /// 只是窗口从 .listening 放宽到整个会话：转写/翻译阶段用户也在看预览文字）。
+///
+/// 注意「非 idle」≠「HUD 可见」：idle 后 HUD 还会带附注停留几秒
+/// （`AppModel.endHUD` 的 linger），那几秒里 ⌘± 已交还前台应用——
+/// 这是故意的（用户此刻人已回到自己的应用里），不是漏注册。
 @MainActor
 final class ZoomHotkeyController {
     var onIncrease: (() -> Void)?
