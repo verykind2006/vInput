@@ -23,11 +23,12 @@ final class HUDViewModel {
     static let fontSizeDefaultsKey = "hud.previewFontSize"
 
     private let defaults: UserDefaults
-    var fontSize: CGFloat
+    private(set) var fontSize: CGFloat
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let stored = defaults.double(forKey: Self.fontSizeDefaultsKey)
+        // 0 兼作「未设置」哨兵：合法值域 12–24 不含 0，写坏成 0 时回默认值是比 clamp(0)=12 更合理的恢复
         self.fontSize = stored == 0 ? Self.defaultFontSize : Self.clampFontSize(CGFloat(stored))
     }
 

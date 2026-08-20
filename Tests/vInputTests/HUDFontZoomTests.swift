@@ -67,15 +67,21 @@ struct HUDFontZoomTests {
     /// 接线测试：`confirmedLines` 必须真的用上动态字号折行，而不是仍读
     /// 静态的 `Self.charsPerLine`（22）。20 个汉字在 24pt（每行 13 字）
     /// 要折成 2 行，在 15pt（每行 22 字）仍是 1 行。
+    ///
+    /// `fontSize` 是 `private(set)`，测试不能直接赋值绕过 clamp/persist，
+    /// 所以改走种子化 defaults 构造出 24pt 的实例——顺带覆盖了 init 读取
+    /// 24pt 存量值的路径。
     @Test func confirmedLinesUsesDynamicFontSize() {
-        let model = HUDViewModel(defaults: makeDefaults())
         let text = String(repeating: "字", count: 20)
-        model.preview = PreviewText(confirmed: text, unconfirmed: "", energy: [])
 
-        model.fontSize = 24
-        #expect(model.confirmedLines.count == 2)
+        let seededDefaults = makeDefaults()
+        seededDefaults.set(24.0, forKey: HUDViewModel.fontSizeDefaultsKey)
+        let big = HUDViewModel(defaults: seededDefaults)
+        big.preview = PreviewText(confirmed: text, unconfirmed: "", energy: [])
+        #expect(big.confirmedLines.count == 2)
 
-        model.fontSize = 15
-        #expect(model.confirmedLines.count == 1)
+        let small = HUDViewModel(defaults: makeDefaults())   // 默认 15pt
+        small.preview = PreviewText(confirmed: text, unconfirmed: "", energy: [])
+        #expect(small.confirmedLines.count == 1)
     }
 }
