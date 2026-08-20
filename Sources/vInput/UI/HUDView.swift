@@ -9,10 +9,13 @@ struct HUDView: View {
 
     /// 文本框固定高度。固定而非自适应，是为了让面板尺寸在整场会话中
     /// 不变——高度随文字增减会让面板不停跳动，比文字本身更干扰。
+    /// 字号是用户主动调整，随之改高不算「跳动」。
     private var transcriptHeight: CGFloat {
         lineHeight * CGFloat(HUDViewModel.maxLines) + 20
     }
-    private let lineHeight: CGFloat = 26
+    private var lineHeight: CGFloat {
+        HUDViewModel.lineHeight(forFontSize: model.fontSize)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -24,10 +27,10 @@ struct HUDView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
         .frame(width: 480)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .background(VITheme.panelBackground, in: RoundedRectangle(cornerRadius: 14))
         .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(.separator.opacity(0.6), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(VITheme.hairline, lineWidth: 1)
         )
     }
 
@@ -45,7 +48,7 @@ struct HUDView: View {
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.tertiary)
             Spacer(minLength: 8)
-            WaveformView(bars: model.bars)
+            WaveformView(bars: model.bars, tint: model.phase == .listening ? VITheme.accent : .secondary)
         }
     }
 
@@ -58,7 +61,7 @@ struct HUDView: View {
     private var transcriptBox: some View {
         ZStack(alignment: .bottomLeading) {
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color(nsColor: .textBackgroundColor).opacity(0.55))
+                .fill(VITheme.contentBackground)
 
             transcriptText
                 .padding(.horizontal, 12)
@@ -67,7 +70,7 @@ struct HUDView: View {
         .frame(height: transcriptHeight)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(.separator.opacity(0.4), lineWidth: 0.5)
+                .strokeBorder(VITheme.hairline, lineWidth: 0.5)
         )
     }
 
@@ -75,7 +78,7 @@ struct HUDView: View {
     private var transcriptText: some View {
         if model.confirmedLines.isEmpty && model.unconfirmedText.isEmpty {
             Text(placeholder)
-                .font(.system(size: 15))
+                .font(.system(size: model.fontSize))
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
@@ -85,8 +88,9 @@ struct HUDView: View {
                 .foregroundStyle(.primary)
              + Text(model.unconfirmedText)
                 .foregroundStyle(.secondary))
-                .font(.system(size: 15))
-                .lineSpacing(5)
+                .font(.system(size: model.fontSize))
+                // 15pt 时等价于旧值 5（26-15-6=5）；随字号联动，行距不会在字号变大后显得过挤。
+                .lineSpacing(max(0, lineHeight - model.fontSize - 6))
                 .multilineTextAlignment(.leading)
                 .lineLimit(HUDViewModel.maxLines)
                 // 超出时截掉开头、保留最新——说话是往后走的，
@@ -129,6 +133,7 @@ struct HUDView: View {
             keyHint("⌥D", "完成")
             keyHint("esc", "取消")
             Spacer(minLength: 0)
+            keyHint("⌘＋/－", "字号")
         }
     }
 
@@ -148,11 +153,13 @@ struct HUDView: View {
         .foregroundStyle(.secondary)
     }
 
+    // 琥珀橙=正在收音的品牌信号；处理中波形停走+灰点即足够，双色告警反而抢戏——
+    // 旧版 listening=红、处理中=橙，两种警示色并列容易让人误读成异常状态。
     private var statusColor: Color {
         switch model.phase {
         case .idle: .secondary
-        case .listening: .red
-        case .transcribing, .correcting, .translating, .injecting: .orange
+        case .listening: VITheme.accent
+        case .transcribing, .correcting, .translating, .injecting: .secondary
         }
     }
 }

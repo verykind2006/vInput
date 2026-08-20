@@ -4,6 +4,8 @@ import SwiftUI
 /// 看不见任何东西时这是最真实的焦虑。
 struct WaveformView: View {
     let bars: [Float]
+    /// 听写中琥珀橙、其余次要色。由调用方按 phase 决定——本视图不认识 phase。
+    var tint: Color = .secondary
 
     private let barWidth: CGFloat = 3
     private let spacing: CGFloat = 2
@@ -13,7 +15,7 @@ struct WaveformView: View {
         HStack(alignment: .center, spacing: spacing) {
             ForEach(Array(bars.enumerated()), id: \.offset) { _, value in
                 RoundedRectangle(cornerRadius: barWidth / 2)
-                    .fill(.secondary)
+                    .fill(tint)
                     .frame(
                         width: barWidth,
                         // 留 2pt 底座，静音时也能看出这里是波形而非空白

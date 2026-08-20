@@ -10,8 +10,6 @@ import Observation
 final class HUDViewModel {
     /// 文本区固定行数，超出后只显示末尾若干行。
     static let maxLines = 4
-    /// 每行大致容纳的字符数，用于折行估算。
-    static let charsPerLine = 22
     /// 波形柱数。
     static let barCount = 24
 
@@ -80,7 +78,7 @@ final class HUDViewModel {
         (size * 26 / 15).rounded()
     }
 
-    /// 每行字数估算随字号反比（现值 15→22，恒定积 330）。**刻意向下取整**：
+    /// 每行字数估算随字号反比（15pt 锚点值=22，恒定积 330）。**刻意向下取整**：
     /// 低估每行字数 → 提前折行 → 永远不会溢出文本框；四舍五入会在 24pt 时
     /// 估出 14 字（13.75），实际装不下。
     nonisolated static func charsPerLine(forFontSize size: CGFloat) -> Int {
