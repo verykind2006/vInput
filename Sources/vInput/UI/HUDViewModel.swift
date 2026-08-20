@@ -9,15 +9,18 @@ import Observation
 @Observable
 final class HUDViewModel {
     /// 文本区固定行数，超出后只显示末尾若干行。
-    static let maxLines = 4
+    /// `nonisolated`：被 nonisolated 的 transcriptHeight(forFontSize:) 引用
+    /// （QA 复核把版式算术搬进 model 时新增的引用点），同 minFontSize 那组常量
+    /// 一个理由——不标在 Swift 6 语言模式下是硬错误。
+    nonisolated static let maxLines = 4
     /// 波形柱数。
     static let barCount = 24
 
     // MARK: - 字号缩放（M9，用户要求 ⌘＋/⌘－ 可调）
 
-    // nonisolated：被 nonisolated 的 clampFontSize 引用。不标的话在 Swift 5
-    // 模式下是警告、Swift 6 语言模式下是硬错误（Task 5 规格审查抓到的
-    // Task 3 遗留债）。
+    // min/max 被 nonisolated 的 clampFontSize 引用，不标在 Swift 5 模式下是警告、
+    // Swift 6 语言模式下是硬错误（Task 5 规格审查抓到的 Task 3 遗留债）。
+    // 另两个目前只在 MainActor 上用，一并标是为了整组一致、以后挪进纯函数不用回头改。
     nonisolated static let minFontSize: CGFloat = 12
     nonisolated static let maxFontSize: CGFloat = 24
     nonisolated static let defaultFontSize: CGFloat = 15
@@ -79,6 +82,19 @@ final class HUDViewModel {
     /// 行高随字号等比（现值 15→26），文本框高度由它 × maxLines 得出。
     nonisolated static func lineHeight(forFontSize size: CGFloat) -> CGFloat {
         (size * 26 / 15).rounded()
+    }
+
+    /// 行距 = 行高扣掉字号本身与字体自带的 ~6pt 内部行距（那个 6 是字体内部
+    /// leading 余量）。15pt 时 = 26-15-6 = 5（旧硬编码值），是这条公式的等价锚点。
+    nonisolated static func lineSpacing(forFontSize size: CGFloat) -> CGFloat {
+        max(0, lineHeight(forFontSize: size) - size - 6)
+    }
+
+    /// 文本框固定高度：行高 × 固定行数 + 20（上下内边距）。**固定而非自适应**，
+    /// 是为了让面板尺寸在一场会话中不随文字增减跳动；字号是用户主动调整，
+    /// 随之改高不算「跳动」。
+    nonisolated static func transcriptHeight(forFontSize size: CGFloat) -> CGFloat {
+        lineHeight(forFontSize: size) * CGFloat(maxLines) + 20
     }
 
     /// 每行字数估算随字号反比（15pt 锚点值=22，恒定积 330）。**刻意向下取整**：

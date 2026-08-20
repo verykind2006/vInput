@@ -7,14 +7,10 @@ import SwiftUI
 struct HUDView: View {
     let model: HUDViewModel
 
-    /// 文本框固定高度。固定而非自适应，是为了让面板尺寸在整场会话中
-    /// 不变——高度随文字增减会让面板不停跳动，比文字本身更干扰。
-    /// 字号是用户主动调整，随之改高不算「跳动」。
+    /// 版式算术（行高/行距/文本框高度）全部搬进了 HUDViewModel 的纯函数——
+    /// 视图只画，不算；这样这几条公式能单测（见 HUDFontZoomTests 的不变量测试）。
     private var transcriptHeight: CGFloat {
-        lineHeight * CGFloat(HUDViewModel.maxLines) + 20
-    }
-    private var lineHeight: CGFloat {
-        HUDViewModel.lineHeight(forFontSize: model.fontSize)
+        HUDViewModel.transcriptHeight(forFontSize: model.fontSize)
     }
 
     var body: some View {
@@ -89,8 +85,7 @@ struct HUDView: View {
              + Text(model.unconfirmedText)
                 .foregroundStyle(.secondary))
                 .font(.system(size: model.fontSize))
-                // 15pt 时等价于旧值 5（26-15-6=5）；随字号联动，行距不会在字号变大后显得过挤。
-                .lineSpacing(max(0, lineHeight - model.fontSize - 6))
+                .lineSpacing(HUDViewModel.lineSpacing(forFontSize: model.fontSize))
                 .multilineTextAlignment(.leading)
                 .lineLimit(HUDViewModel.maxLines)
                 // 超出时截掉开头、保留最新——说话是往后走的，
@@ -134,6 +129,9 @@ struct HUDView: View {
             keyHint("esc", "取消")
             Spacer(minLength: 0)
             keyHint("⌘＋/－", "字号")
+            // ⌘0 早就注册了（ZoomHotkeyController.onReset），但一直没地方告诉用户——
+            // 调过头之后最想要的恰恰是这个键。
+            keyHint("⌘0", "复位")
         }
     }
 

@@ -57,6 +57,36 @@ struct HUDFontZoomTests {
         #expect(HUDViewModel.lineHeight(forFontSize: 24) == 42)
     }
 
+    /// 行距/文本框高度（QA 复核搬进 model 的版式算术）：15pt 时等价旧硬编码值。
+    ///
+    /// 期望值预先算好赋给 CGFloat 常量再比较：Swift Testing 1902（Swift 6.3.3
+    /// 工具链）在 #expect 内联对 CGFloat 做算术表达式时会误报失败——两侧打印值
+    /// 明明相同却判不等，同 HUDPanelTests 那条注释是同一个坑。
+    @Test func lineSpacingAndTranscriptHeightMatchOldHardcodedValues() {
+        let expectedLineSpacing: CGFloat = 5
+        #expect(HUDViewModel.lineSpacing(forFontSize: 15) == expectedLineSpacing)
+        let expectedTranscriptHeight: CGFloat = 26 * 4 + 20
+        #expect(HUDViewModel.transcriptHeight(forFontSize: 15) == expectedTranscriptHeight)
+    }
+
+    /// 不变量：不管字号怎么调，四行文字（按「字号 × 1.2」估的单行渲染高度算）
+    /// 加上行间距永远要装得进 transcriptHeight，不能溢出文本框。
+    ///
+    /// 变异验证：把 transcriptHeight 的 `+ 20` 改成 `- 20`，或把 lineHeight 的
+    /// 系数从 26/15 调小（比如改成 20/15），这条测试必须红——已手工验证过。
+    @Test func transcriptHeightAlwaysFitsMaxLines() {
+        for size: CGFloat in [12, 15, 24] {
+            let estimatedLineRenderHeight = size * 1.2
+            let needed = CGFloat(HUDViewModel.maxLines) * estimatedLineRenderHeight
+                + CGFloat(HUDViewModel.maxLines - 1) * HUDViewModel.lineSpacing(forFontSize: size)
+                + 20
+            #expect(
+                needed <= HUDViewModel.transcriptHeight(forFontSize: size),
+                "字号 \(size)pt 时四行文字装不进文本框：需要 \(needed)，只有 \(HUDViewModel.transcriptHeight(forFontSize: size))"
+            )
+        }
+    }
+
     /// 行宽估算等比：现值 15pt→22 字（15×22=330 恒定积）。字号大→每行字少。
     @Test func charsPerLineScales() {
         #expect(HUDViewModel.charsPerLine(forFontSize: 15) == 22)

@@ -18,8 +18,22 @@ final class HUDPanel {
     private var panel: NSPanel?
     private let model: HUDViewModel
 
+    /// resize 通知的订阅凭证。`nonisolated(unsafe)`：只在 deinit（nonisolated）
+    /// 里读，与 `RemoteKeySuppressor.tapHandle` 同一个理由——那时已经没有
+    /// 别的引用会并发碰它。
+    private nonisolated(unsafe) var resizeObserver: NSObjectProtocol?
+
     init(model: HUDViewModel) {
         self.model = model
+    }
+
+    /// **面板必须活得比它的 resize 订阅短。** 没有这个 `deinit`，通知中心会
+    /// 一直攥着已经没人用的 observer token，回调里的 `[weak self]` 虽然不会
+    /// 崩，但订阅本身永远不会摘掉。
+    deinit {
+        if let resizeObserver {
+            NotificationCenter.default.removeObserver(resizeObserver)
+        }
     }
 
     /// 计算面板在给定屏幕上的原点。抽成静态纯函数以便单测。
@@ -95,6 +109,22 @@ final class HUDPanel {
         // 在所有 Space 与全屏应用之上显示——用户可能在全屏编辑器里口述。
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.ignoresMouseEvents = true
+
+        // NSHostingController 默认 sizingOptions = .standardBounds，内容变高时面板会
+        // 自己 resize——但 AppKit 保持**左上角**不动，面板是往下长的，bottomMargin
+        // 被吃掉（24pt 时 120→56，而 Dock 占了底部 92pt，会压住 footer）。
+        // 只要尺寸变了就把原点重摆一次；⌘± 与附注行两条路径都走这里。
+        // 这个 bug 早于本次改动——`noticeRow` 出现时同样会让面板长高（约 96），
+        // 只是刚好擦过 92pt 没被发现；修在这里而不是各自的调用方，一次堵死两条路径。
+        resizeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification, object: panel, queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self, let panel = note.object as? NSWindow else { return }
+                self.realign(panel)
+            }
+        }
+
         return panel
     }
 
@@ -104,5 +134,11 @@ final class HUDPanel {
         let screen = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1_440, height: 900)
         let origin = Self.originFor(screenFrame: screen, panelSize: size)
         panel.setFrame(CGRect(origin: origin, size: size), display: true)
+    }
+
+    /// 只动原点、不动尺寸——`setFrameOrigin` 不会再触发 didResize，无递归。
+    private func realign(_ panel: NSWindow) {
+        let screen = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        panel.setFrameOrigin(Self.originFor(screenFrame: screen, panelSize: panel.frame.size))
     }
 }

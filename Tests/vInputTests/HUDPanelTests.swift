@@ -52,4 +52,53 @@ struct HUDPanelTests {
 
         #expect(origin.x >= 0)
     }
+
+    // MARK: - resize 后重新贴回 Dock 上方（QA 复核，探针实测）
+
+    /// 用**扫源码**钉住订阅本身，跟 `AppModelWiringTests` 同一个理由：
+    /// `NSHostingController` 默认 `sizingOptions = .standardBounds`，
+    /// 内容变高（⌘＋ 调大字号、或附注行出现）时面板会自己 resize，但 AppKit
+    /// 保持左上角不动、面板往下长，`bottomMargin` 被吃掉。真机探针实测：
+    /// 15pt→bottomGap 120，20pt→84，24pt→**56**——这台机器 Dock 占底部 92pt，
+    /// 从第 5 次 ⌘＋ 起 footer（就是刚加的「⌘＋/－ 字号」那一行）开始被压。
+    ///
+    /// 这个 bug 早于本轮字号功能：`noticeRow` 出现时同样会让面板长高
+    /// （bottomGap→约 96），只是刚好擦过 92pt 没被发现。
+    static func hudPanelSource() throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // vInputTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // 仓库根
+        return try String(
+            contentsOf: root.appendingPathComponent("Sources/vInput/UI/HUDPanel.swift"),
+            encoding: .utf8
+        )
+    }
+
+    @Test("makePanel 订阅了面板自身的 resize 通知")
+    func subscribesToOwnResizeNotification() throws {
+        let source = try Self.hudPanelSource()
+        #expect(
+            source.contains("resizeObserver = NotificationCenter.default.addObserver("),
+            """
+            HUDPanel.makePanel() 里没有订阅 resize 通知。
+            少了它的话，⌘＋ 把字号调到 24pt 时面板会往下长而不回摆原点，
+            这台机器 Dock 占底部 92pt、bottomGap 会从 120 掉到 56，
+            footer（「⌘＋/－ 字号」那一行）被 Dock 压住。
+            """
+        )
+        #expect(
+            source.contains("NSWindow.didResizeNotification"),
+            "订阅的通知名不是 NSWindow.didResizeNotification，检查有没有走错通知。"
+        )
+    }
+
+    @Test("resizeObserver 在 deinit 里被摘掉")
+    func removesResizeObserverOnDeinit() throws {
+        let source = try Self.hudPanelSource()
+        #expect(
+            source.contains("NotificationCenter.default.removeObserver(resizeObserver)"),
+            "deinit 里没有摘掉 resizeObserver，面板释放后订阅会一直留在通知中心里。"
+        )
+    }
 }
