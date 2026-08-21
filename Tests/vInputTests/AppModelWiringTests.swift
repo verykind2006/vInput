@@ -284,4 +284,73 @@ struct AppModelWiringTests {
             "zoomHotkeys.onReset 没有接到 hudModel.resetFontSize()。"
         )
     }
+
+    // MARK: - 遥控器「·」键 → 空格
+
+    /// 取 `hidListener.onGravePressed` 那个闭包的源码窗口。
+    static func gravePressedBody(_ source: String) throws -> String {
+        let start = try #require(
+            source.range(of: "hidListener.onGravePressed = {"),
+            "找不到 onGravePressed 的接线，这个测试的锚点失效了"
+        )
+        // 闭包本体十几行；到下一个 `hidListener.` 或 `graveSwallower.start()` 为止。
+        let rest = source[start.upperBound...]
+        let end = rest.range(of: "\n        hidListener.start()")?.lowerBound ?? rest.endIndex
+        return String(rest[..<end])
+    }
+
+    /// 这个键要做的是**两件事**，只做一件都不合格：
+    /// 只注空格 → 用户同时得到「·」和一个空格；只吞键 → 什么都没发生。
+    @Test("「·」键既注入空格，也吞掉原始按键")
+    func graveKeyPostsSpaceAndSwallows() throws {
+        let body = try Self.gravePressedBody(try Self.appModelSource())
+        #expect(
+            body.contains("graveSwallower.arm()"),
+            """
+            onGravePressed 里没有 graveSwallower.arm()。
+            系统会照常投递这个键（那就是用户看到的「·」），不吞掉的话
+            按一下会同时得到「·」和一个空格。
+            """
+        )
+        #expect(
+            body.contains("remoteKeyPoster.postSpace()"),
+            """
+            onGravePressed 里没有 postSpace()。
+            用户要的是 Finder 的 Quick Look，那是系统对空格「键」的响应。
+            """
+        )
+    }
+
+    /// **武装必须是无条件的，且排在听写守卫之前。**
+    ///
+    /// 排在守卫之后（或写进 else 分支）的后果：录音中误碰这个键，空格不注、
+    /// 「·」照进——正好是最坏的一档（往正在听写的目标应用里插了个字符）。
+    /// 正确的结果是什么都没发生。
+    @Test("吞键的武装排在「录音中忽略」守卫之前")
+    func graveArmComesBeforeIdleGuard() throws {
+        let body = try Self.gravePressedBody(try Self.appModelSource())
+        let arm = body.range(of: "graveSwallower.arm()")
+        let guardCall = body.range(of: "graveKeyPostsSpace")
+        #expect(arm != nil && guardCall != nil)
+        if let arm, let guardCall {
+            #expect(
+                arm.lowerBound < guardCall.lowerBound,
+                """
+                graveSwallower.arm() 排到了 graveKeyPostsSpace 守卫之后。
+                录音中误碰这个键会变成「空格不注、「·」照进目标应用」，
+                比什么都不做更糟。
+                """
+            )
+        }
+    }
+
+    /// 常开的 tap 要跟着遥控器那条路一起起、一起收。
+    /// 不收的表现是「tap 活得比它的用途久」——`RemoteKeySuppressor` 为这件事
+    /// 崩过四次。
+    @Test("吞键器跟着遥控器一起启停")
+    func graveSwallowerStartsAndStops() throws {
+        let source = try Self.appModelSource()
+        #expect(source.contains("graveSwallower.start()"), "startRemote 里没有 graveSwallower.start()。")
+        #expect(source.contains("graveSwallower.stop()"), "stopRemote 里没有 graveSwallower.stop()。")
+    }
 }

@@ -1,3 +1,4 @@
+import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
 
@@ -11,16 +12,43 @@ protocol KeyPoster: Sendable {
     /// 退格。遥控器关机键的映射目标（2026-08-20 侦察后定的，
     /// 见 `HIDReportParser.powerButtonUsage`）。
     func postBackspace()
+    /// 空格。遥控器「·」键的映射目标（2026-08-21 用户定的，
+    /// 见 `HIDReportParser.graveButtonUsage`）。
+    ///
+    /// **必须是按键，不是字符。** 用户要的是 Finder 里的 Quick Look，
+    /// 那是系统对空格**键**的响应；往输入框塞一个 " " 不会弹出预览。
+    /// 所以它走这条 CGEvent 注入的路，不走 `TextSink`。
+    func postSpace()
 }
 
 struct SystemKeyPoster: KeyPoster {
+    /// 三个虚拟键码。**用 `kVK_*` 常量而不是裸数字**（2026-08-21 换的）。
+    ///
+    /// 原来写的是 `post(key: 49, ...)  // kVK_Space` 这样的字面量加注释。
+    /// 问题是**没有任何东西守得住那个数**：真发 CGEvent 需要辅助功能授权，
+    /// 测试进程里发不出去也验不了，实测把 49 改成 51 之后 1183 条用例全绿。
+    /// 换成 Carbon 常量之后，「这个数对不对」由编译器和系统头文件回答，
+    /// 剩下的只是「有没有引错常量」——那由下面三条断言钉住。
+    static let returnKey = CGKeyCode(kVK_Return)
+    /// Backspace，不是 forward delete。
+    static let backspaceKey = CGKeyCode(kVK_Delete)
+    static let spaceKey = CGKeyCode(kVK_Space)
+
     /// nonisolated + Sendable：`CGEvent` 的发送是线程安全的。
     func postReturn() {
-        post(key: 36, name: "回车")  // kVK_Return
+        post(key: Self.returnKey, name: "回车")
     }
 
     func postBackspace() {
-        post(key: 51, name: "退格")  // kVK_Delete（Backspace，不是 forward delete）
+        post(key: Self.backspaceKey, name: "退格")
+    }
+
+    /// 空格键。**下面 `post` 里清零修饰键这一步对它尤其要紧**：
+    /// 用户按遥控器时另一只手常搭在键盘上，而 ⌘Space 是切换输入法、
+    /// ⌃Space 也是，⇧Space 在部分输入法里是半/全角切换——任何一个都不是
+    /// Quick Look。
+    func postSpace() {
+        post(key: Self.spaceKey, name: "空格")
     }
 
     private func post(key: CGKeyCode, name: String) {

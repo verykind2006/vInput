@@ -144,9 +144,10 @@ final class AppModel {
     private let hotkey = HotkeyRegistrar()
     private var session: DictationSession?
 
-    /// 关机键映射退格用的注入器。与鼠标桥各持一个 `SystemKeyPoster`
-    /// 同一个形态；替身注入点留给将来的接线测试。
-    private let powerKeyPoster: KeyPoster = SystemKeyPoster()
+    /// 遥控器按键映射用的注入器（关机键→退格、「·」键→空格）。
+    /// 与鼠标桥各持一个 `SystemKeyPoster` 同一个形态；
+    /// 替身注入点留给将来的接线测试。
+    private let remoteKeyPoster: KeyPoster = SystemKeyPoster()
     private var transcriber: SwitchableTranscriber?
     private var modelRoot: String = ""
 
@@ -161,6 +162,10 @@ final class AppModel {
     private let mouseSource = MouseAudioSource()
     private let hidListener = RemoteHIDListener()
     private let keySuppressor = RemoteKeySuppressor()
+    /// 「·」键那一路的吞键器。**刻意与 `keySuppressor` 分开**：那个是会话
+    /// 作用域的、坐在听写主路径上、有过 tap 生命周期崩溃史（`6a24f18`），
+    /// 这个是常开的。分开之后这里出问题最多是「·」不被吞，听写照常。
+    private let graveSwallower = GraveKeySwallower()
     private let keepalive = VoiceSessionKeepalive()
     private var remoteCoordinator: RemoteCoordinator?
     private var bluetoothBridge: XiaomiBluetoothBridge?
@@ -315,6 +320,17 @@ final class AppModel {
     /// 不做更糟——与「会话期间按键抑制」同一条哲学（宁可少动作，
     /// 不要错动作）。
     nonisolated static func powerKeyPostsBackspace(dictationIdle: Bool) -> Bool {
+        dictationIdle
+    }
+
+    /// 遥控器「·」键按下时要不要注空格。理由同上一条：录音时误碰不该往
+    /// 目标应用里插东西。
+    ///
+    /// **注意它只管「注不注空格」，不管「吞不吞原始按键」。**
+    /// 那个「·」在任何情况下都不该落到应用里——录音中按了它，正确的结果是
+    /// **什么都没发生**，而不是「插了个「·」但没插空格」。所以接线处是先
+    /// 无条件 `graveSwallower.arm()`，再拿本函数决定注不注空格。
+    nonisolated static func graveKeyPostsSpace(dictationIdle: Bool) -> Bool {
         dictationIdle
     }
 
@@ -1753,10 +1769,32 @@ final class AppModel {
                 return
             }
             AppLogger.shared.log("关机键按下，注入退格")
-            self.powerKeyPoster.postBackspace()
+            self.remoteKeyPoster.postBackspace()
+        }
+        // 「·」键 → 空格（2026-08-21 用户提的：想在 Finder 里选中图片按它
+        // 弹 Quick Look）。依据见 HIDReportParser.graveButtonUsage。
+        //
+        // **与关机键不同，这里要做两件事**：系统会真的投递这个键（那就是
+        // 用户看到的「·」），所以既要注入空格，也要吞掉原始按键。
+        hidListener.onGravePressed = { [weak self] in
+            guard let self else { return }
+            // **先武装吞键器，且无条件武装。** 那个「·」在任何情况下都不该
+            // 落到应用里——录音中按了它，正确的结果是什么都没发生。
+            // 放在最前面还有一层理由：系统投递出的按键只落后 HID 报文
+            // 约 2 毫秒，这之前每多做一件事都是风险。
+            self.graveSwallower.arm()
+            guard Self.graveKeyPostsSpace(
+                dictationIdle: (self.session?.state ?? .idle) == .idle)
+            else {
+                AppLogger.shared.log("「·」键按下，但正在听写，忽略")
+                return
+            }
+            AppLogger.shared.log("「·」键按下，注入空格")
+            self.remoteKeyPoster.postSpace()
         }
         hidListener.start()
         keySuppressor.start()
+        graveSwallower.start()
 
         // 把鼠标桥当前占着的那台排除掉。遥控器桥的连接判据是「服务 UUID
         // 匹配**或**名字匹配」，若某设备广播了 ATVV 服务 UUID 它就会去连
@@ -1776,6 +1814,9 @@ final class AppModel {
     private func stopRemote() {
         hidListener.stop()
         keySuppressor.stop()
+        // 没有 HID 监听就没人来武装它，常开的 tap 也该一起收——
+        // 「tap 不能活得比它的用途久」同 `RemoteKeySuppressor` 那条教训。
+        graveSwallower.stop()
         bluetoothBridge?.stop()
         bluetoothBridge = nil
         remoteCoordinator = nil

@@ -29,8 +29,11 @@ enum HIDReportParser {
     /// | `0x3E` | 语音键 | F5。macOS 会投递给前台应用，录音期间需要
     ///                     `RemoteKeySuppressor` 吞掉，否则输入框被杂键淹没 |
     /// | `0x4F` / `0x50` / `0x51` / `0x52` | 右 / 左 / 下 / 上 | 标准方向键 |
+    /// | `0x35` | 「·」键 | 标准 Grave/Tilde。**系统照常投递**，见 `graveButtonUsage` |
     /// | `0xF1` | 返回键 | 非标准，系统不投递，本项目用它做取消 |
     /// | `0x66` | 关机键 | 见 `powerButtonUsage` |
+    ///
+    /// 2026-08-21 补了 `0x35` 一行——原表只有 8 个 usage，把这个键漏了。
     ///
     /// 曾计划把确认键映射成回车，实测发现系统本来就投递了——**没有为一个
     /// 不存在的问题写代码**。
@@ -47,6 +50,26 @@ enum HIDReportParser {
     /// - 原报告「误碰后直接关掉电脑屏幕」当天未能复现（三次短按都没关屏），
     ///   若再出现要记下当时的按法与系统状态。
     static let powerButtonUsage: UInt16 = 0x66
+
+    /// 遥控器上那个会打出「·」的键（Keyboard Grave Accent/Tilde）。
+    /// 映射成**空格**（2026-08-21 用户定的）。
+    ///
+    /// **诉求是 Quick Look，不是打一个空格字符。** 用户的原话：在 Finder 里
+    /// 选中一张图片，按这个键要像按下键盘空格键那样弹出预览。所以只往输入框
+    /// 塞一个 " " 是不合格的——必须投递真正的空格**按键**，系统与应用的
+    /// 快捷键才会响应。这就是它走 `KeyPoster.postSpace()`（CGEvent 注入
+    /// `kVK_Space`）而不是走任何 `TextSink` 的原因。
+    ///
+    /// **0x35 是实测出来的**：2026-08-21 用户连按三次，
+    /// `RemoteHIDListener` 的 usage 日志记下 16:42:17.620 / 16:42:20.185 /
+    /// 16:42:22.525 三行 `遥控器按键 usage=0x35`。0x35 是标准的
+    /// Grave Accent，中文输入法下打出「·」——正是用户今天看到的现象。
+    ///
+    /// **与关机键的关键差别：系统会投递它。** `0x66` 短按零投递，识别到直接
+    /// 注入即可；这个键既然能打出「·」，就说明它一路走到了前台应用，因此
+    /// 必须**两件事都做**：吞掉原始按键（`GraveKeySwallower`）＋ 注入真空格。
+    /// 少做前一件，用户会同时得到「·」和一个空格。
+    static let graveButtonUsage: UInt16 = 0x35
 
     static func usages(reportID: UInt32, data: Data) -> Set<UInt16>? {
         guard reportID == 1 else { return nil }

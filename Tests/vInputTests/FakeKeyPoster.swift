@@ -16,6 +16,7 @@ final class FakeKeyPoster: KeyPoster, @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
     private var backspaces = 0
+    private var spaces = 0
 
     var returnCount: Int {
         lock.lock()
@@ -35,9 +36,21 @@ final class FakeKeyPoster: KeyPoster, @unchecked Sendable {
         lock.unlock()
     }
 
+    var spaceCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return spaces
+    }
+
     func postBackspace() {
         lock.lock()
         backspaces += 1
+        lock.unlock()
+    }
+
+    func postSpace() {
+        lock.lock()
+        spaces += 1
         lock.unlock()
     }
 }

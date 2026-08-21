@@ -15,6 +15,9 @@ final class RemoteHIDListener {
     /// 关机键被按下时触发（映射成退格，接线与「录音中忽略」的判断在
     /// `AppModel`——这一层只认 usage，不该知道注入与会话）。
     var onPowerPressed: (() -> Void)?
+    /// 「·」键被按下时触发（映射成空格，见 `HIDReportParser.graveButtonUsage`）。
+    /// 同样只认 usage：注入空格、吞掉原始「·」、录音中怎么办，全在 `AppModel`。
+    var onGravePressed: (() -> Void)?
 
     private var manager: IOHIDManager?
     private var pressedUsages: Set<UInt16> = []
@@ -82,7 +85,13 @@ final class RemoteHIDListener {
         pressedUsages = []
     }
 
-    private func handleReport(reportID: UInt32, data: Data) {
+    /// **不是 private：单测直接喂报文进来。**
+    ///
+    /// 「哪个 usage 触发哪个回调」原先一行覆盖都没有——`didPress` 那套用例
+    /// 只测纯函数，把这里三个分派全删掉照样全绿。而真 HID 设备进不了测试
+    /// 进程，`start()` 又必须要「输入监控」授权，所以唯一测得到的办法就是
+    /// 绕过 IOHID、直接调这里。2026-08-21 加「·」键那一路时补的。
+    func handleReport(reportID: UInt32, data: Data) {
         guard let current = HIDReportParser.usages(reportID: reportID, data: data) else { return }
         let previous = pressedUsages
         pressedUsages = current
@@ -101,6 +110,14 @@ final class RemoteHIDListener {
         }
         if Self.didPress(usage: HIDReportParser.powerButtonUsage, previous: previous, current: current) {
             onPowerPressed?()
+        }
+        // 这一路**必须尽早**：回调链的下游要武装 `GraveKeySwallower`，
+        // 而系统投递出来的那个「·」按键只落后本报文约 2 毫秒
+        // （实测：2026-08-21 16:42:28.286 收到 usage=0x3E，16:42:28.288
+        // 事件 tap 才看到 keyCode=96）。这里多做一件耗时的事，就多一分
+        // 让原始按键抢在武装之前穿过去的风险。
+        if Self.didPress(usage: HIDReportParser.graveButtonUsage, previous: previous, current: current) {
+            onGravePressed?()
         }
     }
 
