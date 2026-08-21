@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 /// 菜单栏图标：V 字声波 mark 的五种状态形态。
 enum StatusIcon {
@@ -76,5 +77,28 @@ enum StatusIcon {
         }
         image.isTemplate = isTemplate(state)
         return image
+    }
+}
+
+/// 菜单栏那个图标的 SwiftUI 外壳。
+///
+/// **必须是一个真正的 `View`，不能把这几行直接写在 `MenuBarExtra` 的 label
+/// 闭包里。** `Image` 是叶子视图、没有自己的 body，所以写在闭包里时，
+/// `model.phase` 这两处读取发生在 **Scene 的 body 求值期间**；Scene 通常
+/// 只在启动时求值一次，观察系统推不动它——图标从此定格在启动那一刻的状态。
+///
+/// 实测（2026-08-21，用户真机 + 连拍 6 帧覆盖 5.4 秒）：会话已经进
+/// `.listening`，菜单栏图标全程仍是空闲档的白色模板图，一次都没变成琥珀橙。
+/// **这不只是好不好看**：琥珀橙是「正在录音」唯一始终可见的信号，而这个
+/// 应用可以用遥控器隔着房间启动——图标不变色，人就不知道自己正在被录。
+///
+/// 包成 View 之后，属性读取落在 View 的 body 里，观察系统正常接管。
+struct StatusIconLabel: View {
+    let model: AppModel
+
+    var body: some View {
+        Image(nsImage: StatusIcon.image(for: StatusIcon.state(
+            loadingModelName: model.loadingModelName,
+            phase: model.phase)))
     }
 }

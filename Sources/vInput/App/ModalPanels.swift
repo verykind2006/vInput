@@ -58,7 +58,18 @@ import AppKit
 @MainActor
 func dismissMenuPanel() {
     if let key = NSApp.keyWindow, !key.styleMask.contains(.titled) {
-        key.close()
+        // **`orderOut` 而不是 `close`。**
+        //
+        // 这里的 key window 就是 `MenuBarExtra(.window)` 的宿主窗口，而它是
+        // SwiftUI 自己创建、自己持有的。`NSWindow.isReleasedWhenClosed`
+        // **默认为 true**——对这样一个窗口调 `close()` 等于让它把自己释放掉，
+        // 菜单栏状态项跟着一起消失，且不会自己回来（要重启应用）。
+        //
+        // 用户实测（2026-08-21）：从面板点「开始听写」之后 vInput 的图标就
+        // 没了。上一轮以为是 `NSApp.hide(nil)` 干的、换掉了它，问题照旧——
+        // 真凶是这一行。`orderOut` 只把窗口移出屏幕，从不释放，
+        // 而「面板消失」这个用户可见的效果两者完全一样。
+        key.orderOut(nil)
     }
     if !ForegroundAppTracker.shared.handBackForeground() {
         // 兜底：不知道该还给谁（或系统拒绝了这次 activate）。探针实测

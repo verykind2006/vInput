@@ -126,6 +126,33 @@ struct ForegroundHandoffTests {
         )
     }
 
+    /// **不许对 key window 调 `close()`。**
+    ///
+    /// 那个 key window 是 `MenuBarExtra(.window)` 的宿主窗口，由 SwiftUI 创建
+    /// 和持有，而 `NSWindow.isReleasedWhenClosed` **默认为 true**——`close()`
+    /// 让它把自己释放掉，菜单栏状态项跟着消失且不会自己回来。
+    ///
+    /// 用户真机实测（2026-08-21）：从面板点「开始听写」之后 vInput 图标就没了。
+    /// 上一轮把 `NSApp.hide(nil)` 当成凶手换掉了，问题照旧——真凶是这一行。
+    /// `orderOut(nil)` 只移出屏幕、从不释放，用户看到的效果完全一样。
+    @Test("dismissMenuPanel 不对 key window 调 close")
+    func dismissDoesNotCloseHostWindow() throws {
+        let source = try MenuPanelViewWiringTests.codeOnly(
+            MenuPanelViewWiringTests.source("Sources/vInput/App/ModalPanels.swift"))
+        let closes = source.contains("key.close()")
+        #expect(
+            !closes,
+            """
+            ModalPanels.swift 里又出现了 key.close()。
+            MenuBarExtra 的宿主窗口是 SwiftUI 持有的，isReleasedWhenClosed
+            默认 true——close() 会连菜单栏状态项一起销毁（用户真机实测）。
+            要用 key.orderOut(nil)。
+            """
+        )
+        let ordersOut = source.contains("key.orderOut(nil)")
+        #expect(ordersOut, "dismissMenuPanel 不再把面板移出屏幕了，点完按钮面板会一直开着。")
+    }
+
     /// 让位这一步必须真的在 `dismissMenuPanel()` 里。
     ///
     /// 只关窗口是不够的：LSUIElement 应用在面板关闭后仍可能是活跃应用，

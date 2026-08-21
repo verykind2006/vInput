@@ -105,8 +105,24 @@ struct MenuPanelViewWiringTests {
             !hasSFSymbolIcon,
             "vInputApp.swift 里还在用 SF Symbol 当菜单栏图标，图标只能走 StatusIcon。"
         )
-        let usesStatusIcon = source.contains("StatusIcon.image(for: StatusIcon.state(")
-        #expect(usesStatusIcon, "菜单栏 label 没有走 StatusIcon.image(for: StatusIcon.state(...))。")
+        // 钉「label 是一个真正的 View」，而不是钉某种写法：`Image` 没有自己的
+        // body，直接写在 label 闭包里，状态读取就落进 Scene 的 body——Scene
+        // 只在启动时求值一次，图标从此定格（2026-08-21 实测：听写中不变琥珀橙，
+        // 而琥珀橙是「正在录音」唯一始终可见的信号）。
+        let usesLabelView = source.contains("StatusIconLabel(model:")
+        #expect(
+            usesLabelView,
+            """
+            菜单栏 label 没有走 StatusIconLabel。
+            直接在 label 闭包里算 Image(nsImage:) 的话，phase 变化推不动它，
+            图标会一直停在启动那一刻的状态。
+            """
+        )
+        let computesInlineInScene = source.contains("StatusIcon.image(for:")
+        #expect(
+            !computesInlineInScene,
+            "Scene 里又直接算图标了——那样图标不会跟着状态变，要放进 StatusIconLabel。"
+        )
     }
 
     // MARK: - 点主按钮之前必须先把焦点还回去
