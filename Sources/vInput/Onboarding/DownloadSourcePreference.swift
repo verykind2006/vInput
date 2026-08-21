@@ -18,6 +18,9 @@ struct DownloadSourcePreference {
     /// **全仓唯一的一处。** 别在别处再写一遍这个字符串。
     static let forcedKey = "download.forcedSource"
 
+    /// 上一次下载**实际用的**那个源。同样全仓唯一的一处。
+    static let resolvedKey = "download.resolvedSource"
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -44,6 +47,33 @@ struct DownloadSourcePreference {
                 return
             }
             defaults.set(newValue.rawValue, forKey: Self.forcedKey)
+        }
+    }
+
+    /// 上一次下载**实际用的**那个源。nil 表示「还没下载过任何东西」。
+    ///
+    /// ## 它跟 `forced` 是两件事
+    ///
+    /// `forced` 是用户的意愿（多半是 nil＝自动）；这一条是**事实**——
+    /// 「自动」探出来的结果原先只活在向导那一次运行里，谁都记不住。
+    /// 而下一次启动时 `prepare()` 要去取 tokenizer，它读的是进程的
+    /// `HF_ENDPOINT`（见 `HuggingFaceEndpoint`）：没有这条记录的话，
+    /// 一台在国内、上次靠镜像下完 1.5 GB 的机器，重启后取 2.8 MB 的
+    /// tokenizer 又会去连官方源，然后挂住。
+    ///
+    /// 读不出合法值时同样退回 nil，失败方向是「按官方源算」，
+    /// 与 `HubApi` 自己的默认一致。
+    var resolved: DownloadSource? {
+        get {
+            guard let raw = defaults.string(forKey: Self.resolvedKey) else { return nil }
+            return DownloadSource(rawValue: raw)
+        }
+        nonmutating set {
+            guard let newValue else {
+                defaults.removeObject(forKey: Self.resolvedKey)
+                return
+            }
+            defaults.set(newValue.rawValue, forKey: Self.resolvedKey)
         }
     }
 }

@@ -55,17 +55,31 @@ enum ModelDownloader {
         }
         // 清掉脚手架，但**只清我们自己造的那条链，且只在它空了之后**。
         //
-        // 不能直接删 `downloadBase/models`：WhisperKit 的 tokenizer 缓存也落在
-        // `downloadBase` 下（`WhisperKit.swift:75`，`tokenizerFolder ?? downloadBase`），
+        // 不能直接删 `downloadBase/models`：WhisperKit 的 tokenizer 也落在
+        // `downloadBase` 下（`models/openai/whisper-large-v3/`，turbo 的
+        // tokenizer 仓库名见 `ModelUtilities.tokenizerNameForVariant`），
         // 一刀删掉整层，下一次加载模型就得重新联网取 tokenizer——离线用户
         // 当场失败。逐级往上、空了才删，既不留空壳也不误伤别人的东西。
+        //
+        // **`.cache` 要单独处理，否则这个循环一次都不会执行。**
+        // HubApi 在仓库目录下留一份下载元数据（`whisperkit-coreml/.cache`），
+        // 而 `contentsOfDirectory` 是**包含**点开头条目的：模型挪走之后那一层
+        // 剩着一个 `.cache`，`empty` 恒为 false，整条脚手架原封不动留在盘上
+        // ——2026-08-22 QA 在本机盘上核到的就是这个形状。判据写成「只剩
+        // `.cache` 了」而不是「有 .cache 就删」：我们只下过这一个变体，
+        // 它一空，那份缓存就是彻底的孤儿；而万一里面还有别的东西，
+        // 那份缓存就还有主，不该动。
         var scaffold = downloadBase
             .appendingPathComponent("models", isDirectory: true)
             .appendingPathComponent("argmaxinc", isDirectory: true)
             .appendingPathComponent("whisperkit-coreml", isDirectory: true)
         for _ in 0..<3 {
-            let empty = ((try? fm.contentsOfDirectory(atPath: scaffold.path)) ?? []).isEmpty
-            guard empty else { break }
+            let entries = (try? fm.contentsOfDirectory(atPath: scaffold.path)) ?? []
+            if entries == [".cache"] {
+                try? fm.removeItem(at: scaffold.appendingPathComponent(".cache"))
+            } else if !entries.isEmpty {
+                break
+            }
             try? fm.removeItem(at: scaffold)
             scaffold = scaffold.deletingLastPathComponent()
         }
@@ -123,7 +137,9 @@ enum ModelDownloader {
 /// 因此这里把 `root` 原样当 `downloadBase` 传下去（借它当临时脚手架），
 /// 下载完成后把 WhisperKit 实际吐出的目录**挪到** `root/<variant>`
 /// （`ModelDownloader.run` 里 `alreadyPresent` 检查的正是这个位置），
-/// 再删掉挪空的 `models/` 脚手架目录，不留残留。搬家那几行在
+/// 再删掉挪空的 `models/argmaxinc/…` 脚手架（连同 HubApi 留下的那个
+/// 孤儿 `.cache`）。**`models/openai/<tokenizer 仓库>/` 是有意留着的**
+/// ——那是 tokenizer，删了下次加载就得重新联网取。搬家那几行在
 /// `ModelDownloader.relocate(downloaded:into:variant:fileManager:)`——
 /// 放在那边是为了测得到，理由见它自己的注释。
 @MainActor

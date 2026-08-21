@@ -368,7 +368,8 @@ struct OnboardingWiringTests {
         ownsDictation: (() -> Bool)? = { true },
         onRedirect: @escaping (((String) -> Bool)?) -> Void = { _ in },
         forcedSource: DownloadSource? = nil,
-        onProgress: @escaping (Double?) -> Void = { _ in }
+        onProgress: @escaping (Double?) -> Void = { _ in },
+        onResolvedSource: @escaping (DownloadSource) -> Void = { _ in }
     ) -> (OnboardingCoordinator, OnboardingState) {
         // 默认参数表达式在 nonisolated 上下文里求值，而 FakeDownloadBackend
         // 是 @MainActor 的——只能在这里造。
@@ -399,6 +400,7 @@ struct OnboardingWiringTests {
         wiring.wizardOwnsDictation = ownsDictation
         wiring.forcedDownloadSource = { forcedSource }
         wiring.onDownloadProgress = onProgress
+        wiring.recordResolvedSource = onResolvedSource
         return (OnboardingCoordinator(state: state, wiring: wiring), state)
     }
 
@@ -484,6 +486,72 @@ struct OnboardingWiringTests {
             probes.count == 0,
             "强制了下载源还在探测：这个逃生口存在的意义就是「探测选错了，我自己指定」。"
         )
+        coordinator.close()
+    }
+
+    /// 探测选出来的那个源要**记一笔**，否则 tokenizer 仍然走官方源。
+    ///
+    /// 传给 `WhisperKit.download` 的 `endpoint:` 只管模型权重；tokenizer 是
+    /// `prepare()` 里另一个入口取的，那一路没有 endpoint 参数，只认进程的
+    /// `HF_ENDPOINT`（见 `HuggingFaceEndpoint`）。不接这一路的话，国内用户
+    /// 经镜像顺利下完 1.5GB，然后在第五步为 2.8MB 的 tokenizer 去连
+    /// huggingface.co——**恰好是验收标准的最后一步**。
+    @Test("探测定下的下载源要记一笔（tokenizer 跟着它走）")
+    func resolvedSourceIsRecorded() async throws {
+        let recorder = SourceRecorder()
+        let (coordinator, _) = makeCoordinator(onResolvedSource: { recorder.append($0) })
+        coordinator.present()
+        try await waitUntil { coordinator.downloadFinished }
+        // 探测里镜像 10ms、官方 20ms，自动档选镜像——记下的必须是同一个。
+        #expect(
+            recorder.sources == [.mirror],
+            """
+            探测选中的下载源没有被记下来（实际记到 \(recorder.sources)）。
+            模型会经镜像下成功，而 tokenizer 会回官方源——国内用户在向导
+            第五步「试说一句」上挂住，1.5GB 白下。
+            """
+        )
+        coordinator.close()
+    }
+
+    /// 强制过的源也要记：用户在面板里换了档，tokenizer 得跟着换。
+    @Test("强制的下载源同样记一笔")
+    func forcedSourceIsAlsoRecorded() async throws {
+        let recorder = SourceRecorder()
+        let (coordinator, _) = makeCoordinator(
+            forcedSource: .official, onResolvedSource: { recorder.append($0) })
+        coordinator.present()
+        try await waitUntil { coordinator.downloadFinished }
+        #expect(recorder.sources == [.official])
+        coordinator.close()
+    }
+
+    /// **记在下载之前。** 下载成功会紧接着 `adoptModelFolder` → 换模型 →
+    /// `prepare()` → 取 tokenizer；排在下载之后的话，本次向导的最后一步
+    /// 照样走官方源（要到下次启动才对）。
+    @Test("下载源在下载开始之前就已经记下")
+    func resolvedSourceIsRecordedBeforeTheDownloadStarts() async throws {
+        let order = OrderRecorder()
+        let backend = FakeDownloadBackend()
+        backend.onCall = { order.append("download") }
+        let (coordinator, _) = makeCoordinator(
+            backend: backend, onResolvedSource: { _ in order.append("record") })
+        coordinator.present()
+        try await waitUntil { coordinator.downloadFinished }
+        #expect(order.events == ["record", "download"])
+        coordinator.close()
+    }
+
+    /// 两个源都不通时**什么都不许记**——那一刻根本没有「实际用的源」，
+    /// 记一个进去等于把下次启动的端点定死在一个连不上的主机上。
+    @Test("两个源都不通时不记任何东西")
+    func nothingIsRecordedWhenNoSourceIsReachable() async throws {
+        let recorder = SourceRecorder()
+        let (coordinator, _) = makeCoordinator(
+            reachable: [], onResolvedSource: { recorder.append($0) })
+        coordinator.present()
+        try await waitUntil { coordinator.downloadFailure != nil }
+        #expect(recorder.sources.isEmpty)
         coordinator.close()
     }
 
@@ -1159,14 +1227,33 @@ private final class RecordingSink: TextSink {
 private final class FakeDownloadBackend: ModelDownloadBackend {
     var calls: [String] = []
     var shouldFail = false
+    /// 下载开始那一刻的钩子。用来钉「记源在下载之前」那条先后顺序。
+    var onCall: () -> Void = {}
     func download(
         variant: String, into root: String, endpoint: String,
         onProgress: @escaping (Double) -> Void
     ) async throws {
+        onCall()
         calls.append(endpoint)
         onProgress(0.5)
         if shouldFail { throw ModelDownloadError.transportFailed }
     }
+}
+
+/// 记下「探测定下的是哪个源」被报了几次、报的是什么。
+///
+/// `@MainActor`：`recordResolvedSource` 是在协调器的主 actor 上调的。
+@MainActor
+private final class SourceRecorder {
+    var sources: [DownloadSource] = []
+    func append(_ source: DownloadSource) { sources.append(source) }
+}
+
+/// 只记先后顺序，不记内容。
+@MainActor
+private final class OrderRecorder {
+    var events: [String] = []
+    func append(_ event: String) { events.append(event) }
 }
 
 /// 记下每一次进度上报（含最后那次 nil）。

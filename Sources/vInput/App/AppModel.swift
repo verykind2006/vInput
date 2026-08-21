@@ -19,7 +19,12 @@ final class AppModel {
     private(set) var permissionStatus: Permissions.Status = .ready
     /// 实际生效的模型，显示在菜单栏，方便确认切换是否成功。
     private(set) var activeModelName: String = ""
-    /// `vendor/models` 下发现的全部可用模型，供菜单列出。
+    /// 实际生效的模型目录。空字符串表示**一个模型都没有**。
+    ///
+    /// 单独存一份而不是从 `availableModels` 推：用户可以经「其他目录…」
+    /// 用一个根目录外面的模型，那时列表可能仍是空的，而模型确实有一个。
+    private(set) var activeModelFolder: String = ""
+    /// 模型根目录（以及用户导入的目录）里发现的全部可用模型，供菜单列出。
     private(set) var availableModels: [ModelDescriptor] = []
     /// 正在加载模型。首次使用某模型时 Core ML 要编译到神经引擎，
     /// 实测可达 40–125 秒，期间必须让用户看到进度而不是以为卡死。
@@ -121,6 +126,9 @@ final class AppModel {
     /// 向导那侧读的是同一个类型——两边各写一遍字面量的话，拼错的表现是
     /// 「这个设置什么都不做」，而面板上照样打着勾。
     private let downloadSourcePreference = DownloadSourcePreference()
+    /// 「我已经有模型文件」导入进来的那些目录。不记的话它们只活一次启动，
+    /// 理由见该类型的注释。
+    private let importedModels = ImportedModelPreference()
     /// 「下载好的模型什么时候真的换上去」。理由见该类型的注释：
     /// 正录着的时候下载完，`selectModel` 会打一行日志就返回，
     /// 而此后**再也没有人重试**。
@@ -479,11 +487,19 @@ final class AppModel {
     /// `nonisolated`：它不碰任何 MainActor 状态，只是构造一个 actor。
     /// 不加的话会继承 AppModel 的 @MainActor 隔离，转成
     /// `@Sendable` 闭包时丢失全局 actor——那在 Swift 6 语言模式下是错误。
-    private nonisolated static func makeTranscriber(_ model: ModelDescriptor) -> Transcriber {
-        WhisperKitTranscriber(
+    ///
+    /// internal 而不是 private：空目录那一支（「一个模型都没有」）是本批
+    /// 最贵的一条静默失效链，必须真跑一遍才算被守住——而扫源码证明不了
+    /// 它返回的是哪个类型。
+    nonisolated static func makeTranscriber(_ model: ModelDescriptor) -> Transcriber {
+        // **空 folder 不再等于「让 WhisperKit 按名字去下载」。**
+        // 那条路会在用户没要求的情况下从官方源拉一个 140MB 的
+        // openai_whisper-base（还忽略他刚选定的下载源），整个理由写在
+        // `MissingModelTranscriber` 的类型注释里。
+        guard !model.folder.isEmpty else { return MissingModelTranscriber() }
+        return WhisperKitTranscriber(
             modelName: model.name,
-            // 空路径表示本地没有该模型，交给 WhisperKit 按名称下载。
-            modelFolder: model.folder.isEmpty ? nil : model.folder,
+            modelFolder: model.folder,
             language: "zh"
         )
     }
@@ -503,6 +519,12 @@ final class AppModel {
         syncCorrectionMirrors()
         // 下载源同样是「上次退出时选的」，面板打开即是正确状态。
         forcedDownloadSource = downloadSourcePreference.forced
+        // **必须排在造 transcriber 之前**：它设的 `HF_ENDPOINT` 是 WhisperKit
+        // 取 tokenizer 时唯一认得的判据（那个入口没有 endpoint 参数），
+        // 而 tokenizer 是 `prepare()` 里取的。排在后面等于这一轮启动的
+        // 每一次模型加载都仍然去连官方源——国内用户会在那里挂住。
+        // 全部理由在 `HuggingFaceEndpoint` 的类型注释里。
+        HuggingFaceEndpoint.applyFromPreference(downloadSourcePreference)
 
         modelRoot = ModelCatalog.resolveRoot(
             appSupport: ModelCatalog.applicationSupportRoot(
@@ -510,13 +532,26 @@ final class AppModel {
             developmentRoot: ModelCatalog.defaultRoot(appBundleURL: Bundle.main.bundleURL),
             exists: { FileManager.default.fileExists(atPath: $0) }
         )
-        availableModels = ModelCatalog.discover(in: modelRoot)
+        // 导入的目录先复核一遍：搬走了/删掉了就当场忘掉，不再挂在列表里
+        // 让用户每次点都得到一句「这不是模型目录」。做法与
+        // `correctionActivation.revalidateAtLaunch()` 是同一条。
+        let forgotten = importedModels.revalidate { folder in
+            if case .success = ModelCatalog.validate(folder: folder) { return true }
+            return false
+        }
+        if !forgotten.isEmpty {
+            AppLogger.shared.log("启动自检：导入的模型目录已失效，已忘记 \(forgotten)")
+        }
+        availableModels = discoverModels()
 
-        // 本地一个模型都没有时，退化成让 WhisperKit 自行下载
-        // （此网络下大概率失败，会以错误状态出现在菜单栏）。
-        let initial = availableModels.first
-            ?? ModelDescriptor(name: ModelPreference.preferredModels.last ?? "base", folder: "")
+        // **本地一个模型都没有时不再退化成「让 WhisperKit 自行下载」。**
+        // 那条路会在用户没要求的情况下拉一个 140MB 的 base 模型，而且走的是
+        // 官方源（忽略他刚在向导里被指定的那个）。现在如实占一个空位，
+        // 转写器是 `MissingModelTranscriber`（立刻失败、绝不联网），
+        // 面板头部据 `hasModel` 说「还没有语音模型」。
+        let initial = availableModels.first ?? ModelCatalog.noModel
         activeModelName = initial.name
+        activeModelFolder = initial.folder
 
         let transcriber = SwitchableTranscriber(
             initial: initial,
@@ -1585,9 +1620,29 @@ final class AppModel {
     /// 比肉眼「看着像刷新了」可靠。
     func refreshAvailableModels() {
         guard !modelRoot.isEmpty else { return }
-        availableModels = ModelCatalog.discover(in: modelRoot)
+        availableModels = discoverModels()
         AppLogger.shared.log("重扫模型目录，发现 \(availableModels.count) 个")
     }
+
+    /// 根目录里扫出来的 + 用户导入的那些。
+    ///
+    /// 抽成一处是因为 `bootstrap()` 与 `refreshAvailableModels()` 各写一份的
+    /// 话，迟早只有一处并上导入的目录——表现是「导入的模型开着能用，
+    /// 打开一次面板就从列表里消失了」（面板 `onAppear` 会重扫）。
+    private func discoverModels() -> [ModelDescriptor] {
+        ModelCatalog.merge(
+            discovered: ModelCatalog.discover(in: modelRoot),
+            imported: importedModels.folders,
+            validate: { ModelCatalog.validate(folder: $0) })
+    }
+
+    /// 手上到底有没有一个真模型。
+    ///
+    /// **面板头部与向导第五步的「可以听写了」都以它为准。** 原先两处判的都是
+    /// `loadingModelName == nil`，那句话的意思只是「此刻没有东西在加载」——
+    /// 零模型时它恒为真，于是面板说「就绪」、向导第五步的按钮亮着，
+    /// 而按下去什么模型都没有。
+    var hasModel: Bool { !activeModelFolder.isEmpty }
 
     /// 能否切换模型。录音或转写进行中时不允许，避免换掉正在用的引擎。
     var canSwitchModel: Bool {
@@ -1619,6 +1674,9 @@ final class AppModel {
             do {
                 try await transcriber.switchTo(model)
                 self?.activeModelName = model.name
+                // `hasModel` 读的就是它——不更的话，零模型启动、随后导入一个
+                // 模型成功，面板头部还会继续说「还没有语音模型」。
+                self?.activeModelFolder = model.folder
                 // 换模型后预览引擎绑的是旧解码器，必须重新挂载。
                 await self?.attachPreview()
                 log.log("切换成功 \(model.name) 耗时 \(Int(Date().timeIntervalSince(started)))s")
@@ -1699,6 +1757,12 @@ final class AppModel {
         downloadSourcePreference.forced = source
         forcedDownloadSource = source
         AppLogger.shared.log("下载源设置为：\(source?.displayName ?? "自动")")
+        // 端点当场跟着改。用户在这里选的就是「走哪个源」，没道理只有模型
+        // 权重听他的、而 tokenizer 那几 MB 照样去连官方源（那个入口只认
+        // `HF_ENDPOINT`）。这**不影响任何正在跑的下载**——那一路的 endpoint
+        // 是在下载开始那一刻按值传进去的。
+        HuggingFaceEndpoint.apply(
+            forced: source, resolved: downloadSourcePreference.resolved)
     }
 
     /// 让用户手选一个模型目录。
@@ -1708,6 +1772,17 @@ final class AppModel {
     func selectModelFromFolder(_ folder: String) {
         switch ModelCatalog.validate(folder: folder) {
         case .success(let model):
+            // **记住它，否则下次启动就忘了。** 这条路（向导的「我已经有模型
+            // 文件」、面板的「其他目录…」）是唯一能用根目录外面那份模型的
+            // 入口，而 `bootstrap()` 只按根目录重建列表——不记的话，从
+            // `~/Desktop/` 导入的模型这一次能用，重启就掉回零模型。
+            // 根目录里的不必记（`discover` 自己扫得到），理由见 `isUnder`。
+            if !ModelCatalog.isUnder(folder: model.folder, root: modelRoot),
+                importedModels.remember(model.folder)
+            {
+                AppLogger.shared.log("记住导入的模型目录：\(model.folder)")
+                refreshAvailableModels()
+            }
             selectModel(model)
         case .failure(.notAModelFolder(let missing)):
             phase = .error("这不是模型目录，缺少：\(missing.joined(separator: "、"))")
@@ -1724,6 +1799,14 @@ final class AppModel {
         // 模型正在编译/加载时不接受录音请求。
         guard loadingModelName == nil else {
             log.log("toggle 被拒：正在加载模型 \(loadingModelName!)")
+            return
+        }
+        // 一个模型都没有时当场说清楚，不要让用户先说完一句话再失败。
+        // `MissingModelTranscriber` 是这条路的兜底（它只会在转写那一刻报错，
+        // 那时话已经说完了）；这道 guard 是把这句话提前到按下按钮的那一刻。
+        guard hasModel else {
+            log.log("toggle 被拒：一个模型都没有")
+            phase = .error("还没有语音模型")
             return
         }
         // 基准集录制中不接受听写：两者用的是同一支麦克风的两个

@@ -213,6 +213,15 @@ final class OnboardingCoordinator {
         /// `DownloadSourcePreference`（key 只在那里写一次）。各写一个字面量的
         /// 话，拼错一个字母的表现是「这个设置什么都不做」，而界面上打着勾。
         var forcedDownloadSource: () -> DownloadSource? = { DownloadSourcePreference().forced }
+        /// 探测定下这次用哪个源之后记一笔。
+        ///
+        /// **不只是记账，它当场就改本进程的 `HF_ENDPOINT`。** 传给
+        /// `WhisperKit.download` 的 `endpoint:` 只管模型权重；tokenizer 是
+        /// `prepare()` 时另一个没有 endpoint 参数的入口去取的，只认环境变量。
+        /// 不接这一路的话，国内用户经镜像顺利下完 1.5 GB，然后在第五步
+        /// 「试说一句」上为了 2.8 MB 的 tokenizer 去连 huggingface.co。
+        /// 全部理由在 `HuggingFaceEndpoint` 的类型注释里。
+        var recordResolvedSource: (DownloadSource) -> Void = { HuggingFaceEndpoint.adopt($0) }
         /// 下载进度往外报一份，`nil` 表示「此刻没有下载在跑」。
         ///
         /// 关窗**不取消下载**（扔掉几百 MB 更糟），于是它会变成一个没人看得见
@@ -506,6 +515,10 @@ final class OnboardingCoordinator {
                 return
             }
             AppLogger.shared.log("向导：选中下载源 \(source.displayName)")
+            // **必须在 run() 之前。** 下载成功会紧接着 adoptModelFolder →
+            // 换模型 → `prepare()` → 取 tokenizer，而取 tokenizer 只认
+            // `HF_ENDPOINT`。排在后面的话，本次向导的最后一步照样走官方源。
+            self.wiring.recordResolvedSource(source)
 
             let outcome = await ModelDownloader.run(
                 root: root,

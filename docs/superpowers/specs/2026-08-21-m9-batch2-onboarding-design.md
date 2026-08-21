@@ -58,10 +58,12 @@
 全部收进 `~/Library/Application Support/vInput/`：模型在 `huggingface/`
 （WhisperKit 已经在用这个位置，不动它），向导状态与偏好在旁边。
 
-**查找顺序：① 应用支持目录 → ② `vendor/models`（存在才用）。**
+**查找顺序：① `vendor/models`（存在才用）→ ② 应用支持目录。**
 
-第二条是给开发机留的：本机 `vendor/models` 里有 4.5GB 模型，重下不现实。
-分发版那台机器上永远走第一条（`vendor/models` 不存在），开发机照旧走第二条。
+第一条是给开发机留的：本机 `vendor/models` 里有 4.5GB 模型，重下不现实。
+分发版那台机器上它不存在，于是永远走第二条；开发机照旧走第一条。
+（顺序以 `ModelCatalog.resolveRoot` 为准——本文原先把两条写反了，
+`ModelRootResolutionTests.developmentPrefersVendorModels` 钉的是代码这一份。）
 **两边都活，且不需要环境变量或构建配置来区分**——判据就是「那个目录在不在」。
 
 面板的「高级」区给一个「在访达中显示」，让好奇的人能看见东西放在哪。

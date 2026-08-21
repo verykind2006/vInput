@@ -2,7 +2,9 @@ import Foundation
 
 /// 模型偏好顺序。
 ///
-/// 应用启动时按此顺序查找 `vendor/models/<name>`，取第一个本地已存在的。
+/// 应用启动时在模型根目录下按此顺序查找 `<name>`，取第一个本地已存在的。
+/// 根目录是 `~/Library/Application Support/vInput/huggingface`，开发机上
+/// 若仓库里有 `vendor/models` 则优先用它（判据见 `ModelCatalog.resolveRoot`）。
 /// 因此**换模型只需下载对应目录，不需要改代码**：
 ///
 /// ```bash

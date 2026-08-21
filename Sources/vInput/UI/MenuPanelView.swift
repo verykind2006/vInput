@@ -23,8 +23,13 @@ import SwiftUI
 /// 按钮字面量（「其他目录…」「指定校正模型…」「指定模型…」「改回跟随校正
 /// 模型」「选择模型」「自定义…」「删除 API Key」「重新检查 API Key」
 /// 「开始录制基准集」「结束 BLE 扫描并汇总」「重新开始 BLE 扫描」
-/// 「打开日志」「退出」）与空列表提示「vendor/models 下没有模型」。
+/// 「打开日志」「退出」）。
 /// 它们只有一种取值，改动只会来自「有人主动改文案」，不会来自漏掉一个分支。
+///
+/// 空列表提示**不在**这一类里：它原先是就地写死的
+/// 「vendor/models 下没有模型」，而 `vendor/models` 只存在于开发机——
+/// 读到那句话的恰恰是手上一个模型都没有的新用户。现在它是
+/// `MenuPanelModel.emptyModelListLine`，由测试钉着。
 ///
 /// 设置四行的行标题是旧菜单标题里那半截前缀搬了个位置——值那侧因此去掉
 /// 重复的前缀，见 `stripPrefix`。
@@ -151,7 +156,8 @@ struct MenuPanelView: View {
         let status = MenuPanelModel.headerStatus(
             loadingModelName: model.loadingModelName,
             phase: model.phase,
-            permission: model.permissionStatus
+            permission: model.permissionStatus,
+            hasModel: model.hasModel
         )
         return HStack(spacing: 8) {
             VMarkShape(bars: VMark.bars)
@@ -429,7 +435,7 @@ struct MenuPanelView: View {
         }
 
         if model.availableModels.isEmpty {
-            infoLine("vendor/models 下没有模型")
+            infoLine(MenuPanelModel.emptyModelListLine)
         }
 
         Divider()

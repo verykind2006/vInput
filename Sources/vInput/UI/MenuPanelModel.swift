@@ -205,12 +205,35 @@ enum MenuPanelModel {
         let tone: Tone
     }
 
+    /// 零模型时头部那句话。
+    ///
+    /// 头部只有一行、`lineLimit(1)`、面板 320pt 宽——放不下「怎么办」，
+    /// 所以这里只负责说清「是什么」，怎么办由模型列表那一格的
+    /// `emptyModelListLine` 接着说。
+    nonisolated static let noModelText = "还没有语音模型"
+
+    /// 模型列表为空时那一行。
+    ///
+    /// 原文是「vendor/models 下没有模型」——`vendor/models` 是**开发机上的
+    /// 仓库路径**，这一批已经把模型搬到 `~/Library/Application Support/
+    /// vInput/huggingface` 了。而读到这句话的人，正是此刻手上一个模型都
+    /// 没有的那个人：给她一个她机器上根本不存在的目录名，等于没说。
+    ///
+    /// 现在只说事实加去处，路径本身在同一个面板的「高级 → 位置：…」那一行，
+    /// 不在这里重复一遍（重复的两处迟早各说各的）。
+    nonisolated static let emptyModelListLine = "还没有模型（下载完成后出现在这里）"
+
     /// 文案与旧 MenuContent.statusText **逐字相同**（迁移守则：零增减），
     /// 搬到 model 层是为了让测试钉得住它。
+    ///
+    /// **`hasModel` 没有默认值，是有意的。** 给它一个 `= true` 的话，漏掉
+    /// 任何一个调用点都不会有编译错误，而漏掉的表现正是这一条要修的东西：
+    /// 面板在零模型时说「就绪」。
     nonisolated static func headerStatus(
         loadingModelName: String?,
         phase: AppModel.Phase,
-        permission: Permissions.Status
+        permission: Permissions.Status,
+        hasModel: Bool
     ) -> HeaderStatus {
         if let loading = loadingModelName {
             return HeaderStatus(text: "正在加载模型 \(loading)…首次可能需要一两分钟", tone: .busy)
@@ -218,7 +241,15 @@ enum MenuPanelModel {
         switch phase {
         case .idle:
             switch permission {
-            case .ready: return HeaderStatus(text: "就绪", tone: .ok)
+            case .ready:
+                // 权限齐了、也没有东西在加载，但**盘上一个模型都没有**——
+                // 这一格原先说「就绪」。那句话是这一批最贵的一句谎：向导
+                // 下载失败的用户关掉向导，看到的是一个绿点加「就绪」，
+                // 于是他按下「开始听写」，而按下去会开始下载另一个他没要过
+                // 的模型（见 `MissingModelTranscriber`）。
+                // 权限那两句排在前面：它们更早、也更可操作。
+                guard hasModel else { return HeaderStatus(text: noModelText, tone: .error) }
+                return HeaderStatus(text: "就绪", tone: .ok)
             case .microphoneMissing: return HeaderStatus(text: "需要麦克风权限", tone: .error)
             case .accessibilityMissing: return HeaderStatus(text: "需要辅助功能权限", tone: .error)
             }

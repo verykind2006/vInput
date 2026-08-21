@@ -88,7 +88,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         wiring.onDownloadProgress = { [weak self] progress in
             self?.model.reportModelDownload(progress: progress)
         }
-        wiring.isDictationReady = { [weak self] in self?.model.loadingModelName == nil }
+        // 「可以听写了」= **有一个模型** 且此刻没有东西在加载。
+        //
+        // 原先只判 `loadingModelName == nil`，而那句话的意思只是「没有东西
+        // 在加载」——下载失败、一个模型都没有的时候它恒为真：第五步的按钮
+        // 亮着，「语音模型还在准备」那句提示也被压掉，用户按下去开始的是
+        // 一次注定失败的听写。恰好是验收标准的最后一步。
+        wiring.isDictationReady = { [weak self] in
+            guard let self else { return false }
+            return self.model.loadingModelName == nil && self.model.hasModel
+        }
         wiring.toggleDictation = { [weak self] in self?.model.toggle() }
         // 「试说一句」的文字落进向导自己的输入框，不投递任何 CGEvent、
         // 不经 TypingSink，因此不可能打进别的应用。见 RedirectableTextSink。

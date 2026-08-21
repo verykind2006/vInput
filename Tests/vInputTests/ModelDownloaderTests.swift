@@ -141,6 +141,73 @@ struct ModelDownloaderTests {
             !fm.fileExists(
                 atPath: root.appendingPathComponent("models/argmaxinc").path))
     }
+
+    /// **HubApi 留下的 `.cache` 会让整个清理一次都不执行。**
+    ///
+    /// 真机形状（QA 2026-08-22 在本机盘上核到的）：模型挪走之后，
+    /// `models/argmaxinc/whisperkit-coreml/` 下还剩一个 `.cache`（下载元数据），
+    /// 而 `contentsOfDirectory` 是**包含**点开头条目的——`empty` 恒为 false，
+    /// 循环第一轮就 break，注释里那句「不留残留」是假的。
+    ///
+    /// 上面那条 `scaffoldCleanupSparesTheTokenizerCache` 抓不到它：那里造的
+    /// 脚手架是干净的，没有 `.cache`。
+    @Test func scaffoldCleanupAlsoRemovesTheOrphanedHubCache() throws {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("scaffold-cache-\(UUID().uuidString)", isDirectory: true)
+        let variant = ModelDownloader.variant
+        let repo = root.appendingPathComponent(
+            "models/argmaxinc/whisperkit-coreml", isDirectory: true)
+        let nested = repo.appendingPathComponent(variant, isDirectory: true)
+        let cache = repo.appendingPathComponent(".cache", isDirectory: true)
+        for entry in ModelCatalog.requiredEntries {
+            try fm.createDirectory(
+                at: nested.appendingPathComponent(entry, isDirectory: true),
+                withIntermediateDirectories: true)
+        }
+        try fm.createDirectory(
+            at: cache.appendingPathComponent("huggingface/download", isDirectory: true),
+            withIntermediateDirectories: true)
+        // tokenizer 照旧不许误伤——它是同一层 `models/` 下的邻居。
+        let tokenizer = root.appendingPathComponent(
+            "models/openai/whisper-large-v3", isDirectory: true)
+        try fm.createDirectory(at: tokenizer, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        try ModelDownloader.relocate(downloaded: nested, into: root, variant: variant)
+
+        let scaffoldGone = !fm.fileExists(
+            atPath: root.appendingPathComponent("models/argmaxinc").path)
+        #expect(scaffoldGone, "HubApi 的 .cache 把整条脚手架留在了盘上")
+        #expect(fm.fileExists(atPath: tokenizer.path), "tokenizer 被误伤了")
+        // 模型本体当然还得在它该在的地方。
+        #expect(ModelCatalog.discover(in: root.path).map(\.name) == [variant])
+    }
+
+    /// 脚手架里**还有别的东西**时，`.cache` 不许被顺手删掉。
+    ///
+    /// 判据写成「只剩 `.cache` 了」而不是「有 .cache 就删」：还有别的变体在
+    /// 的话，那份下载元数据就还有主。删掉的代价是下一次加载要重新联网核对。
+    @Test func hubCacheSurvivesWhenSomethingElseIsStillThere() throws {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("scaffold-keep-\(UUID().uuidString)", isDirectory: true)
+        let variant = ModelDownloader.variant
+        let repo = root.appendingPathComponent(
+            "models/argmaxinc/whisperkit-coreml", isDirectory: true)
+        let nested = repo.appendingPathComponent(variant, isDirectory: true)
+        let cache = repo.appendingPathComponent(".cache", isDirectory: true)
+        let other = repo.appendingPathComponent("openai_whisper-base", isDirectory: true)
+        try fm.createDirectory(at: nested, withIntermediateDirectories: true)
+        try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+        try fm.createDirectory(at: other, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        try ModelDownloader.relocate(downloaded: nested, into: root, variant: variant)
+
+        #expect(fm.fileExists(atPath: cache.path), ".cache 还有主，不该被删")
+        #expect(fm.fileExists(atPath: other.path), "别人的模型目录被误删了")
+    }
 }
 
 /// 上面那两条只用到 `alreadyPresent` 的短路，后端一次都不该被调到。

@@ -135,4 +135,100 @@ struct ModelCatalogTests {
         let bundle = URL(fileURLWithPath: "/repo/dist/vInput.app")
         #expect(ModelCatalog.defaultRoot(appBundleURL: bundle) == "/repo/vendor/models")
     }
+
+    // MARK: - 并进「用户导入的目录」
+
+    /// 导入的目录住在根目录**外面**，`discover` 永远看不到它们。
+    /// 不并进来的话，从 `~/Desktop/` 导入的模型下次启动就从面板里消失了。
+    @Test("导入的目录并进列表")
+    func mergeAddsImportedFolders() {
+        let discovered = [ModelDescriptor(name: "openai_whisper-base", folder: "/root/base")]
+        let merged = ModelCatalog.merge(
+            discovered: discovered, imported: ["/Desktop/turbo"],
+            validate: { folder in
+                .success(ModelDescriptor(name: "openai_whisper-large-v3-v20240930_turbo",
+                                         folder: folder))
+            })
+        #expect(merged.map(\.folder) == ["/Desktop/turbo", "/root/base"])
+    }
+
+    /// 已经在根目录里扫到的那个，不许因为也被记进导入列表而出现两次。
+    ///
+    /// 这不只是难看：`ModelDescriptor.id` 就是 folder，`ForEach` 撞 id 会
+    /// 直接渲染异常。用户经「其他目录…」重新指一次根目录里那个模型，
+    /// 就走到这条路上。
+    @Test("同一个目录不出现两次")
+    func mergeDeduplicatesByFolder() {
+        let discovered = [ModelDescriptor(name: "turbo", folder: "/root/turbo")]
+        let merged = ModelCatalog.merge(
+            discovered: discovered, imported: ["/root/turbo"],
+            validate: { .success(ModelDescriptor(name: "turbo", folder: $0)) })
+        #expect(merged.map(\.folder) == ["/root/turbo"])
+    }
+
+    /// 已经不合法的导入目录**静默丢掉**，不报错、不进列表。
+    ///
+    /// 这是在建列表，不是用户刚点了什么——一句没有上下文的红字比不显示更糟。
+    /// 真正的「忘掉它」在 `ImportedModelPreference.revalidate`。
+    @Test("失效的导入目录丢掉而不报错")
+    func mergeSkipsInvalidImports() {
+        let merged = ModelCatalog.merge(
+            discovered: [], imported: ["/gone"],
+            validate: { _ in .failure(.notAModelFolder(missing: ["AudioEncoder.mlmodelc"])) })
+        #expect(merged.isEmpty)
+    }
+
+    /// 排序与 `discover` 完全一致：偏好里的排前面，其余按名称。
+    /// 各写一份的话，导入的模型会插在一个跟别人不一样的位置上。
+    @Test("并进来之后仍按偏好排序")
+    func mergeSortsLikeDiscover() {
+        let discovered = [ModelDescriptor(name: "zzz-custom", folder: "/root/zzz")]
+        let merged = ModelCatalog.merge(
+            discovered: discovered,
+            imported: ["/Desktop/turbo", "/Desktop/aaa"],
+            validate: { folder in
+                let name = folder.hasSuffix("turbo")
+                    ? "openai_whisper-large-v3-v20240930_turbo" : "aaa-custom"
+                return .success(ModelDescriptor(name: name, folder: folder))
+            })
+        #expect(
+            merged.map(\.name)
+                == ["openai_whisper-large-v3-v20240930_turbo", "aaa-custom", "zzz-custom"])
+    }
+
+    // MARK: - 「这个目录在不在根目录底下」
+
+    /// 根目录里的模型不必记进导入偏好（`discover` 自己扫得到）。
+    @Test("根目录底下的目录判为 true")
+    func isUnderRecognisesChildren() {
+        #expect(ModelCatalog.isUnder(folder: "/a/models/turbo", root: "/a/models"))
+        #expect(ModelCatalog.isUnder(folder: "/a/models/turbo", root: "/a/models/"))
+    }
+
+    /// **只差一个尾斜杠的兄弟目录不许算进来。** 不补尾斜杠就比较的话，
+    /// `/a/models-old/turbo` 会被判成「在根目录里」，于是它永远不会被记住
+    /// ——重启即消失，正是这一条要修的东西。
+    @Test("同前缀的兄弟目录不算在根目录底下")
+    func isUnderDoesNotMatchSiblingPrefixes() {
+        #expect(ModelCatalog.isUnder(folder: "/a/models-old/turbo", root: "/a/models") == false)
+        #expect(ModelCatalog.isUnder(folder: "/Desktop/turbo", root: "/a/models") == false)
+    }
+
+    /// 根目录还没算出来（bootstrap 没跑完）时一律 false——
+    /// 失败方向是「记住它」，多记一条只是多复核一次，漏记是模型消失。
+    @Test("根目录为空时一律 false")
+    func isUnderIsFalseForEmptyRoot() {
+        #expect(ModelCatalog.isUnder(folder: "/a/turbo", root: "") == false)
+        #expect(ModelCatalog.isUnder(folder: "", root: "/a/models") == false)
+    }
+
+    /// 「一个模型都没有」那个占位描述符：**folder 必须是空字符串**——
+    /// `AppModel.makeTranscriber` 就是靠它认出「没有模型」的。
+    /// 名字会原样显示在面板的模型行上，所以它得是人话，
+    /// 而不是原先那个盘上根本不存在的 `openai_whisper-base`。
+    @Test("零模型占位符的目录是空的")
+    func noModelPlaceholderHasNoFolder() {
+        #expect(ModelCatalog.noModel.folder.isEmpty)
+        #expect(ModelCatalog.noModel.name.contains("还没有"))
+    }
 }

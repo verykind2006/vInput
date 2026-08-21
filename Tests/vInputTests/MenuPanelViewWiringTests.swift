@@ -737,4 +737,63 @@ struct MenuPanelViewWiringTests {
             """
         )
     }
+
+    /// 头部状态行必须把「有没有模型」也交给 `headerStatus`。
+    ///
+    /// `MenuPanelModelTests.zeroModelsIsNotReady` 证的是那个纯函数会说真话，
+    /// 证不了视图真的把这个事实喂了进去——不喂的话（哪怕写死 `true`），
+    /// 面板在零模型时照旧一个绿点加「就绪」。
+    @Test("头部状态行读的是真实的「有没有模型」")
+    func headerIsToldWhetherAModelExists() throws {
+        let source = try Self.panelSource()
+        let code = Self.codeOnly(source)
+        #expect(
+            code.contains("hasModel: model.hasModel"),
+            """
+            面板没有把 model.hasModel 交给 headerStatus。
+            零模型时头部会继续说「就绪」，而按下「开始听写」会开始下载
+            一个用户没要过的模型。
+            """
+        )
+    }
+
+    /// 空模型列表那一行的文案不许再写在视图里。
+    ///
+    /// 它原先是就地写死的「vendor/models 下没有模型」——开发机才有的仓库
+    /// 路径，而读到它的正是手上一个模型都没有的新用户。搬进 model 层是为了
+    /// 让 `MenuPanelModelTests` 钉得住它。
+    @Test("空模型列表提示走 MenuPanelModel")
+    func emptyModelListCopyComesFromTheModelLayer() throws {
+        let source = try Self.panelSource()
+        let code = Self.codeOnly(source)
+        #expect(
+            code.contains("MenuPanelModel.emptyModelListLine"),
+            "空列表提示没走 MenuPanelModel.emptyModelListLine。")
+        let stillMentionsVendor = code.contains("vendor/models")
+        #expect(
+            stillMentionsVendor == false,
+            "面板代码里还写着 vendor/models——那是开发机上的仓库路径。")
+    }
+
+    /// 向导第五步的「可以听写了」必须**同时**判有没有模型。
+    ///
+    /// 原先是 `loadingModelName == nil`，而那句话的意思只是「此刻没有东西在
+    /// 加载」——零模型时恒为真：按钮亮着、「语音模型还在准备」那句提示被
+    /// 压掉，用户按下去开始一次注定失败的听写。恰好是验收标准的最后一步。
+    @Test("向导的「可以听写了」要求真有一个模型")
+    func wizardReadinessRequiresAModel() throws {
+        let source = try Self.appSource()
+        guard let range = source.range(of: "wiring.isDictationReady = {") else {
+            Issue.record("找不到 isDictationReady 的接线，这条测试的锚点失效了")
+            return
+        }
+        let body = Self.codeOnly(String(source[range.lowerBound...].prefix(400)))
+        #expect(
+            body.contains("model.hasModel"),
+            """
+            isDictationReady 没有判 hasModel，只判了「没有东西在加载」。
+            下载失败之后第五步的按钮照样亮着，而按下去没有任何模型。
+            """
+        )
+    }
 }

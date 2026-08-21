@@ -378,6 +378,155 @@ struct AppModelWiringTests {
         )
     }
 
+    // MARK: - HF 端点（tokenizer 那一路只认环境变量）
+
+    /// 启动时必须把 `HF_ENDPOINT` 设好，**而且要排在造 transcriber 之前**。
+    ///
+    /// `HuggingFaceEndpointTests` 证的是「设进去的值对不对」，证不了
+    /// 「有没有人在启动时调它」——不调的话，一台靠镜像装成的国内机器，
+    /// 每次启动加载模型都会为了 2.8MB 的 tokenizer 去连 huggingface.co。
+    /// 顺序同样要钉：排在 `SwitchableTranscriber` 之后的话，这一轮启动的
+    /// 第一次加载仍然用着旧端点。
+    @Test("bootstrap 在造 transcriber 之前设好 HF 端点")
+    func bootstrapAppliesTheEndpointBeforeBuildingTheTranscriber() throws {
+        let body = try Self.memberBody(
+            try Self.appModelSource(), startingAt: "func bootstrap() {")
+        guard let apply = body.range(of: "HuggingFaceEndpoint.applyFromPreference(") else {
+            Issue.record(
+                """
+                bootstrap() 里没有 HuggingFaceEndpoint.applyFromPreference(...)。
+                模型下载那一路能带 endpoint 参数，tokenizer 那一路不能——
+                它只读进程的 HF_ENDPOINT。不设的话，镜像只覆盖了一半。
+                """)
+            return
+        }
+        guard let transcriber = body.range(of: "SwitchableTranscriber(") else {
+            Issue.record("bootstrap() 里找不到 SwitchableTranscriber，这条测试的锚点失效了")
+            return
+        }
+        #expect(
+            apply.lowerBound < transcriber.lowerBound,
+            "HF 端点设在了造 transcriber 之后：这一轮启动的模型加载仍然用旧端点。"
+        )
+    }
+
+    /// 面板「高级 → 下载源」换档时端点跟着换。
+    ///
+    /// 不跟的话，用户看到「强制国内镜像」打着勾，而 tokenizer 那几 MB
+    /// 照样去连官方源——正是这个设置最容易被以为已经生效的地方。
+    @Test("换下载源时同步改 HF 端点")
+    func selectingDownloadSourceUpdatesTheEndpoint() throws {
+        let body = try Self.memberBody(
+            try Self.appModelSource(),
+            startingAt: "func selectDownloadSource(_ source: DownloadSource?) {")
+        #expect(
+            body.contains("HuggingFaceEndpoint.apply("),
+            """
+            selectDownloadSource 里没有同步 HF 端点。
+            用户点了「强制国内镜像」，模型会走镜像，而 tokenizer 仍走官方源。
+            """
+        )
+    }
+
+    // MARK: - 零模型 / 导入的模型
+
+    /// 一个模型都没有时不许开始听写，且要当场说出来。
+    ///
+    /// `MissingModelTranscriber` 是兜底，但它只在**转写那一刻**报错——
+    /// 那时用户已经对着麦克风说完一句话了。这道 guard 把这句话提前到
+    /// 按下按钮的那一刻。
+    @Test("零模型时 toggle 当场拒绝")
+    func toggleRefusesWithoutAModel() throws {
+        let body = try Self.memberBody(
+            try Self.appModelSource(), startingAt: "func toggle() {")
+        #expect(
+            body.contains("guard hasModel else"),
+            """
+            toggle() 里没有 hasModel 那道守卫。
+            零模型时用户会录完一整句话才收到失败，而在那之前面板一直
+            表现得像一切正常。
+            """
+        )
+    }
+
+    /// 还没 bootstrap 的 `AppModel`（也就是「一个模型都没有」那个状态）
+    /// 必须如实说 `hasModel == false`。
+    ///
+    /// 这一条不扫源码，真造一个 `AppModel`：把 `hasModel` 写成 `true` 是
+    /// 最省事的「让红变绿」手法，而那样面板会立刻回到「零模型说就绪」。
+    @MainActor
+    @Test("没有模型时 hasModel 是 false")
+    func freshModelHasNoModel() {
+        #expect(AppModel().hasModel == false)
+    }
+
+    /// `hasModel` 读的那个字段，两个写入点一个都不许少。
+    ///
+    /// 少了 bootstrap 那次：开着模型启动，面板照样说「还没有语音模型」。
+    /// 少了 selectModel 那次：零模型启动后导入一个模型成功，面板还在说没有。
+    @Test("activeModelFolder 在启动与换模型两处都被写入")
+    func activeModelFolderIsSetOnBothPaths() throws {
+        let source = try Self.appModelSource()
+        let bootstrap = try Self.memberBody(source, startingAt: "func bootstrap() {")
+        #expect(
+            bootstrap.contains("activeModelFolder = initial.folder"),
+            "bootstrap 没有写 activeModelFolder：开着模型启动也会显示成零模型。")
+        #expect(
+            bootstrap.contains("?? ModelCatalog.noModel"),
+            """
+            bootstrap 的零模型占位符不是 ModelCatalog.noModel。
+            原先那个占位符名叫 openai_whisper-base 而目录为空，
+            按下去会去下载一个用户没要过的模型。
+            """)
+        #expect(
+            bootstrap.contains("importedModels.revalidate"),
+            "bootstrap 没有复核导入的目录：搬走的目录会一直挂在模型列表里。")
+
+        let select = try Self.memberBody(
+            source, startingAt: "func selectModel(_ model: ModelDescriptor) {")
+        #expect(
+            select.contains("activeModelFolder = model.folder"),
+            "换模型成功后没有更新 activeModelFolder：面板会一直说「还没有语音模型」。")
+    }
+
+    /// 导入的模型目录必须被记下来，否则下次启动就没了。
+    ///
+    /// 这是设计里写明的那条逃生口（「把本机现成的模型目录拷给太太」）。
+    /// `ImportedModelPreferenceTests` 证的是那个偏好自己对不对，
+    /// 证不了 `AppModel` 真的在往里写。
+    @Test("手选模型目录时记住它")
+    func selectingAFolderRemembersIt() throws {
+        let body = try Self.memberBody(
+            try Self.appModelSource(),
+            startingAt: "func selectModelFromFolder(_ folder: String) {")
+        #expect(
+            body.contains("importedModels.remember("),
+            """
+            selectModelFromFolder 里没有 importedModels.remember(...)。
+            从 ~/Desktop 导入的模型这一次能用，重启就掉回「一个模型都没有」。
+            """
+        )
+    }
+
+    /// 重扫模型列表时必须把导入的那些并进来。
+    ///
+    /// 面板 `onAppear` 每次都会重扫：只在 bootstrap 里并、这里不并的话，
+    /// 表现是「导入的模型开着能用，打开一次面板就从列表里消失了」。
+    @Test("重扫模型时并进导入的目录")
+    func refreshMergesImportedFolders() throws {
+        let source = try Self.appModelSource()
+        let refresh = try Self.memberBody(
+            source, startingAt: "func refreshAvailableModels() {")
+        #expect(
+            refresh.contains("discoverModels()"),
+            "refreshAvailableModels 没走 discoverModels()——导入的模型会在重扫时消失。")
+        let discover = try Self.memberBody(
+            source, startingAt: "private func discoverModels() -> [ModelDescriptor] {")
+        #expect(
+            discover.contains("ModelCatalog.merge("),
+            "discoverModels 没有并进导入的目录，那份偏好等于白存。")
+    }
+
     // MARK: - 遥控器「·」键 → 空格
 
     /// 取 `hidListener.onGravePressed` 那个闭包的源码窗口。

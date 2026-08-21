@@ -47,6 +47,45 @@ struct DownloadSourcePreferenceTests {
         #expect(DownloadSourcePreference(defaults: defaults).forced == nil)
     }
 
+    // MARK: - 上次实际用的那个源
+
+    /// 没下载过任何东西时是 nil，此时端点按官方源算。
+    @Test func resolvedStartsEmpty() {
+        #expect(DownloadSourcePreference(defaults: makeDefaults()).resolved == nil)
+    }
+
+    /// 存得住、读得回。**这一条决定重启之后 tokenizer 走哪个源**：
+    /// 不存的话，一台靠镜像装成的机器重启后会去官方源取 tokenizer 并挂住。
+    @Test func resolvedRoundTrips() {
+        let defaults = makeDefaults()
+        DownloadSourcePreference(defaults: defaults).resolved = .mirror
+        #expect(DownloadSourcePreference(defaults: defaults).resolved == .mirror)
+    }
+
+    /// 与 `forced` 是**两个独立的格子**。
+    ///
+    /// 写在同一个 key 上的话，「自动探到镜像」会把用户的「自动」这个选择
+    /// 改写成「强制镜像」——他到西班牙之后就再也探不到更快的官方源了，
+    /// 而面板上的勾也跟着从「自动」跳到「强制国内镜像」。
+    @Test func resolvedDoesNotDisturbForced() {
+        let defaults = makeDefaults()
+        let preference = DownloadSourcePreference(defaults: defaults)
+        preference.forced = nil
+        preference.resolved = .mirror
+        #expect(preference.forced == nil)
+        #expect(preference.resolved == .mirror)
+
+        preference.forced = .official
+        #expect(preference.resolved == .mirror)
+    }
+
+    /// 读不出合法值时退回 nil（失败方向＝按官方源算，与 HubApi 默认一致）。
+    @Test func unknownResolvedValueFallsBackToNil() {
+        let defaults = makeDefaults()
+        defaults.set("carrier-pigeon", forKey: DownloadSourcePreference.resolvedKey)
+        #expect(DownloadSourcePreference(defaults: defaults).resolved == nil)
+    }
+
     /// 存的确实是 rawValue，不是序号。
     ///
     /// 序号会在「将来加第三个源」时错位：用户存的 1（镜像）会变成别的东西，
@@ -68,13 +107,35 @@ struct DownloadSourcePreferenceTests {
 @Suite("下载源设置的 key 全仓只有一处")
 struct DownloadSourceKeyTests {
     @Test func theKeyLiteralAppearsExactlyOnceInSources() throws {
+        try Self.expectKeyIsWrittenOnce(
+            DownloadSourcePreference.forcedKey, in: "DownloadSourcePreference.swift")
+    }
+
+    /// 「上次实际用的源」那个 key 同样只许有一处。
+    ///
+    /// 它比 `forcedKey` 更难发现拼错：那一条至少还有个勾能看，而这一条
+    /// 拼错之后的表现是「重启之后取 tokenizer 又去官方源了」——只在国内、
+    /// 只在第五步、只有一次。
+    @Test func theResolvedKeyLiteralAppearsExactlyOnceInSources() throws {
+        try Self.expectKeyIsWrittenOnce(
+            DownloadSourcePreference.resolvedKey, in: "DownloadSourcePreference.swift")
+    }
+
+    /// 「导入的模型目录」那个 key 同样只许有一处。拼错的表现是
+    /// 「导入的模型下次启动就没了」——正是它存在要修的那件事本身。
+    @Test func theImportedModelsKeyLiteralAppearsExactlyOnceInSources() throws {
+        try Self.expectKeyIsWrittenOnce(
+            ImportedModelPreference.foldersKey, in: "ImportedModelPreference.swift")
+    }
+
+    private static func expectKeyIsWrittenOnce(_ key: String, in fileName: String) throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/vInput")
 
-        let literal = "\"\(DownloadSourcePreference.forcedKey)\""
+        let literal = "\"\(key)\""
         var hits: [String] = []
         let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: nil)
@@ -90,12 +151,12 @@ struct DownloadSourceKeyTests {
             for _ in 0..<count { hits.append(url.lastPathComponent) }
         }
 
-        let onlyOnce = hits == ["DownloadSourcePreference.swift"]
+        let onlyOnce = hits == [fileName]
         #expect(
             onlyOnce,
             """
-            下载源那个 key 的字面量出现在：\(hits)。
-            它只许写在 DownloadSourcePreference.swift 一处——两边各写一遍的话，
+            key「\(key)」的字面量出现在：\(hits)。
+            它只许写在 \(fileName) 一处——两边各写一遍的话，
             拼错一个字母的表现是「用户点了、勾也在，行为一点没变」，
             而没有任何编译错误或别的测试会红。
             """

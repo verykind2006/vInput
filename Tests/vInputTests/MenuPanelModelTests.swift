@@ -147,26 +147,101 @@ struct MenuPanelModelTests {
 
     @Test func headerCopiesAreUnchanged() {
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: "qwen", phase: .idle, permission: .ready
+            loadingModelName: "qwen", phase: .idle, permission: .ready, hasModel: true
         ) == .init(text: "正在加载模型 qwen…首次可能需要一两分钟", tone: .busy))
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: nil, phase: .idle, permission: .ready
+            loadingModelName: nil, phase: .idle, permission: .ready, hasModel: true
         ) == .init(text: "就绪", tone: .ok))
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: nil, phase: .idle, permission: .microphoneMissing
+            loadingModelName: nil, phase: .idle, permission: .microphoneMissing,
+            hasModel: true
         ) == .init(text: "需要麦克风权限", tone: .error))
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: nil, phase: .idle, permission: .accessibilityMissing
+            loadingModelName: nil, phase: .idle, permission: .accessibilityMissing,
+            hasModel: true
         ) == .init(text: "需要辅助功能权限", tone: .error))
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: nil, phase: .listening, permission: .ready
+            loadingModelName: nil, phase: .listening, permission: .ready, hasModel: true
         ) == .init(text: "正在聆听…", tone: .recording))
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: nil, phase: .working, permission: .ready
+            loadingModelName: nil, phase: .working, permission: .ready, hasModel: true
         ) == .init(text: "正在转写…", tone: .busy))
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: nil, phase: .error("坏了"), permission: .ready
+            loadingModelName: nil, phase: .error("坏了"), permission: .ready, hasModel: true
         ) == .init(text: "出错：坏了", tone: .error))
+    }
+
+    /// **零模型时不许说「就绪」。**
+    ///
+    /// 这是本批最贵的一句谎。失效链是完整的：向导下载失败 → 用户关掉向导 →
+    /// 面板一个绿点加「就绪」 → 她按下「开始听写」 → 一个她没要过的 140MB
+    /// 模型从官方源开始下（忽略她刚被指定的源），头部还写着「正在加载模型…」。
+    /// 头部原先只认识 `loadingModelName` / `phase` / `permission` 三样，
+    /// 它们在零模型时全都是「一切正常」的取值。
+    @Test func zeroModelsIsNotReady() {
+        let noModel = MenuPanelModel.headerStatus(
+            loadingModelName: nil, phase: .idle, permission: .ready, hasModel: false)
+        #expect(noModel == .init(text: "还没有语音模型", tone: .error))
+
+        // 有模型时那句话必须消失——否则「永远说没有模型」也能过上面那条。
+        let ready = MenuPanelModel.headerStatus(
+            loadingModelName: nil, phase: .idle, permission: .ready, hasModel: true)
+        #expect(ready == .init(text: "就绪", tone: .ok))
+    }
+
+    /// 权限那两句排在缺模型之前，且**缺模型不许把它们盖掉**。
+    ///
+    /// 顺序是有意的：权限更早、也更可操作（点一下就去系统设置了），
+    /// 而这两件事在第一次启动时同时为真的概率很高——向导没走完就被关掉，
+    /// 既没给权限也没有模型。
+    @Test func permissionOutranksMissingModel() {
+        let micFirst = MenuPanelModel.headerStatus(
+            loadingModelName: nil, phase: .idle, permission: .microphoneMissing,
+            hasModel: false)
+        #expect(micFirst == .init(text: "需要麦克风权限", tone: .error))
+
+        let axFirst = MenuPanelModel.headerStatus(
+            loadingModelName: nil, phase: .idle, permission: .accessibilityMissing,
+            hasModel: false)
+        #expect(axFirst == .init(text: "需要辅助功能权限", tone: .error))
+    }
+
+    /// 缺模型只管 `.idle` 那一格，别的 phase 一个都不许被它顶掉。
+    ///
+    /// 补这条的由来与 `loadingOverridesEveryPhase` 同源：把 `hasModel` 判断
+    /// 提到 `switch phase` 外面是个很自然的写法，而那样写的话，
+    /// 「正在加载模型…」和「出错：…」会在零模型时全变成「还没有语音模型」
+    /// ——用户永远看不到真正的错误原因。
+    @Test func missingModelDoesNotSwallowOtherPhases() {
+        #expect(
+            MenuPanelModel.headerStatus(
+                loadingModelName: "turbo", phase: .idle, permission: .ready, hasModel: false)
+                == .init(text: "正在加载模型 turbo…首次可能需要一两分钟", tone: .busy))
+        #expect(
+            MenuPanelModel.headerStatus(
+                loadingModelName: nil, phase: .listening, permission: .ready, hasModel: false)
+                == .init(text: "正在聆听…", tone: .recording))
+        #expect(
+            MenuPanelModel.headerStatus(
+                loadingModelName: nil, phase: .working, permission: .ready, hasModel: false)
+                == .init(text: "正在转写…", tone: .busy))
+        #expect(
+            MenuPanelModel.headerStatus(
+                loadingModelName: nil, phase: .error("坏了"), permission: .ready,
+                hasModel: false)
+                == .init(text: "出错：坏了", tone: .error))
+    }
+
+    /// 空模型列表那一行**不许再提 `vendor/models`**。
+    ///
+    /// 那是开发机上的仓库路径；这一批已经把模型搬到应用支持目录了。
+    /// 而读到这句话的人，恰恰是此刻一个模型都没有的那个新用户——
+    /// 给她一个她机器上根本不存在的目录名，等于没说。
+    @Test func emptyModelListDoesNotMentionTheDeveloperPath() {
+        let line = MenuPanelModel.emptyModelListLine
+        #expect(line == "还没有模型（下载完成后出现在这里）")
+        let mentionsRepoPath = line.contains("vendor")
+        #expect(mentionsRepoPath == false, "空列表提示又提到了开发机才有的 vendor/models：\(line)")
     }
 
     /// 加载中要短路**每一个** phase，不只是 `.idle`。
@@ -179,13 +254,17 @@ struct MenuPanelModelTests {
         let loading = MenuPanelModel.HeaderStatus(
             text: "正在加载模型 qwen…首次可能需要一两分钟", tone: .busy)
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: "qwen", phase: .idle, permission: .ready) == loading)
+            loadingModelName: "qwen", phase: .idle, permission: .ready,
+            hasModel: true) == loading)
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: "qwen", phase: .listening, permission: .ready) == loading)
+            loadingModelName: "qwen", phase: .listening, permission: .ready,
+            hasModel: true) == loading)
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: "qwen", phase: .working, permission: .ready) == loading)
+            loadingModelName: "qwen", phase: .working, permission: .ready,
+            hasModel: true) == loading)
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: "qwen", phase: .error("x"), permission: .ready) == loading)
+            loadingModelName: "qwen", phase: .error("x"), permission: .ready,
+            hasModel: true) == loading)
     }
 
     /// 绊线测试：`HUDViewModel.statusLabel`（源 `DictationSession.State`）
@@ -202,20 +281,20 @@ struct MenuPanelModelTests {
         // .idle：两边完全没有分歧——都是「就绪」，不带省略号。
         #expect(HUDViewModel.statusLabel(for: .idle, previewDegraded: false) == "就绪")
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: nil, phase: .idle, permission: .ready
+            loadingModelName: nil, phase: .idle, permission: .ready, hasModel: true
         ).text == "就绪")
 
         // .listening：菜单栏比 HUD 多一个省略号，这是唯一允许的差异。
         #expect(HUDViewModel.statusLabel(for: .listening, previewDegraded: false) == "正在聆听")
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: nil, phase: .listening, permission: .ready
+            loadingModelName: nil, phase: .listening, permission: .ready, hasModel: true
         ).text == "正在聆听" + "…")
 
         // AppModel 的 .working 对应 DictationSession 处理态里的 .transcribing
         // （四个处理态之一，菜单栏只能笼统概括）：同样只差一个省略号。
         #expect(HUDViewModel.statusLabel(for: .transcribing, previewDegraded: false) == "正在转写")
         #expect(MenuPanelModel.headerStatus(
-            loadingModelName: nil, phase: .working, permission: .ready
+            loadingModelName: nil, phase: .working, permission: .ready, hasModel: true
         ).text == "正在转写" + "…")
     }
 

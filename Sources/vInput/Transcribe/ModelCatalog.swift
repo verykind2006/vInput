@@ -54,13 +54,77 @@ enum ModelCatalog {
                 return descriptor
             }
 
-        return models.sorted { lhs, rhs in
+        return sortedByPreference(models)
+    }
+
+    /// `discover` 与 `merge` 共用的排序。抽出来是因为两处各写一份的话，
+    /// 「导入的模型排在哪」会跟「扫出来的模型排在哪」各走各的。
+    nonisolated static func sortedByPreference(
+        _ models: [ModelDescriptor]
+    ) -> [ModelDescriptor] {
+        models.sorted { lhs, rhs in
             let li = ModelPreference.preferredModels.firstIndex(of: lhs.name) ?? .max
             let ri = ModelPreference.preferredModels.firstIndex(of: rhs.name) ?? .max
             if li != ri { return li < ri }
             return lhs.name < rhs.name
         }
     }
+
+    /// 把「用户导入的目录」并进「根目录里扫出来的」。
+    ///
+    /// 导入的模型（`ImportedModelPreference`）住在根目录外面，`discover`
+    /// 永远看不到它们——不并进来的话，从 `~/Desktop/` 导入的模型这一次
+    /// 能用，下次启动面板里就没有了。
+    ///
+    /// 三条规矩：
+    /// - **按路径去重**。导入的目录后来被搬进了根目录（或者用户经
+    ///   「其他目录…」重新指了根目录里已有的那个）时，列表里不该出现两行
+    ///   一模一样的模型，而 `ModelDescriptor.id` 就是 folder，
+    ///   `ForEach` 撞 id 会直接渲染异常。
+    /// - **不合法的丢掉**，不报错。目录可能已经被搬走/删掉，而这是
+    ///   建列表，不是用户刚点了什么——没有上下文的红字比不显示更糟。
+    ///   真正的「忘掉它」在 `ImportedModelPreference.revalidate`。
+    /// - 排序与 `discover` 完全一致，见 `sortedByPreference`。
+    ///
+    /// `validate` 注入进来是为了纯函数可测：真实现要碰文件系统。
+    nonisolated static func merge(
+        discovered: [ModelDescriptor],
+        imported: [String],
+        validate: (String) -> Result<ModelDescriptor, ModelCatalogError>
+    ) -> [ModelDescriptor] {
+        var seen = Set(discovered.map(\.folder))
+        var all = discovered
+        for folder in imported {
+            guard !seen.contains(folder) else { continue }
+            guard case .success(let descriptor) = validate(folder) else { continue }
+            seen.insert(folder)
+            all.append(descriptor)
+        }
+        return sortedByPreference(all)
+    }
+
+    /// 这个目录是不是就在模型根目录底下。
+    ///
+    /// 用途只有一个：根目录里的模型**不必**记进 `ImportedModelPreference`
+    /// ——下次启动 `discover` 自己就扫得到，记一份只会让那份偏好越积越长，
+    /// 而且每条都要复核一次。
+    ///
+    /// 比较前给根目录补上尾斜杠：不补的话 `/a/models-old/x` 会被判成
+    /// 在 `/a/models` 底下。
+    nonisolated static func isUnder(folder: String, root: String) -> Bool {
+        guard !root.isEmpty, !folder.isEmpty else { return false }
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        return folder.hasPrefix(prefix)
+    }
+
+    /// 一个模型都没有时占在「当前模型」那一格上的描述符。
+    ///
+    /// **`folder` 必须是空字符串**，`AppModel.makeTranscriber` 靠它认出
+    /// 「没有模型」并给出 `MissingModelTranscriber`。名字写成人话是因为
+    /// 它会原样显示在面板的「模型」那一行上；原先这里放的是
+    /// `openai_whisper-base`，于是面板显示着一个盘上根本不存在的模型名，
+    /// 按下去还会去下载它（见 `MissingModelTranscriber` 的注释）。
+    static let noModel = ModelDescriptor(name: "（还没有模型）", folder: "")
 
     /// **开发期**位置：仓库根目录下的模型目录。
     ///
