@@ -9,6 +9,11 @@ enum VITheme {
     /// 大面积渐变的两端 #FFB340 → #FF8A00。
     static let accentGradientTop = Color(red: 1.0, green: 0.702, blue: 0.251)
     static let accentGradientBottom = Color(red: 1.0, green: 0.541, blue: 0.0)
+    /// App 图标瓦片专用的深色渐变 #2A2A2E → #131315（`scripts/render-icon.swift`
+    /// 照抄这两个值；该脚本跑在 SPM 包之外，不能 import vInput，是手抄不是
+    /// 引用——改这里必须同步过去）。
+    static let iconTileTop = Color(red: 0.165, green: 0.165, blue: 0.180)
+    static let iconTileBottom = Color(red: 0.075, green: 0.075, blue: 0.082)
     /// 面板底 #1D1D1F。
     static let panelBackground = Color(red: 0.114, green: 0.114, blue: 0.122)
     /// 内容块 #2A2A2D。
@@ -22,7 +27,8 @@ enum VITheme {
 /// 几何是归一化的（0…1 正方形内的分数坐标），来自设计定稿的 56 单位 SVG
 /// （x 2/13/24.5/36/47，宽 7，高 48/36/24/36/48，底对齐 y+h=52）。
 /// `scripts/render-icon.swift` **照抄这组数**，两处不共享代码（脚本独立运行），
-/// 改这里必须同步改脚本——ThemeTests 与脚本内注释互相指认。
+/// 改这里必须同步改脚本——`ThemeTests.vMarkGeometryMatchesIconScript()` 解析
+/// 脚本源码逐项核对两边数值，改漏一处会红，不是只靠注释承诺。
 enum VMark {
     /// 归一化 (x, y, w, h)。y 向下为正（与 CGRect 绘制约定一致，绘制时按需翻转）。
     static let bars: [CGRect] = [

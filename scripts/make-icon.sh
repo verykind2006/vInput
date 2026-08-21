@@ -6,7 +6,9 @@
 set -euo pipefail
 
 ROOT="${0:A:h:h}"
-ICONSET_DIR="$(mktemp -d)/AppIcon.iconset"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf -- "$TMP_DIR"' EXIT
+ICONSET_DIR="$TMP_DIR/AppIcon.iconset"
 
 swift "$ROOT/scripts/render-icon.swift" "$ICONSET_DIR"
 iconutil -c icns "$ICONSET_DIR" -o "$ROOT/Resources/AppIcon.icns"

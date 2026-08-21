@@ -2,12 +2,15 @@
 // App 图标渲染：深色渐变圆角方块 + 琥珀橙渐变 V mark。
 //
 // 几何数照抄 Sources/vInput/UI/Theme.swift 的 VMark.bars（56 单位设计稿：
-// x 2/13/24.5/36/47，宽 7，高 48/36/24/36/48），配色照抄同文件的 VITheme。
+// x 2/13/24.5/36/47，宽 7，高 48/36/24/36/48），配色照抄同文件的 VITheme
+// （琥珀渐变 accentGradientTop/Bottom + 瓦片深色渐变 iconTileTop/Bottom）。
 // 两处**不共享代码**——本脚本独立于 SPM 包之外运行（`swift
 // scripts/render-icon.swift <目录>`，跑在包外，不能 import vInput），
 // 是刻意的重复，不是疏漏。改 Theme.swift 的 VMark/VITheme 必须同步改这里；
-// 反过来改这里的数字也要去 Theme.swift 对一遍。ThemeTests 与本文件互相
-// 指认对方，防止两边悄悄漂移。
+// 反过来改这里的数字也要去 Theme.swift 对一遍。几何数的同步义务有机器
+// 守卫——Tests/vInputTests/ThemeTests.swift 的 vMarkGeometryMatchesIconScript()
+// 会解析本文件的 barsIn56 并与 VMark.bars 逐项核对，改漏一个数字它会红；
+// 配色目前没有等价的机器守卫，只能靠人核对。
 //
 // 用法：swift scripts/render-icon.swift <iconset 目录>
 // 产出 iconutil 要求的十个档位 PNG（icon_16x16.png … icon_512x512@2x.png）。
@@ -35,8 +38,7 @@ func render(pixels: Int) -> NSBitmapImageRep {
     let tile = CGRect(x: side * 0.1, y: side * 0.1, width: side * 0.8, height: side * 0.8)
     let radius = tile.width * 0.2246
     let tilePath = NSBezierPath(roundedRect: tile, xRadius: radius, yRadius: radius)
-    // 深色渐变底 VITheme 未收录（App 图标专用），照 M9 设计定稿：
-    // #2A2A2E → #131315。
+    // 深色渐变底 #2A2A2E → #131315，与 VITheme.iconTileTop/iconTileBottom 同值。
     NSGradient(
         starting: NSColor(red: 0.165, green: 0.165, blue: 0.180, alpha: 1),
         ending: NSColor(red: 0.075, green: 0.075, blue: 0.082, alpha: 1)
