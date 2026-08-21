@@ -65,9 +65,16 @@ func dismissMenuPanel() {
     // 状态项**没有被销毁**（辅助功能接口报个数 1、位置 882、尺寸 36×24），
     // 只是画不出来。
     //
-    // 这就把嫌疑锁定在「拿到的 keyWindow 根本不是面板窗口」：`NSStatusItem`
-    // 的按钮挂在一个真实的 `NSWindow` 上，它同样没有标题栏、照样能穿过下面
-    // 那道 `.titled` 过滤——对它 `orderOut` 就是把图标藏起来。
+    // 那行日志当场定了案（`19:24:59`）：
+    //
+    //     keyWindow=MenuBarExtraWindow<AnyView> 层级=101 有标题栏=false
+    //
+    // **拿到的确实是面板窗口**——我一度推断「多半是状态项自己的窗口」，
+    // 被这行日志推翻了。真正的机理是：`MenuBarExtraWindow` 由 SwiftUI 创建
+    // 并管理，**状态项与这个窗口是同一套 SwiftUI 机制持有的**；绕过 SwiftUI
+    // 直接 `close()` 或 `orderOut()`，那套机制的内部状态就乱了，状态项跟着
+    // 被摘掉。两种写法症状一模一样，不是因为拿错了窗口，而是因为**这个窗口
+    // 本来就不该由我们来动**。
     //
     // 正确的做法是不去猜哪个窗口该关：`.window` 样式的 MenuBarExtra 面板在
     // 失去 key 状态时**自己就会关**，而 `handBackForeground()` 激活别的应用
