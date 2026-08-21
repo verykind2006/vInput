@@ -105,9 +105,22 @@ struct WhisperKitDownloadBackend: ModelDownloadBackend {
             try? FileManager.default.removeItem(at: destination)
             try FileManager.default.moveItem(at: downloaded, to: destination)
         }
-        // 清掉 downloadBase/models 这层脚手架——模型已经挪到 root 的直接
-        // 子目录了，留着空壳目录只会让人误以为还有别的东西没搬完。
-        try? FileManager.default.removeItem(
-            at: downloadBase.appendingPathComponent("models", isDirectory: true))
+        // 清掉脚手架，但**只清我们自己造的那条链，且只在它空了之后**。
+        //
+        // 不能直接删 `downloadBase/models`：WhisperKit 的 tokenizer 缓存也落在
+        // `downloadBase` 下（`WhisperKit.swift:75`，`tokenizerFolder ?? downloadBase`），
+        // 一刀删掉整层，下一次加载模型就得重新联网取 tokenizer——离线用户
+        // 当场失败。逐级往上、空了才删，既不留空壳也不误伤别人的东西。
+        let fm = FileManager.default
+        var scaffold = downloadBase
+            .appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent("argmaxinc", isDirectory: true)
+            .appendingPathComponent("whisperkit-coreml", isDirectory: true)
+        for _ in 0..<3 {
+            let empty = ((try? fm.contentsOfDirectory(atPath: scaffold.path)) ?? []).isEmpty
+            guard empty else { break }
+            try? fm.removeItem(at: scaffold)
+            scaffold = scaffold.deletingLastPathComponent()
+        }
     }
 }
