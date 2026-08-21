@@ -42,6 +42,15 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 ditto --norsrc --noextattr --noqtn --noacl "$BIN_PATH" "$APP_DIR/Contents/MacOS/$APP_NAME"
 ditto --norsrc --noextattr --noqtn --noacl "$ROOT/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 
+# App 图标：icns 是生成物（.gitignore 里，母版是 render-icon.swift），缺了就
+# 现做——保证换机器 clone 下来第一次构建也能出对的图标，而不是无声地打出
+# 一个没有图标的空白应用包。
+if [[ ! -f "$ROOT/Resources/AppIcon.icns" ]]; then
+  "$ROOT/scripts/make-icon.sh"
+fi
+ditto --norsrc --noextattr --noqtn --noacl \
+    "$ROOT/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
+
 # 资源 bundle 必须一并打包，否则应用跑起来找不到它们。
 #
 # mlx-swift_Cmlx.bundle 里是 default.metallib（那 42 个着色器的编译产物）。

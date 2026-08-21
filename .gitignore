@@ -68,4 +68,8 @@ Bench/whisper-translate.txt
 
 # 云端翻译端到端体检的本机开关，见 Tests/vInputTests/GeminiE2ETests.swift
 Testing/.gemini-e2e-enabled
+
+# App 图标生成物（scripts/make-icon.sh 出）。母版是 scripts/render-icon.swift，
+# 缺失时 build-app.sh 会自动重生成，见该脚本注释。
+Resources/AppIcon.icns
 .superpowers/
