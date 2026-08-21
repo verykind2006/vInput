@@ -292,11 +292,22 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
     /// 换到应用支持目录后不受 TCC 约束。这本来也更合适：模型缓存不该写进
     /// 用户的「文稿」文件夹。
     nonisolated static func defaultDownloadBase() -> URL {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("vInput/huggingface", isDirectory: true)
+        let base = defaultDownloadBasePath()
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
+    }
+
+    /// 同一个位置，**只算路径、不建目录**。
+    ///
+    /// 分出来是为了让 `ModelRootResolutionTests` 能拿它跟 `UninstallPlan.items`
+    /// 比对：这里落的是 tokenizer 缓存，以及「本地一个模型都没有」时
+    /// WhisperKit 自行下载的那一份（`AppModel.bootstrap` 的退化路径）——
+    /// 它跑到卸载清单外面去的话，用户点完「删除并退出」盘上还留着几百 MB。
+    /// 而建目录是副作用，测试不该往真家目录里写东西。
+    nonisolated static func defaultDownloadBasePath() -> URL {
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("vInput/huggingface", isDirectory: true)
     }
 
     func prepare() async throws {

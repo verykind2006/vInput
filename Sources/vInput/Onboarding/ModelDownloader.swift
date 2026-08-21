@@ -30,6 +30,47 @@ enum ModelDownloader {
         case failed(source: DownloadSource)
     }
 
+    /// 把 WhisperKit 吐出的嵌套目录挪到 `root/<variant>`，再清掉挪空的脚手架。
+    ///
+    /// 搬家的**理由**（WhisperKit 落在哪、`discover` 去哪找、差一层会怎样）
+    /// 全部写在下面 `WhisperKitDownloadBackend` 的类型注释里，不重复一遍。
+    ///
+    /// **它长在这里而不是长在 `WhisperKitDownloadBackend.download` 里，
+    /// 唯一的理由是它测得到。** 那个函数第一句就是 `WhisperKit.download`，
+    /// 要真联网拉 1.5GB，测试进程里一次都跑不到；而这条搬家正是本批
+    /// 「下完 1.5GB 却报告找不到模型」的**唯一**成因。留在跑不到的函数里的
+    /// 代价是实测出来的：QA 变异把这几行整段删掉，全仓 1316 条测试
+    /// **一条都没红**（2026-08-22 收尾复验）。现在由
+    /// `ModelDownloaderTests.relocatesWhisperKitOutputToWhereTheCatalogLooks`
+    /// 钉着——它真造一份 WhisperKit 的落盘形状，再问 `ModelCatalog.discover`
+    /// 找不找得到。
+    nonisolated static func relocate(
+        downloaded: URL, into downloadBase: URL, variant: String,
+        fileManager fm: FileManager = .default
+    ) throws {
+        let destination = downloadBase.appendingPathComponent(variant, isDirectory: true)
+        if downloaded.path != destination.path {
+            try? fm.removeItem(at: destination)
+            try fm.moveItem(at: downloaded, to: destination)
+        }
+        // 清掉脚手架，但**只清我们自己造的那条链，且只在它空了之后**。
+        //
+        // 不能直接删 `downloadBase/models`：WhisperKit 的 tokenizer 缓存也落在
+        // `downloadBase` 下（`WhisperKit.swift:75`，`tokenizerFolder ?? downloadBase`），
+        // 一刀删掉整层，下一次加载模型就得重新联网取 tokenizer——离线用户
+        // 当场失败。逐级往上、空了才删，既不留空壳也不误伤别人的东西。
+        var scaffold = downloadBase
+            .appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent("argmaxinc", isDirectory: true)
+            .appendingPathComponent("whisperkit-coreml", isDirectory: true)
+        for _ in 0..<3 {
+            let empty = ((try? fm.contentsOfDirectory(atPath: scaffold.path)) ?? []).isEmpty
+            guard empty else { break }
+            try? fm.removeItem(at: scaffold)
+            scaffold = scaffold.deletingLastPathComponent()
+        }
+    }
+
     nonisolated static func percentText(_ fraction: Double) -> String {
         let clamped = min(1, max(0, fraction))
         return "\(Int((clamped * 100).rounded()))%"
@@ -82,7 +123,9 @@ enum ModelDownloader {
 /// 因此这里把 `root` 原样当 `downloadBase` 传下去（借它当临时脚手架），
 /// 下载完成后把 WhisperKit 实际吐出的目录**挪到** `root/<variant>`
 /// （`ModelDownloader.run` 里 `alreadyPresent` 检查的正是这个位置），
-/// 再删掉挪空的 `models/` 脚手架目录，不留残留。
+/// 再删掉挪空的 `models/` 脚手架目录，不留残留。搬家那几行在
+/// `ModelDownloader.relocate(downloaded:into:variant:fileManager:)`——
+/// 放在那边是为了测得到，理由见它自己的注释。
 @MainActor
 struct WhisperKitDownloadBackend: ModelDownloadBackend {
     func download(
@@ -100,27 +143,6 @@ struct WhisperKitDownloadBackend: ModelDownloadBackend {
                 Task { @MainActor in onProgress(progress.fractionCompleted) }
             })
 
-        let destination = downloadBase.appendingPathComponent(variant, isDirectory: true)
-        if downloaded.path != destination.path {
-            try? FileManager.default.removeItem(at: destination)
-            try FileManager.default.moveItem(at: downloaded, to: destination)
-        }
-        // 清掉脚手架，但**只清我们自己造的那条链，且只在它空了之后**。
-        //
-        // 不能直接删 `downloadBase/models`：WhisperKit 的 tokenizer 缓存也落在
-        // `downloadBase` 下（`WhisperKit.swift:75`，`tokenizerFolder ?? downloadBase`），
-        // 一刀删掉整层，下一次加载模型就得重新联网取 tokenizer——离线用户
-        // 当场失败。逐级往上、空了才删，既不留空壳也不误伤别人的东西。
-        let fm = FileManager.default
-        var scaffold = downloadBase
-            .appendingPathComponent("models", isDirectory: true)
-            .appendingPathComponent("argmaxinc", isDirectory: true)
-            .appendingPathComponent("whisperkit-coreml", isDirectory: true)
-        for _ in 0..<3 {
-            let empty = ((try? fm.contentsOfDirectory(atPath: scaffold.path)) ?? []).isEmpty
-            guard empty else { break }
-            try? fm.removeItem(at: scaffold)
-            scaffold = scaffold.deletingLastPathComponent()
-        }
+        try ModelDownloader.relocate(downloaded: downloaded, into: downloadBase, variant: variant)
     }
 }
