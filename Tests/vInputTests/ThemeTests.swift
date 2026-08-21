@@ -202,9 +202,15 @@ struct ThemeTests {
         for (i, expected) in themeColors.enumerated() {
             let script = scriptColors[i]
             let (r, g, b) = Self.rgbComponents(of: expected.color)
-            // 0.01 的容差是给 Color → NSColor 桥接时色彩空间转换留的余量，
-            // 不是在放水：琥珀改绿这种量级的变异，分量差是几十倍于这个容差。
-            let matches = abs(script.r - r) < 0.01 && abs(script.g - g) < 0.01 && abs(script.b - b) < 0.01
+            // 容差 1e-6：实测 `Color → NSColor(.deviceRGB)` 桥接的最大误差是
+            // 4.3e-08（四个颜色逐个量的），留 20 倍余量。
+            //
+            // **原来写的 0.01 宽了二十三万倍，而且同一个文件里就有碰撞**：
+            // `VITheme.contentBackground` 是 (0.165, 0.165, 0.176)、
+            // `iconTileTop` 是 (0.165, 0.165, 0.180)，蓝色分量只差 0.004——
+            // 正好在旧容差内。抄错成相邻那个常量，这条测试照样绿，
+            // 而它存在的理由恰恰是抓这一类。
+            let matches = abs(script.r - r) < 1e-6 && abs(script.g - g) < 1e-6 && abs(script.b - b) < 1e-6
             #expect(
                 matches,
                 """
@@ -247,12 +253,14 @@ struct ThemeTests {
     /// `"let barsIn56: [CGRect] = ["` 精确字面量匹配，只要脚本里这行的空格、
     /// 类型注解写法稍有不同（哪怕语义完全不变），匹配就会失败，而失败信息
     /// 只会说「数目对不上」——读的人会去找根本不存在的几何漂移。改成正则
-    /// `let\s+barsIn56\b[^=\[]*=\s*\[` 之后：
+    /// `let\s+barsIn56\b[^=]*=\s*\[` 之后：
     /// - `\s+` 容忍空白变化；
-    /// - `[^=\[]*` 吃掉 `barsIn56` 与 `=` 之间的任何字符（比如冒号、空格），
-    ///   但吃不过方括号——这就要求脚本里的声明写成不带显式类型注解的
-    ///   `let barsIn56 = [...]`（Swift 能从字面量元素类型推断出 `[CGRect]`，
-    ///   这也更地道），二者天然兼容；
+    /// - `[^=]*` 吃掉 `barsIn56` 与 `=` 之间的任何字符，**包括类型注解自带
+    ///   的方括号**。第一版写的是 `[^=\[]*`，吃不过方括号，于是
+    ///   `let barsIn56: [CGRect] = [` 这种最常见的写法会误报「锚点失效」；
+    ///   当时的处置是去脚本里写一条「声明不许带类型注解」的禁令——**用一条
+    ///   新的口头约束去还旧的口头约束，方向还反了**（测试为脚本服务，
+    ///   不是倒过来）。放宽一个字符即可，三种写法都认（实测）；
     /// - 找不到锚点、或找不到收尾的 `]`，都视为**解析失败**而不是「柱子数
     ///   量变了」，调用方要把这两类失败分开报告。
     ///
@@ -266,7 +274,12 @@ struct ThemeTests {
         let nsSource = source as NSString
         let fullRange = NSRange(location: 0, length: nsSource.length)
 
-        let anchorPattern = #"let\s+barsIn56\b[^=\[]*=\s*\["#
+        // `[^=]*` 而不是 `[^=\[]*`：后者认不出 `let barsIn56: [CGRect] = [`
+        // ——类型注解自带的方括号会把锚点截断。第一版为此在脚本里写了一条
+        // 「声明不许带类型注解」的禁令，那是**用一条新的口头约束去还旧的
+        // 口头约束**，方向还反了（测试是为脚本服务的，不是倒过来）。
+        // 放宽一个字符即可，三种写法都认，真漂移照样抓得住。
+        let anchorPattern = #"let\s+barsIn56\b[^=]*=\s*\["#
         let anchorRegex = try NSRegularExpression(pattern: anchorPattern)
         guard let anchorMatch = anchorRegex.firstMatch(in: source, range: fullRange) else {
             throw SourceParseFailure(
