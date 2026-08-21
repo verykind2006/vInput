@@ -26,7 +26,6 @@ enum UninstallPlan {
     }
 
     static let defaultsSuite = "com.vinput.app"
-    static let removesKeychainAPIKey = true
 
     nonisolated static func items(home: String) -> [Item] {
         [
@@ -47,6 +46,17 @@ enum UninstallPlan {
     nonisolated static func humanSize(_ bytes: Int64) -> String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
+        // 这两行是给中文句子用的，不是调格式偏好：
+        //
+        // `ByteCountFormatter` 在 1KB 以下会退回**英文单词**——实测
+        // 0 → 「Zero KB」、500 → 「500 bytes」，而这串东西会被原样插进
+        // 「共约 …。」这句全中文的确认文案里，非技术用户看到的就是一句
+        // 半英半中的坏话。GB/KB 这类缩写本身与语言无关，所以只要不让它
+        // 走到「bytes」和「Zero」那两档即可。
+        //
+        // 什么时候会撞上：模型还没下载、只有日志的那种近乎空的安装。
+        formatter.allowsNonnumericFormatting = false
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
         return formatter.string(fromByteCount: bytes)
     }
 
@@ -63,7 +73,7 @@ enum UninstallPlan {
         Confirmation(
             title: "卸载 vInput 的数据？",
             message: """
-                将删除模型与缓存、日志、偏好设置，以及 Keychain 里的云端 API key，\
+                将删除模型与缓存、日志、偏好设置，以及你之前输入的 Gemini API 密钥（存在系统「钥匙串」里），\
                 共约 \(sizeText)。此操作不可撤销。
 
                 有两件事需要你自己做：把 vInput 拖进废纸篓（应用删不掉自己），\

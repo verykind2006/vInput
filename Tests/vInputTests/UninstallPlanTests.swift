@@ -19,7 +19,6 @@ struct UninstallPlanTests {
     /// 「记得」上次的设置，用户以为没删干净。
     @Test func nonFileItemsAreListedSeparately() {
         #expect(UninstallPlan.defaultsSuite == "com.vinput.app")
-        #expect(UninstallPlan.removesKeychainAPIKey)
     }
 
     /// 体积是扫出来的，不是写死的数字。
@@ -47,6 +46,17 @@ struct UninstallPlanTests {
 
     /// **确认文案必须说清两件我们做不到的事**，不许假装做到了：
     /// 应用删不掉自己；系统设置里的授权条目也不归我们管。
+    /// **小体积不许冒出英文词。** `ByteCountFormatter` 在 1KB 以下会退回
+    /// 「Zero KB」「500 bytes」，而这串东西会被插进一句全中文的确认文案里。
+    /// 撞上它的场景很实在：模型还没下载、只有日志的那种近乎空的安装。
+    @Test func smallSizesNeverLeakEnglishWords() {
+        for bytes: Int64 in [0, 1, 500, 999] {
+            let text = UninstallPlan.humanSize(bytes)
+            let leaks = text.lowercased().contains("byte") || text.lowercased().contains("zero")
+            #expect(!leaks, "humanSize(\(bytes)) 冒出了英文词：\(text)")
+        }
+    }
+
     @Test func confirmationTellsTheTruthAboutWhatWeCannotDo() {
         let copy = UninstallPlan.confirmation(sizeText: "1.5 GB")
         #expect(copy.message.contains("1.5 GB"))
