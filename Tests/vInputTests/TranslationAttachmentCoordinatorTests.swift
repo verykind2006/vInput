@@ -604,10 +604,30 @@ struct CloudEgressTests {
         let networkUsers = sources.filter { $0.text.contains("URLSession") }
         #expect(
             Set(networkUsers.map(\.name)) == [
-                // 唯一真的发请求的地方。
+                // 唯一真的把**用户说的话**发出去的地方。
                 "GeminiTranslator.swift",
                 // 只在注释里提了一句 WhisperKit 内置的下载器，本文件不发请求。
                 "WhisperKitTranscriber.swift",
+                // **真的发请求，但发的不是用户内容**（M9 批次二 Task 6 加入）。
+                //
+                // 首次启动向导要下 1.5GB 的模型，下之前拿一个 HEAD 探两个源
+                // 谁快（`<endpoint>/argmaxinc/whisperkit-coreml`）。回到
+                // `CloudEgressTests` 那三问：
+                //
+                // - **发出去的是什么**：一个 HEAD，没有请求体，没有 key，
+                //   没有任何用户内容。对面只知道「有人问了这个公开仓库在不在」。
+                // - **用户能不能禁掉**：能，而且默认就不发——模型已经在本地时
+                //   `OnboardingCoordinator.startModelDownload()` 直接返回，
+                //   一个包都不出；向导完成过之后（`shouldPresent` 为 false）
+                //   整条路径不再被走到。也就是说它只在「第一次装、且本机
+                //   还没有模型」这一种情形下发生。
+                // - **怎么验证真的没发**：`OnboardingWiringTests` 的
+                //   「模型已在本地时不探测、不下载」——那条用假 probe 断言
+                //   backend 一次都没被调到。
+                //
+                // 它与「一切不出本机」并不冲突：模型本来就得从网上取，
+                // 而这一步只是决定从哪个源取。
+                "EndpointProbe.swift",
             ],
             """
             出站面变了：\(networkUsers.map(\.name).sorted())。

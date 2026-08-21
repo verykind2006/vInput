@@ -151,6 +151,24 @@ final class AppModel {
     private var transcriber: SwitchableTranscriber?
     private var modelRoot: String = ""
 
+    /// 会话的注入口。平常是纯转发，首次启动向导的「试说一句」期间改道到
+    /// 向导自己的输入框（见 `RedirectableTextSink`）。
+    private var redirectSink: RedirectableTextSink?
+
+    /// 模型根目录。向导要拿它算下载去处——必须与这里用的是同一个地方，
+    /// 各算各的就会「下载 1.5GB 然后报告找不到模型」。
+    var modelRootPath: String { modelRoot }
+
+    /// 挂上 / 摘掉转写改道。传 nil 摘掉，文本回到平常那条路。
+    ///
+    /// **谁挂谁摘**：忘了摘的后果是此后每一次听写都静默消失，
+    /// 而日志里还写着「注入成功」。`OnboardingCoordinator` 在离开
+    /// 「试说一句」那步与关窗时各摘一次。
+    func setTranscriptRedirect(_ handler: ((String) -> Void)?) {
+        redirectSink?.redirect = handler
+        AppLogger.shared.log("转写改道：\(handler == nil ? "已摘掉" : "已挂上")")
+    }
+
     private(set) var remoteState: RemoteConnectionState = .disconnected
     private(set) var remoteBattery: Int?
 
@@ -484,13 +502,21 @@ final class AppModel {
         }
         notificationPresenter = presenter
 
+        let redirectSink = RedirectableTextSink(
+            fallback: RoutingTextSink(
+                typing: TypingSink(),
+                clipboard: ClipboardSink()
+            ))
+        self.redirectSink = redirectSink
+
         let session = DictationSession(
             audioSource: router,
             transcriber: transcriber,
-            sink: RoutingTextSink(
-                typing: TypingSink(),
-                clipboard: ClipboardSink()
-            ),
+            // 平常那条路原样保留，外面再包一层可改道的壳。首次启动向导的
+            // 「试说一句」要把文字落进向导自己的输入框，而 `DictationSession.sink`
+            // 是 `let`、会话建好之后换不掉——包一个引用类型进去，改它的属性即可。
+            // 没挂改道时它是纯转发，行为与原来一字不差。
+            sink: redirectSink,
             targetGuard: TargetAppGuard(),
             rescue: TextRescue(clipboard: ClipboardSink(), presenter: presenter)
         )

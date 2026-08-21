@@ -32,6 +32,10 @@ struct vInputApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
 
+    /// 首次启动向导。**必须由 delegate 持有**：它自己持有窗口，
+    /// 局部变量走完 `applicationDidFinishLaunching` 就被释放，窗口跟着没。
+    private var onboarding: OnboardingCoordinator?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 越早越好：它要记的是「vInput 抢到前台之前用户在用哪个应用」，
         // 而这一刻（LSUIElement 应用启动、尚未激活自己）的前台恰好就是答案。
@@ -50,6 +54,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 的失败方向是「不开」。
         model.confirmCloudBackend = { presentCloudBackendConfirmation() }
         model.bootstrap()
+        presentOnboardingIfNeeded()
+    }
+
+    /// 首次启动向导。
+    ///
+    /// **排在 `bootstrap()` 之后**：向导要把下载好的模型交给应用去加载
+    /// （`adoptModelFolder`），而 `selectModelFromFolder` 依赖 bootstrap 建好的
+    /// transcriber；反过来的话手动导入与下载完成两条路都会静默无效。
+    ///
+    /// 完成过就不再弹，判据是 `OnboardingState.shouldPresent(isComplete:)`
+    /// ——这一条是本批存在的全部理由，没有它向导永远不会出现。
+    private func presentOnboardingIfNeeded() {
+        let state = OnboardingState()
+        guard OnboardingState.shouldPresent(isComplete: state.isComplete) else { return }
+
+        var wiring = OnboardingCoordinator.Wiring()
+        // 与 AppModel 用同一个模型根目录。各算各的就会「下载 1.5GB 然后
+        // 报告找不到模型」——那正是 `ModelCatalog.resolveRoot` 存在的理由。
+        wiring.modelRoot = { [weak self] in self?.model.modelRootPath ?? "" }
+        wiring.adoptModelFolder = { [weak self] folder in
+            guard let self else { return }
+            // 先重扫再切换：切换那一步要拿到刚落盘的目录，不重扫的话
+            // 菜单里也看不到它。
+            self.model.refreshAvailableModels()
+            self.model.selectModelFromFolder(folder)
+        }
+        wiring.isDictationReady = { [weak self] in self?.model.loadingModelName == nil }
+        wiring.toggleDictation = { [weak self] in self?.model.toggle() }
+        // 「试说一句」的文字落进向导自己的输入框，不投递任何 CGEvent、
+        // 不经 TypingSink，因此不可能打进别的应用。见 RedirectableTextSink。
+        wiring.setTranscriptRedirect = { [weak self] handler in
+            self?.model.setTranscriptRedirect(handler)
+        }
+
+        let coordinator = OnboardingCoordinator(state: state, wiring: wiring)
+        onboarding = coordinator
+        // present() 开窗的**同时**就把模型下载踢起来（探源 → ModelDownloader.run）。
+        // 不是等走到第四步：1.5GB 的等待要被前面三步吸收掉，否则用户就是
+        // 干瞪着进度条等十几分钟。
+        coordinator.present()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
