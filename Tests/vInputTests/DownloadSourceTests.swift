@@ -56,7 +56,11 @@ struct DownloadSourceTests {
         _ = await DownloadSource.choose(
             probe: { _ in
                 await recorder.enter()
-                await Task.yield()
+                // 让出**三次**而不是一次：一次 `Task.yield()` 只给一次调度
+                // 机会，若执行器恰好又立刻恢复了本任务、另一个探测一次都没
+                // 排上，peak 会是 1 而测试假红。多让几次把这个概率压下去，
+                // 代价为零。（这不是在等时间——判据仍是调度结构，不是毫秒。）
+                for _ in 0..<3 { await Task.yield() }
                 await recorder.exit()
                 return .responded(millis: 1)
             },
