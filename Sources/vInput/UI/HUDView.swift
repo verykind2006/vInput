@@ -28,6 +28,14 @@ struct HUDView: View {
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(VITheme.hairline, lineWidth: 1)
         )
+        // HUD 底色是写死的深色 VITheme.panelBackground，而正文用的
+        // `.primary` / `.secondary` / `.tertiary` 会跟着系统外观走——浅色
+        // 模式下不钉死的话，预览文字就是黑字压深底（实测 aqua 外观下
+        // `.primary`/`.secondary` 亮度 0.000，底色亮度 0.115），几乎读不出来。
+        // 而开发机常年深色模式，这种缺陷在自己机器上永远看不见。
+        // 放在修饰链最外层：environment 往下传，这样 background/overlay
+        // 连同整棵子树都被覆盖。菜单面板同款（MenuPanelView.swift）。
+        .environment(\.colorScheme, .dark)
     }
 
     // MARK: - 顶部状态条
