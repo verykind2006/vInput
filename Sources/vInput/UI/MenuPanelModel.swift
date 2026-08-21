@@ -116,6 +116,64 @@ enum MenuPanelModel {
         hasKey ? "更换 API Key…" : "输入 API Key…"
     }
 
+    // MARK: - 在飞的下载 / 待启用的模型
+
+    /// 「正在下载模型 42%」。`nil` 表示此刻没有下载在跑，那一行整个不出现。
+    ///
+    /// **这一行是本批补上的一个洞**：关掉向导**不会**取消下载（扔掉几百 MB
+    /// 更糟），于是它变成一个完全看不见的后台任务——菜单栏图标的加载态说的
+    /// 是「模型正在加载」，不是「正在下载」，两者差着十几分钟。用户看到的是
+    /// 一个若无其事的面板，直到某一刻应用忽然自己进入加载态。
+    ///
+    /// 百分比走 `ModelDownloader.percentText`，与向导里那一处同一个函数：
+    /// 两处各自 `Int(fraction * 100)` 的话，取整方式迟早一个 round 一个截断，
+    /// 同一次下载在两个界面上显示成两个数。
+    nonisolated static func downloadLine(progress: Double?) -> String? {
+        guard let progress else { return nil }
+        return "正在下载模型 \(ModelDownloader.percentText(progress))"
+    }
+
+    /// 「新模型已下载好（…），这次听写结束后自动启用」。
+    ///
+    /// 下载在录音/转写途中完成时，换模型会被 `canSwitchModel` 挡下来
+    /// （挡是对的：换掉正在用的引擎更糟）。挡下来之后由
+    /// `ModelAdoptionQueue` 记着、会话结束时补上——**而用户必须知道这件事
+    /// 正在等**，否则他看到的是「下完了但菜单里还是老模型」，
+    /// 与「下载失败了」在界面上长得一模一样。
+    nonisolated static func pendingModelLine(folder: String?) -> String? {
+        guard let folder else { return nil }
+        let name = (folder as NSString).lastPathComponent
+        return "新模型已下载好（\(name)），这次听写结束后自动启用"
+    }
+
+    // MARK: - 高级：储存位置与下载源
+
+    /// 模型与缓存放在哪。**把家目录缩成 `~`**：面板只有 320pt 宽，
+    /// 而 `/Users/<很长的用户名>/Library/…` 前半截对用户没有信息量。
+    ///
+    /// 根目录为空（bootstrap 还没跑完）时说「尚未确定」，不显示一个空行——
+    /// 空行会让人以为「什么都没存」，而这一格存在的理由恰恰是让用户看见
+    /// 那几个 GB 在哪。
+    nonisolated static func storageLocationLine(root: String) -> String {
+        guard !root.isEmpty else { return "位置：尚未确定" }
+        return "位置：\((root as NSString).abbreviatingWithTildeInPath)"
+    }
+
+    /// 设置行右侧那半截「当前值」。
+    nonisolated static func downloadSourceValueLabel(forced: DownloadSource?) -> String {
+        forced?.displayName ?? "自动"
+    }
+
+    /// 三选一里的每一项。
+    ///
+    /// 「自动」后面那半句不是装饰：不写的话，用户无从判断「自动」到底做了
+    /// 什么，也就无从判断自己该不该去动它（真实机理是并发探测两个源、
+    /// 谁先响应用谁，见 `DownloadSource.choose`）。
+    nonisolated static func downloadSourceChoiceLabel(_ forced: DownloadSource?) -> String {
+        guard let forced else { return "自动（两个源都探一下，谁快用谁）" }
+        return "强制\(forced.displayName)"
+    }
+
     // MARK: - 头部状态行
 
     struct HeaderStatus: Equatable {

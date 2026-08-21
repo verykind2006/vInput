@@ -207,6 +207,18 @@ final class OnboardingCoordinator {
         var probe: @Sendable (DownloadSource) async -> DownloadSource.ProbeResult = {
             await EndpointProbe.probe($0)
         }
+        /// 面板「高级 → 下载源」里选的那一档。nil = 自动（并发探测，谁快用谁）。
+        ///
+        /// **必须与面板写进去的是同一个 key**，两边都经由
+        /// `DownloadSourcePreference`（key 只在那里写一次）。各写一个字面量的
+        /// 话，拼错一个字母的表现是「这个设置什么都不做」，而界面上打着勾。
+        var forcedDownloadSource: () -> DownloadSource? = { DownloadSourcePreference().forced }
+        /// 下载进度往外报一份，`nil` 表示「此刻没有下载在跑」。
+        ///
+        /// 关窗**不取消下载**（扔掉几百 MB 更糟），于是它会变成一个没人看得见
+        /// 的后台任务：菜单栏图标的加载态说的是「模型正在加载」，不是「正在
+        /// 下载」。接上这一路之后，面板上有一行「正在下载模型 42%」。
+        var onDownloadProgress: (Double?) -> Void = { _ in }
         var makeBackend: @MainActor () -> ModelDownloadBackend = { WhisperKitDownloadBackend() }
         /// 复用菜单里那个模型目录选择器，不另造一个。
         var chooseModelFolder: @MainActor () -> URL? = { presentWhisperModelFolderPanel() }
@@ -470,15 +482,27 @@ final class OnboardingCoordinator {
 
         isDownloading = true
         downloadFailure = nil
+        // 报一次 0：探测那几秒里面板上也该有话说，否则用户看到的是「什么都
+        // 没发生」，然后忽然从 30% 开始。
+        wiring.onDownloadProgress(0)
         AppLogger.shared.log("向导：开始探测下载源")
+
+        // 用户在「高级 → 下载源」里强制过的话，探测整个跳过（`choose` 拿到
+        // 非 nil 的 forced 直接返回它）——这个逃生口存在的意义就是「探测选错
+        // 了，我自己指定」，再探一遍等于没给。
+        let forced = wiring.forcedDownloadSource()
+        if let forced {
+            AppLogger.shared.log("向导：下载源被用户强制为 \(forced.displayName)，跳过探测")
+        }
 
         Task { [weak self] in
             guard let self else { return }
-            guard let source = await DownloadSource.choose(probe: self.wiring.probe, forced: nil)
+            guard let source = await DownloadSource.choose(probe: self.wiring.probe, forced: forced)
             else {
                 AppLogger.shared.log("向导：两个下载源都不通")
                 self.downloadFailure = Self.noSourceMessage
                 self.isDownloading = false
+                self.wiring.onDownloadProgress(nil)
                 return
             }
             AppLogger.shared.log("向导：选中下载源 \(source.displayName)")
@@ -488,7 +512,10 @@ final class OnboardingCoordinator {
                 alreadyPresent: self.wiring.alreadyPresent,
                 backend: self.wiring.makeBackend(),
                 source: source,
-                onProgress: { [weak self] fraction in self?.downloadProgress = fraction })
+                onProgress: { [weak self] fraction in
+                    self?.downloadProgress = fraction
+                    self?.wiring.onDownloadProgress(fraction)
+                })
 
             switch outcome {
             case .alreadyPresent, .downloaded:
@@ -499,6 +526,8 @@ final class OnboardingCoordinator {
                 self.downloadFailure = Self.failureMessage(source: failedSource)
             }
             self.isDownloading = false
+            // 成败都要收：不收的话面板上会永远挂着一行「正在下载模型 100%」。
+            self.wiring.onDownloadProgress(nil)
         }
     }
 

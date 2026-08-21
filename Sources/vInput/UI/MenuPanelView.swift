@@ -47,7 +47,7 @@ struct MenuPanelView: View {
     /// 可展开的行。用枚举而不是四个 Bool：四个 Bool 表示得出「同时开三行」
     /// 这种非法状态，而这里要的恰恰是「至多一行」。
     private enum SettingRow: Hashable {
-        case model, correction, outputLanguage, backend, devTools
+        case model, correction, outputLanguage, backend, advanced, devTools
     }
 
     /// 面板宽度。
@@ -108,6 +108,7 @@ struct MenuPanelView: View {
         VStack(spacing: 0) {
             header
             primaryButton
+            downloadStatus
             deviceCards
             lastTranscriptCard
             settingsList
@@ -207,6 +208,37 @@ struct MenuPanelView: View {
         .padding(.horizontal, 12).padding(.bottom, 10)
     }
 
+    // MARK: - 在飞的下载
+
+    /// 「正在下载模型 42%」与「新模型已下载好，这次听写结束后自动启用」。
+    ///
+    /// **这一格补的是一个看不见的后台任务。** 关掉向导不取消下载（扔掉几百
+    /// MB 更糟），而菜单栏图标的 `loadingModel` 说的是「模型正在加载」，
+    /// 不是「正在下载」——两者差着十几分钟。没有这一格的话，用户关掉向导之后
+    /// 看到的是一个若无其事的面板，直到某一刻应用忽然自己进入加载态。
+    ///
+    /// 摆在主按钮下面、设备卡上面：它是「此刻应用在替你做的事」，
+    /// 比设备状态紧要，但不该把主按钮往下推。
+    ///
+    /// 两行都可能同时出现（下完一个正在下一个不会发生，但「上一次下的还等着
+    /// 启用」＋「这次又在下」在重试路径上会）。文案全部在 `MenuPanelModel`。
+    @ViewBuilder
+    private var downloadStatus: some View {
+        let lines = [
+            MenuPanelModel.downloadLine(progress: model.downloadingModelProgress),
+            MenuPanelModel.pendingModelLine(folder: model.pendingModelFolder),
+        ].compactMap { $0 }
+        if !lines.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(lines, id: \.self) { line in infoLine(line) }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(VITheme.contentBackground, in: RoundedRectangle(cornerRadius: 9))
+            .padding(.horizontal, 12).padding(.bottom, 10)
+        }
+    }
+
     // MARK: - 设备卡
 
     @ViewBuilder
@@ -299,6 +331,11 @@ struct MenuPanelView: View {
             }
             rowSeparator
             settingRow(.backend, title: "翻译后端", value: backendValueLabel) { backendSection }
+            rowSeparator
+            // 第五行。手风琴一次只开一行，所以多这一行只多一个行高
+            // （约 35pt），不会把「最深一档」推高——最深的那一档仍然是
+            // 云端后端展开 + 嵌套的「选择模型」。真机高度请在 Task 9 目检。
+            settingRow(.advanced, title: "高级", value: "") { advancedSection }
         }
         .background(VITheme.contentBackground, in: RoundedRectangle(cornerRadius: 9))
         .padding(.horizontal, 12).padding(.bottom, 10)
@@ -370,21 +407,72 @@ struct MenuPanelView: View {
         .disabled(!model.canSwitchModel)
     }
 
-    /// 校正（旧 `correctionMenu`）：开关与模型目录是同一件事的两个面。
+    /// 校正（旧 `correctionMenu`）：这一格现在只剩开关。
+    ///
+    /// **「指定校正模型…」连同它上面那行「模型：…」搬去了「高级」**：
+    /// 开关是天天会点的，而挑一个本地 MLX 模型目录一个用户一辈子做一两次。
+    /// 两项没有拆成两处（模型行留这里、按钮搬走）——那行字存在的理由就是
+    /// 「按下按钮之前先知道现在用的是哪个」，拆开之后两边都不完整，
+    /// 而重复写一份迟早各走各的。
     @ViewBuilder
     private var correctionSection: some View {
         expandedButton(MenuPanelModel.correctionToggleTitle(enabled: model.correctionEnabled)) {
             model.toggleCorrection()
         }
+    }
+
+    /// 高级：储存位置、下载源、校正模型目录、卸载。
+    ///
+    /// 这一格的共同点是「一辈子点一两次，点错代价大」。**卸载排在最后且是
+    /// 红字**：它删的是几个 GB 加全部设置加 Keychain 里的 API key，不可撤销。
+    /// 它必须待在这个折叠区里而不是主区域——主区域的每一项都是天天点的，
+    /// 一个「删掉一切」摆在它们中间迟早会被误点（`MenuPanelViewWiringTests`
+    /// 单独钉了这一条）。
+    @ViewBuilder
+    private var advancedSection: some View {
+        // ① 储存位置。**这是好奇的用户唯一能看见「那几个 GB 在哪」的地方**，
+        // 也是卸载入口存在的同一条产品义务的另一半：我们把几个 GB 塞进了
+        // 用户不感知的目录，就有义务让他看得见、也删得掉。
+        infoLine(MenuPanelModel.storageLocationLine(root: model.modelRootPath))
+        expandedButton("在访达中显示") {
+            NSWorkspace.shared.selectFile(
+                model.modelRootPath, inFileViewerRootedAtPath: "")
+        }
 
         Divider()
-        // 让用户知道当前用的是哪个模型——校正效果好坏几乎全由它决定
-        // （两句文案与「未指定」那句的理由都在 `correctionModelLine` 里）。
+        // ② 下载源。默认自动（并发探测，谁快用谁）；这里是「探测选错了」的
+        // 逃生口。写进偏好的那个 key 与向导读的是同一个（都经由
+        // `DownloadSourcePreference`），否则这个开关会静默地什么都不做。
+        infoLine("下载源")
+        downloadSourceChoice(nil)
+        downloadSourceChoice(.official)
+        downloadSourceChoice(.mirror)
+
+        Divider()
+        // ③ 校正模型目录（从「校正」那一格搬过来，逐字未改）。
         infoLine(MenuPanelModel.correctionModelLine(name: model.correctionModelName))
         expandedButton("指定校正模型…") {
             if let url = presentCorrectionModelFolderPanel() {
                 model.selectCorrectionModel(directory: url)
             }
+        }
+
+        Divider()
+        // ④ 卸载。红字、最后一项。确认框、体积、真删除全都不在视图里：
+        // 文案来自 `UninstallPlan.confirmation`，流程在 `runUninstallFlow`
+        // （取消是默认按钮，理由见 `presentUninstallConfirmation`）。
+        destructiveButton("卸载 vInput 的数据…") {
+            Task { await runUninstallFlow() }
+        }
+    }
+
+    /// 下载源三选一里的一项。nil 是「自动」。
+    private func downloadSourceChoice(_ source: DownloadSource?) -> some View {
+        expandedButton(
+            MenuPanelModel.downloadSourceChoiceLabel(source),
+            checked: model.forcedDownloadSource == source
+        ) {
+            model.selectDownloadSource(source)
         }
     }
 
@@ -642,6 +730,22 @@ struct MenuPanelView: View {
                         .opacity(checked ? 1 : 0)
                 }
                 Text(title).font(.system(size: TypeScale.body))
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 展开区里那种「点下去会毁掉东西」的按钮。目前只有卸载一项。
+    ///
+    /// 红字不是装饰：这一行删的是几个 GB、全部设置和 Keychain 里的 API key，
+    /// 而它周围全是无害的设置项。颜色是用户在**点之前**唯一能收到的警告
+    /// （确认框是点之后的第二道）。
+    private func destructiveButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Text(title).font(.system(size: TypeScale.body)).foregroundStyle(.red)
                 Spacer(minLength: 0)
             }
             .contentShape(Rectangle())

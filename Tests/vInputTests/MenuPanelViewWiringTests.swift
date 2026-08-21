@@ -66,6 +66,24 @@ struct MenuPanelViewWiringTests {
         try source("Sources/vInput/App/vInputApp.swift")
     }
 
+    /// 截出某个函数/计算属性的函数体（从签名那一行到缩进相同的收尾 `}`）。
+    ///
+    /// **有几条不变量的要害是「在哪一段里」，不是「在不在」。** 「卸载」
+    /// 那一行摆在主区域还是「高级」折叠区里，整份 `contains` 完全分不出来
+    /// ——而那正是误点几个 GB 与不误点的差别。这里按缩进配对括号切一刀。
+    ///
+    /// `OnboardingWiringTests` 里那一份就是这一份（它 `@MainActor` 隔离，
+    /// 转调过来）；两处各写一遍迟早各走各的。
+    static func functionBody(_ source: String, signature: String) -> String? {
+        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
+        guard let start = lines.firstIndex(where: { $0.contains(signature) }) else { return nil }
+        let indent = String(lines[start].prefix { $0 == " " })
+        let closing = indent + "}"
+        guard let end = lines[(start + 1)...].firstIndex(where: { $0 == Substring(closing) })
+        else { return nil }
+        return lines[start...end].joined(separator: "\n")
+    }
+
     // MARK: - 场景：自绘面板取代原生菜单
 
     /// `.window` 样式是整个 M9 面板的前提：不切的话 `MenuPanelView` 会被塞进
@@ -422,6 +440,222 @@ struct MenuPanelViewWiringTests {
             把正在用的引擎换掉。
             """
         )
+    }
+
+    // MARK: - 高级区：卸载、下载源、储存位置
+
+    /// **卸载入口必须待在「高级」折叠区里，不许摆在主区域。**
+    ///
+    /// 这一条钉的是位置，不是存在性。点错它的代价是几个 GB 的模型、全部设置
+    /// 和 Keychain 里的 API key，不可撤销；而主区域里的每一项都是天天点的
+    /// （开始听写、重试、模型、校正、输出语言、翻译后端），一个「删掉一切」
+    /// 混在它们中间迟早会被误点。
+    ///
+    /// 判据：`destructiveButton("卸载` 这一行必须落在 `advancedSection` 的
+    /// 函数体里。整份 `contains` 分不出这个差别——把它挪到底栏「退出」旁边，
+    /// 只数「在不在」的断言照样绿。
+    @Test("卸载入口在「高级」区里，不在主区域")
+    func uninstallEntryLivesInsideAdvancedSection() throws {
+        let source = Self.codeOnly(try Self.panelSource())
+        guard let advanced = Self.functionBody(source, signature: "private var advancedSection") else {
+            Issue.record("MenuPanelView 里找不到 advancedSection 的函数体。")
+            return
+        }
+        let insideAdvanced = advanced.contains("destructiveButton(\"卸载")
+        #expect(
+            insideAdvanced,
+            """
+            「卸载 vInput 的数据…」不在 advancedSection 里了。
+            它删的是几个 GB、全部设置和 Keychain 里的 key，且不可撤销——
+            摆进天天要点的主区域迟早会被误点。
+            """
+        )
+        // 反面：整份源码里只许有这一处，且必须是 destructiveButton（红字）。
+        let occurrences = source.components(separatedBy: "卸载 vInput 的数据").count - 1
+        #expect(
+            occurrences == 1,
+            "面板里出现了 \(occurrences) 处卸载入口，只该有一处（在「高级」里）。"
+        )
+        let isDestructive = source.contains("destructiveButton(\"卸载 vInput 的数据…\")")
+        #expect(
+            isDestructive,
+            """
+            卸载那一行不再走 destructiveButton（红字）。
+            颜色是用户在**点之前**唯一能收到的警告，确认框是点之后的第二道。
+            """
+        )
+        // 走的是那条被测过的流程，不是在视图里自己拼一遍。
+        let usesFlow = source.contains("runUninstallFlow()")
+        #expect(usesFlow, "卸载按钮没有调 runUninstallFlow()：扫体积、确认、真删三步无人负责。")
+    }
+
+    /// 卸载的**文案一个字都不许写在视图或面板层**。
+    ///
+    /// `UninstallPlan.confirmation(sizeText:)` 那份文案由测试钉着「必须说清
+    /// 两件我们做不到的事」（应用删不掉自己、系统设置里的授权条目不归我们
+    /// 管）。抄一份到视图里的话，那两条测试从此守的是一份没人用的字符串，
+    /// 而用户看到的是抄过来的、将来不会跟着改的那一份。
+    @Test("卸载确认文案来自 UninstallPlan，不在视图里手写")
+    func uninstallCopyComesFromUninstallPlan() throws {
+        let panel = Self.codeOnly(try Self.panelSource())
+        let modal = Self.codeOnly(try Self.source("Sources/vInput/App/ModalPanels.swift"))
+
+        let buildsFromPlan = modal.contains("UninstallPlan.confirmation(sizeText:")
+        #expect(
+            buildsFromPlan,
+            """
+            presentUninstallConfirmation 没有调 UninstallPlan.confirmation(sizeText:)。
+            确认框的标题/正文/两个按钮全部只能来自那一处。
+            """
+        )
+        // 视图与弹窗两侧都不许出现那份文案的任何一句。
+        for phrase in ["废纸篓", "不可撤销", "删除并退出", "隐私与安全性"] {
+            let leakedIntoPanel = panel.contains(phrase)
+            #expect(!leakedIntoPanel, "MenuPanelView 里手写了卸载文案「\(phrase)」。")
+            let leakedIntoModal = modal.contains(phrase)
+            #expect(!leakedIntoModal, "ModalPanels 里手写了卸载文案「\(phrase)」。")
+        }
+    }
+
+    /// **取消必须是卸载确认框的默认按钮。**
+    ///
+    /// `NSAlert` 里先加的那个是默认按钮（回车触发）。云端那一格的理由是
+    /// 「一路回车不该把出站开关按开」；这一格的代价大一个量级——回车下去
+    /// 删的是几个 GB 加全部设置加 Keychain 里的 key，而且没有撤销。
+    ///
+    /// 钉两件事：取消先加（顺序），以及判的是**第二个**按钮的返回值。
+    /// 只钉顺序的话，把 `alertSecondButtonReturn` 改成 first 就等于取消即删除。
+    @Test("卸载确认框里取消是默认按钮")
+    func uninstallConfirmationDefaultsToCancel() throws {
+        let modal = Self.codeOnly(try Self.source("Sources/vInput/App/ModalPanels.swift"))
+        guard
+            let body = Self.functionBody(modal, signature: "func presentUninstallConfirmation")
+        else {
+            Issue.record("ModalPanels.swift 里找不到 presentUninstallConfirmation 的函数体。")
+            return
+        }
+        guard let cancelAt = body.range(of: "addButton(withTitle: copy.cancelButton)"),
+            let confirmAt = body.range(of: "addButton(withTitle: copy.confirmButton)")
+        else {
+            Issue.record("卸载确认框没有把两个按钮都加上。")
+            return
+        }
+        #expect(
+            cancelAt.lowerBound < confirmAt.lowerBound,
+            """
+            卸载确认框先加了「删除并退出」——NSAlert 里先加的是默认按钮，
+            于是一路回车就会把几个 GB 和 Keychain 里的 key 删掉。
+            """
+        )
+        let readsSecondButton = body.contains("== .alertSecondButtonReturn")
+        #expect(
+            readsSecondButton,
+            """
+            卸载确认框判的不是第二个按钮。取消排在第一位，判 first 的话
+            「取消」等于「确认删除」。
+            """
+        )
+    }
+
+    /// 下载源那个设置：面板写、向导读，中间必须经由同一个类型。
+    ///
+    /// 面板这一侧只能钉「调了 `model.selectDownloadSource(`」与「勾选状态读的
+    /// 是 `model.forcedDownloadSource`」；key 本身全仓唯一那一条在
+    /// `DownloadSourceKeyTests` 里数字面量，向导那一侧真的会照办则由
+    /// `OnboardingWiringTests.forcedSourceOverridesProbe` 真跑一遍。
+    /// 三条合起来才排除「点了、勾也在、行为没变」这种静默失效。
+    @Test("下载源设置读写的是同一处偏好")
+    func downloadSourceSettingIsWiredToItsConsumer() throws {
+        let panel = Self.codeOnly(try Self.panelSource())
+        let writes = panel.contains("model.selectDownloadSource(source)")
+        #expect(
+            writes,
+            "MenuPanelView 里没有 model.selectDownloadSource(source)：这一档点了不会被存下来。"
+        )
+        let readsMirror = panel.contains("model.forcedDownloadSource == source")
+        #expect(
+            readsMirror,
+            """
+            下载源三选一的勾选状态没有读 model.forcedDownloadSource。
+            读别的东西（或者干脆不读）的话，面板显示的档位与真正生效的那档
+            可以长期不一致。
+            """
+        )
+        // 面板里不许直接碰 UserDefaults：那正是「两边各写一个 key」的起点。
+        let touchesDefaults = panel.contains("UserDefaults")
+        #expect(!touchesDefaults, "MenuPanelView 直接碰了 UserDefaults——偏好只能经由 AppModel。")
+
+        let appModel = Self.codeOnly(try Self.source("Sources/vInput/App/AppModel.swift"))
+        let persists = appModel.contains("downloadSourcePreference.forced = source")
+        #expect(
+            persists,
+            """
+            AppModel.selectDownloadSource 没有把选择写进 DownloadSourcePreference。
+            只更新可观察镜像的话，重启之后这个设置就没了，而用户以为它一直在。
+            """
+        )
+    }
+
+    /// 「储存位置」那一格：既要说在哪，也要能直接打开。
+    ///
+    /// 这是好奇的用户唯一能看见「那几个 GB 在哪」的地方——它与卸载入口是
+    /// 同一条产品义务的两半（我们把几个 GB 塞进了用户不感知的目录）。
+    @Test("高级区能看见并打开模型储存位置")
+    func advancedSectionShowsStorageLocation() throws {
+        let source = Self.codeOnly(try Self.panelSource())
+        guard let advanced = Self.functionBody(source, signature: "private var advancedSection") else {
+            Issue.record("MenuPanelView 里找不到 advancedSection 的函数体。")
+            return
+        }
+        for call in [
+            "MenuPanelModel.storageLocationLine(root: model.modelRootPath)",
+            "NSWorkspace.shared.selectFile(",
+            "presentCorrectionModelFolderPanel()",
+        ] {
+            let present = advanced.contains(call)
+            #expect(
+                present,
+                """
+                「高级」区里找不到 \(call)。
+                储存位置（看得见、打得开）与校正模型目录都归这一格；
+                少一项的表现是那个功能从此在界面上点不到。
+                """
+            )
+        }
+    }
+
+    /// **在飞的下载必须在面板上看得见。**
+    ///
+    /// 关掉向导不取消下载（扔掉几百 MB 更糟），而菜单栏图标的 `loadingModel`
+    /// 说的是「模型正在加载」，不是「正在下载」——两者差着十几分钟。没有这
+    /// 一行的话，用户关掉向导之后看到的是一个若无其事的面板。
+    ///
+    /// 连「待启用」那行一起钉：下载在录音途中完成时换模型会被推迟，
+    /// 而「下完了但还是老模型」与「下载失败了」在界面上长得一模一样。
+    @Test("面板上看得见在飞的下载与待启用的模型")
+    func panelShowsInFlightDownload() throws {
+        let source = Self.codeOnly(try Self.panelSource())
+        for call in [
+            "MenuPanelModel.downloadLine(progress: model.downloadingModelProgress)",
+            "MenuPanelModel.pendingModelLine(folder: model.pendingModelFolder)",
+        ] {
+            let present = source.contains(call)
+            #expect(
+                present,
+                """
+                MenuPanelView 里找不到 \(call)。
+                在飞的下载与待启用的模型都是「应用正在替你做的事」，
+                看不见的话用户只会觉得应用忽然自己进入了加载态。
+                """
+            )
+        }
+        // 那一格要真的被摆进 body 里，光定义不用等于不存在。
+        guard let body = Self.functionBody(source, signature: "var body: some View") else {
+            Issue.record("MenuPanelView 里找不到 body。")
+            return
+        }
+        let rendered = body.contains("downloadStatus")
+        #expect(rendered, "downloadStatus 定义了却没有摆进面板的 body 里。")
     }
 
     /// 禁用态的主按钮必须**看起来**也是禁的。

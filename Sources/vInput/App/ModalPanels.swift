@@ -243,6 +243,35 @@ func presentCloudBackendConfirmation() -> Bool {
     return alert.runModal() == .alertSecondButtonReturn
 }
 
+/// 弹出「卸载 vInput 的数据」的确认框，返回用户是否确认。
+///
+/// **文案一个字都不在这里写**：标题、正文、两个按钮全部取自
+/// `UninstallPlan.confirmation(sizeText:)`，那边由测试钉着「必须说清两件
+/// 我们做不到的事」（应用删不掉自己、系统设置里的授权条目不归我们管）。
+/// 抄进这里的话，那两条测试从此守的是一份没人用的字符串。
+///
+/// 三处细节，与 `presentCloudBackendConfirmation` 同源但更硬：
+///
+/// - **取消是默认按钮**（先加的那个是默认按钮，回车触发）。云端那一格的
+///   理由是「一路回车不该把出站开关按开」；这一格的代价大一个量级——
+///   回车下去删的是几个 GB 的模型、全部设置和 Keychain 里的 API key，
+///   而且**没有撤销**。
+/// - `.critical`：不可逆的破坏性操作。
+/// - `activate` 不能去掉，理由同 `presentCorrectionModelFolderPanel`。
+@MainActor
+func presentUninstallConfirmation(sizeText: String) -> Bool {
+    NSApplication.shared.activate(ignoringOtherApps: true)
+
+    let copy = UninstallPlan.confirmation(sizeText: sizeText)
+    let alert = NSAlert()
+    alert.alertStyle = .critical
+    alert.messageText = copy.title
+    alert.informativeText = copy.message
+    alert.addButton(withTitle: copy.cancelButton)
+    alert.addButton(withTitle: copy.confirmButton)
+    return alert.runModal() == .alertSecondButtonReturn
+}
+
 /// 输入云端 API key。
 ///
 /// **用 `NSSecureTextField`**：key 会出现在屏幕上，而用户很可能在会议里

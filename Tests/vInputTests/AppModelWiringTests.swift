@@ -131,6 +131,42 @@ struct AppModelWiringTests {
         )
     }
 
+    /// 会话回到 idle 时补上被推迟的**换模型**。
+    ///
+    /// 与上面那条补挂并排，坏结果却不一样：下载在用户正说着话的时候完成时，
+    /// `selectModel` 被 `canSwitchModel` 挡下来（挡是对的），而挡下来之后
+    /// **再也没有人重试**——用户刚下的 1.5GB 要等到下次启动才生效，
+    /// 界面上「下载完成」与「下载完成但没换上」长得一模一样。
+    ///
+    /// 记账与判断在 `ModelAdoptionQueue`（那边有真跑的用例），
+    /// 这里钉的是「`AppModel` 真的问了它」——这一行是本文件里
+    /// 唯一能守住那条接线的东西。
+    @Test("会话回到 idle 时补上被推迟的换模型")
+    func idleResumesPendingModelAdoption() throws {
+        let source = try Self.appModelSource()
+        #expect(
+            source.contains("applyPendingModelAdoption()"),
+            """
+            onStateChange 的 .idle 分支里没有 applyPendingModelAdoption()。
+            录音途中下完的模型会被永久搁置——菜单里还是老模型，
+            而用户刚等了十几分钟。
+            """
+        )
+        // 向导那条路必须走 adoptDownloadedModel，不能绕回 selectModelFromFolder：
+        // 绕回去就等于没有队列，被拒的那次照样丢。
+        let appSource = try MenuPanelViewWiringTests.appSource()
+        let adopts = MenuPanelViewWiringTests.codeOnly(appSource)
+            .contains("model.adoptDownloadedModel(folder)")
+        #expect(
+            adopts,
+            """
+            vInputApp 把向导下载好的模型直接交给了 selectModelFromFolder。
+            那条路在会话进行中会被静默拒绝且没有下文，必须走
+            adoptDownloadedModel（它会记账、会话结束时补做）。
+            """
+        )
+    }
+
     /// **`AppModel` 里不许再出现第二条挂翻译的路径。**
     ///
     /// 这是「抽出来的那个就是实际跑的那个」最硬的一条：协调器的用例只有在

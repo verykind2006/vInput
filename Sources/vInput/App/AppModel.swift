@@ -90,7 +90,33 @@ final class AppModel {
     /// 里同一条权衡）。用户存完 key 我们当场更新它，不必等下一次挂载。
     private(set) var hasCloudAPIKey: Bool = false
 
+    /// 此刻在飞的模型下载进度（0…1）。nil 表示没有下载在跑。
+    ///
+    /// 由向导报进来（`OnboardingCoordinator.Wiring.onDownloadProgress`）。
+    /// **关掉向导不取消下载**——不接这一路的话，那十几分钟里应用看上去
+    /// 什么都没在做，然后忽然自己进入加载态。面板上那行「正在下载模型 42%」
+    /// 读的就是它。
+    private(set) var downloadingModelProgress: Double?
+
+    /// 下载源：nil = 自动（并发探测谁快用谁），非 nil = 用户在「高级」里强制。
+    ///
+    /// 又一个 UserDefaults 的可观察镜像（理由同 `correctionEnabled`）。
+    /// 真实存储与那个 key 都在 `DownloadSourcePreference` 里，全仓一处。
+    private(set) var forcedDownloadSource: DownloadSource?
+
+    /// 下载好了但还没换上去的模型目录（会话进行中被推迟的那一个）。
+    /// 面板据此显示「结束后自动启用」。判断与记账都在 `ModelAdoptionQueue`。
+    var pendingModelFolder: String? { modelAdoption.pendingFolder }
+
     private let permissions = Permissions()
+    /// 下载源偏好。key 只在 `DownloadSourcePreference` 里写一次，
+    /// 向导那侧读的是同一个类型——两边各写一遍字面量的话，拼错的表现是
+    /// 「这个设置什么都不做」，而面板上照样打着勾。
+    private let downloadSourcePreference = DownloadSourcePreference()
+    /// 「下载好的模型什么时候真的换上去」。理由见该类型的注释：
+    /// 正录着的时候下载完，`selectModel` 会打一行日志就返回，
+    /// 而此后**再也没有人重试**。
+    private let modelAdoption = ModelAdoptionQueue()
     /// 校正偏好。开关状态与模型目录都要跨启动保留。
     private let correctionPreference = CorrectionPreference()
     /// 翻译偏好。输出语言、云端开关、模型目录都要跨启动保留。
@@ -463,6 +489,8 @@ final class AppModel {
             )
         }
         syncCorrectionMirrors()
+        // 下载源同样是「上次退出时选的」，面板打开即是正确状态。
+        forcedDownloadSource = downloadSourcePreference.forced
 
         modelRoot = ModelCatalog.resolveRoot(
             appSupport: ModelCatalog.applicationSupportRoot(
@@ -536,6 +564,9 @@ final class AppModel {
                 // 见 `TranslationAttachmentCoordinator` 的类型注释）。
                 self.translationCoordinator?.sessionDidBecomeIdle()
                 self.syncTranslationMirrors()
+                // 会话结束，把此前被推迟的模型换用补上（下载在录音途中完成的
+                // 那种情况）。不补的话用户刚下的 1.5GB 要等到下次启动才生效。
+                self.applyPendingModelAdoption()
             case .listening: self.phase = .listening
             // 校正、翻译与转写、注入同归 working：Phase 是给菜单栏用的粗粒度
             // 状态，不必区分到这一级，细节由 HUD 呈现。
@@ -1588,6 +1619,48 @@ final class AppModel {
             self?.loadingModelName = nil
             log.log("加载态已解除，当前模型 \(self?.activeModelName ?? "?")")
         }
+    }
+
+    /// 向导下载完 / 手动导入完，把这个目录交给应用真的用上。
+    ///
+    /// **不是直接 `selectModelFromFolder`。** 那条路的第一道门是
+    /// `canSwitchModel`，录音或转写途中为 false，被挡下来之后只有一行日志，
+    /// 此后再也没有人重试——用户刚下的 1.5GB 要等到下次启动才生效，
+    /// 而界面上「下载完成」与「下载完成但没换上」长得一模一样。
+    ///
+    /// 挡是对的（换掉正在用的引擎更糟），缺的是记账与补做，都在
+    /// `ModelAdoptionQueue` 里；这里只负责接线，外加**先重扫**
+    /// ——重扫不受会话状态影响，先做的话即使换用被推迟，
+    /// 新模型也已经出现在面板的模型列表里，用户可以自己点。
+    func adoptDownloadedModel(_ folder: String) {
+        refreshAvailableModels()
+        guard let now = modelAdoption.request(folder: folder, canSwitchNow: canSwitchModel) else {
+            return
+        }
+        selectModelFromFolder(now)
+    }
+
+    /// 会话回到 idle 时补做被推迟的那次换用。调用点在 `onStateChange` 的
+    /// `.idle` 分支，与校正/翻译两条补挂并排。
+    private func applyPendingModelAdoption() {
+        guard let folder = modelAdoption.resume(canSwitchNow: canSwitchModel) else { return }
+        selectModelFromFolder(folder)
+    }
+
+    /// 下载进度报进来。nil = 没有下载在跑。
+    func reportModelDownload(progress: Double?) {
+        downloadingModelProgress = progress
+    }
+
+    /// 「高级 → 下载源」三选一。nil 表示自动（并发探测，谁快用谁）。
+    ///
+    /// 只写偏好、只更镜像：**这个设置不影响任何正在跑的下载**
+    /// （`DownloadSource.choose` 在下载开始那一刻读一次），
+    /// 它管的是下一次下载。
+    func selectDownloadSource(_ source: DownloadSource?) {
+        downloadSourcePreference.forced = source
+        forcedDownloadSource = source
+        AppLogger.shared.log("下载源设置为：\(source?.displayName ?? "自动")")
     }
 
     /// 让用户手选一个模型目录。

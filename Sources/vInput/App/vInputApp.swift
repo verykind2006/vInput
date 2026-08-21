@@ -73,12 +73,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 与 AppModel 用同一个模型根目录。各算各的就会「下载 1.5GB 然后
         // 报告找不到模型」——那正是 `ModelCatalog.resolveRoot` 存在的理由。
         wiring.modelRoot = { [weak self] in self?.model.modelRootPath ?? "" }
+        // 先重扫再切换（`adoptDownloadedModel` 里做的第一件事）：切换那一步要
+        // 拿到刚落盘的目录，不重扫的话菜单里也看不到它。
+        //
+        // **走 `adoptDownloadedModel` 而不是直接 `selectModelFromFolder`**：
+        // 下载可能在用户正说着话的时候完成，那时换模型会被 `canSwitchModel`
+        // 挡下来，而挡下来之后原先再也没有人重试——刚下的 1.5GB 要到下次启动
+        // 才生效。现在被推迟的那一次由会话结束时补做，面板上也看得见。
         wiring.adoptModelFolder = { [weak self] folder in
-            guard let self else { return }
-            // 先重扫再切换：切换那一步要拿到刚落盘的目录，不重扫的话
-            // 菜单里也看不到它。
-            self.model.refreshAvailableModels()
-            self.model.selectModelFromFolder(folder)
+            self?.model.adoptDownloadedModel(folder)
+        }
+        // 在飞的下载报一份给面板：关掉向导不取消下载，不接这一路的话
+        // 那十几分钟里应用看上去什么都没在做。
+        wiring.onDownloadProgress = { [weak self] progress in
+            self?.model.reportModelDownload(progress: progress)
         }
         wiring.isDictationReady = { [weak self] in self?.model.loadingModelName == nil }
         wiring.toggleDictation = { [weak self] in self?.model.toggle() }

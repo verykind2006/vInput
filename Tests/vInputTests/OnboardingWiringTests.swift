@@ -62,15 +62,10 @@ struct OnboardingWiringTests {
     /// 「下载在开窗时就踢起来」这条不变量的要害是**位置**：`startModelDownload`
     /// 出现在文件里毫无意义，它必须出现在 `present()` 里。整份 `contains`
     /// 分不出这个差别，所以这里按缩进配对括号切一刀。
+    /// 实现搬到了 `MenuPanelViewWiringTests`（那边也要按段落切源码，
+    /// 「卸载入口在不在『高级』里」是同一类断言）。两处各写一遍迟早各走各的。
     static func functionBody(_ source: String, signature: String) -> String? {
-        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
-        guard let start = lines.firstIndex(where: { $0.contains(signature) }) else { return nil }
-        let indent = String(lines[start].prefix { $0 == " " })
-        let closing = indent + "}"
-        guard
-            let end = lines[(start + 1)...].firstIndex(where: { $0 == Substring(closing) })
-        else { return nil }
-        return lines[start...end].joined(separator: "\n")
+        MenuPanelViewWiringTests.functionBody(source, signature: signature)
     }
 
     // MARK: - ① 向导到底会不会出现（本批存在的全部理由）
@@ -371,7 +366,9 @@ struct OnboardingWiringTests {
         probeCounter: ProbeCounter = ProbeCounter(),
         restoredStep: OnboardingState.Step? = nil,
         ownsDictation: (() -> Bool)? = { true },
-        onRedirect: @escaping (((String) -> Bool)?) -> Void = { _ in }
+        onRedirect: @escaping (((String) -> Bool)?) -> Void = { _ in },
+        forcedSource: DownloadSource? = nil,
+        onProgress: @escaping (Double?) -> Void = { _ in }
     ) -> (OnboardingCoordinator, OnboardingState) {
         // 默认参数表达式在 nonisolated 上下文里求值，而 FakeDownloadBackend
         // 是 @MainActor 的——只能在这里造。
@@ -400,6 +397,8 @@ struct OnboardingWiringTests {
         wiring.adoptModelFolder = onAdopt
         wiring.setTranscriptRedirect = onRedirect
         wiring.wizardOwnsDictation = ownsDictation
+        wiring.forcedDownloadSource = { forcedSource }
+        wiring.onDownloadProgress = onProgress
         return (OnboardingCoordinator(state: state, wiring: wiring), state)
     }
 
@@ -455,6 +454,57 @@ struct OnboardingWiringTests {
         coordinator.present()
         try await waitUntil { coordinator.downloadFinished }
         #expect(backend.calls == [DownloadSource.mirror.endpoint])
+        coordinator.close()
+    }
+
+    /// 面板「高级 → 下载源」选了「强制官方源」，下载就必须真的走官方源。
+    ///
+    /// **这一条钉的是「这个设置不是摆设」。** 探测里镜像 10ms、官方 20ms，
+    /// 自动档一定选镜像（上一条测试就是这么断言的）；强制之后 backend 收到的
+    /// 必须是官方那个 endpoint。把 `forced:` 又写回 `nil` 的话这条立刻红——
+    /// 而在此之前，那种改动的表现是「用户点了、勾也在，行为一点没变」。
+    @Test("强制下载源之后，下载真的走那个源")
+    func forcedSourceOverridesProbe() async throws {
+        let backend = FakeDownloadBackend()
+        let probes = ProbeCounter()
+        let (coordinator, _) = makeCoordinator(
+            backend: backend, probeCounter: probes, forcedSource: .official)
+        coordinator.present()
+        try await waitUntil { coordinator.downloadFinished }
+        let wentToOfficial = backend.calls == [DownloadSource.official.endpoint]
+        #expect(
+            wentToOfficial,
+            """
+            强制官方源之后下载去的却是 \(backend.calls)。
+            探测里镜像更快，自动档会选镜像——这说明 forced 那一路没接上，
+            用户点了「强制官方源」而行为一点没变。
+            """
+        )
+        #expect(
+            probes.count == 0,
+            "强制了下载源还在探测：这个逃生口存在的意义就是「探测选错了，我自己指定」。"
+        )
+        coordinator.close()
+    }
+
+    /// 在飞的下载要报给面板，**并且要收尾**。
+    ///
+    /// 关掉向导不取消下载，所以面板是用户唯一能看见它的地方。收尾那一下同样
+    /// 要钉：不报 nil 的话，面板上会永远挂着一行「正在下载模型 100%」。
+    @Test("下载进度报给面板，跑完收尾报 nil")
+    func downloadProgressIsReportedAndCleared() async throws {
+        let reports = ProgressRecorder()
+        let (coordinator, _) = makeCoordinator(onProgress: { reports.append($0) })
+        coordinator.present()
+        try await waitUntil { coordinator.downloadFinished }
+        // FakeDownloadBackend 会报一次 0.5。
+        let sawFraction = reports.values.contains { $0 == 0.5 }
+        #expect(sawFraction, "下载进度没有报给面板：收到的是 \(reports.values)")
+        let clearedAtEnd = reports.values.last == .some(nil)
+        #expect(
+            clearedAtEnd,
+            "下载结束时没有报 nil：面板上会永远挂着一行「正在下载模型 100%」。收到的是 \(reports.values)"
+        )
         coordinator.close()
     }
 
@@ -1117,4 +1167,14 @@ private final class FakeDownloadBackend: ModelDownloadBackend {
         onProgress(0.5)
         if shouldFail { throw ModelDownloadError.transportFailed }
     }
+}
+
+/// 记下每一次进度上报（含最后那次 nil）。
+///
+/// `@MainActor`：上报全在主 actor 上发生（`onDownloadProgress` 从
+/// `OnboardingCoordinator` 里调），不必上锁。
+@MainActor
+private final class ProgressRecorder {
+    private(set) var values: [Double?] = []
+    func append(_ value: Double?) { values.append(value) }
 }

@@ -1,4 +1,6 @@
+import Foundation
 import Testing
+
 @testable import vInput
 
 struct MenuPanelModelTests {
@@ -215,5 +217,98 @@ struct MenuPanelModelTests {
         #expect(MenuPanelModel.headerStatus(
             loadingModelName: nil, phase: .working, permission: .ready
         ).text == "正在转写" + "…")
+    }
+
+    // MARK: - 在飞的下载 / 待启用的模型
+
+    /// 没有下载在跑时那一行整个不出现（nil，不是空字符串）。
+    ///
+    /// 空字符串会在面板上留一条看不见的空行，而这一格的位置就在主按钮下面。
+    @Test func noDownloadMeansNoLine() {
+        #expect(MenuPanelModel.downloadLine(progress: nil) == nil)
+    }
+
+    /// 百分比走 `ModelDownloader.percentText`，与向导里是同一个函数。
+    ///
+    /// 不断言「42%」这个字面量，而断言两处**算出来的是同一个串**：
+    /// 各写一份取整的话，迟早一个 round 一个截断，同一次下载在两个界面上
+    /// 显示成两个数字。
+    @Test func downloadLineUsesTheSharedPercentFormatter() {
+        let line = MenuPanelModel.downloadLine(progress: 0.4242)
+        #expect(line == "正在下载模型 \(ModelDownloader.percentText(0.4242))")
+        #expect(line?.contains("42%") == true)
+    }
+
+    /// 刚开始下（0%）也要出现这一行：探测那几秒里面板上必须有话说，
+    /// 否则用户看到「什么都没发生」，然后忽然从 30% 开始。
+    @Test func zeroProgressStillShowsTheLine() {
+        #expect(MenuPanelModel.downloadLine(progress: 0) == "正在下载模型 0%")
+    }
+
+    /// 没有待启用的模型时不出现。
+    @Test func noPendingModelMeansNoLine() {
+        #expect(MenuPanelModel.pendingModelLine(folder: nil) == nil)
+    }
+
+    /// 待启用那句话要说清**两件事**：已经下好了、以及什么时候会生效。
+    ///
+    /// 只说「已下载」的话，用户看到的是「下完了但菜单里还是老模型」，
+    /// 与「下载失败了」在界面上长得一模一样。
+    @Test func pendingModelLineSaysWhenItWillTakeEffect() {
+        let line = MenuPanelModel.pendingModelLine(
+            folder: "/Users/x/Library/Application Support/vInput/openai_whisper-large-v3")
+        let namesTheModel = line?.contains("openai_whisper-large-v3") == true
+        #expect(namesTheModel, "待启用那行没说是哪个模型：\(line ?? "nil")")
+        let saysWhen = line?.contains("结束") == true && line?.contains("自动启用") == true
+        #expect(saysWhen, "待启用那行没说什么时候生效：\(line ?? "nil")")
+        // 只放最后一段路径：面板 320pt 宽，整条绝对路径会挤成三行。
+        let dropsThePath = line?.contains("/Users/x") == false
+        #expect(dropsThePath)
+    }
+
+    // MARK: - 高级：储存位置与下载源
+
+    /// 家目录缩成 `~`：面板只有 320pt 宽，前半截对用户没有信息量。
+    @Test func storageLocationAbbreviatesHome() {
+        let root = NSHomeDirectory() + "/Library/Application Support/vInput"
+        let line = MenuPanelModel.storageLocationLine(root: root)
+        #expect(line == "位置：~/Library/Application Support/vInput")
+    }
+
+    /// 还没解析出根目录时说「尚未确定」，不留空行——空行会让人以为
+    /// 「什么都没存」，而这一格存在的理由恰恰是让用户看见那几个 GB 在哪。
+    @Test func emptyRootSaysSo() {
+        let line = MenuPanelModel.storageLocationLine(root: "")
+        #expect(line.contains("尚未确定"))
+        #expect(!line.hasSuffix("："))
+    }
+
+    /// 设置行右侧那半截：自动 / 官方源 / 国内镜像，三档各不相同。
+    @Test func downloadSourceValueLabels() {
+        #expect(MenuPanelModel.downloadSourceValueLabel(forced: nil) == "自动")
+        #expect(
+            MenuPanelModel.downloadSourceValueLabel(forced: .official)
+                == DownloadSource.official.displayName)
+        #expect(
+            MenuPanelModel.downloadSourceValueLabel(forced: .mirror)
+                == DownloadSource.mirror.displayName)
+    }
+
+    /// 「自动」那一项必须说清它做了什么，否则用户无从判断该不该去动它。
+    @Test func automaticChoiceExplainsItself() {
+        let label = MenuPanelModel.downloadSourceChoiceLabel(nil)
+        #expect(label.hasPrefix("自动"))
+        let explains = label.contains("快")
+        #expect(explains, "「自动」那一项没解释它是怎么选的：\(label)")
+    }
+
+    /// 三项文案两两不同——重复的话勾选在哪一项上就看不出来了。
+    @Test func downloadSourceChoicesAreDistinct() {
+        let labels = [
+            MenuPanelModel.downloadSourceChoiceLabel(nil),
+            MenuPanelModel.downloadSourceChoiceLabel(.official),
+            MenuPanelModel.downloadSourceChoiceLabel(.mirror),
+        ]
+        #expect(Set(labels).count == 3, "下载源三项文案有重复：\(labels)")
     }
 }
