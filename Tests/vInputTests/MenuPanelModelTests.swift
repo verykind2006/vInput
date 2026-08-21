@@ -96,4 +96,23 @@ struct MenuPanelModelTests {
             loadingModelName: nil, phase: .error("坏了"), permission: .ready
         ) == .init(text: "出错：坏了", tone: .error))
     }
+
+    /// 加载中要短路**每一个** phase，不只是 `.idle`。
+    ///
+    /// 补这条的由来：`headerCopiesAreUnchanged` 里唯一带 loading 的用例
+    /// phase 恰好是 `.idle`，于是「把 loading 判断挪进 `.idle` 分支内部」
+    /// 这个变异压不中任何断言——短路契约实际上没被钉住。照
+    /// `StatusIconTests.loadingOverridesEverything` 的写法补齐三个 phase。
+    @Test func loadingOverridesEveryPhase() {
+        let loading = MenuPanelModel.HeaderStatus(
+            text: "正在加载模型 qwen…首次可能需要一两分钟", tone: .busy)
+        #expect(MenuPanelModel.headerStatus(
+            loadingModelName: "qwen", phase: .idle, permission: .ready) == loading)
+        #expect(MenuPanelModel.headerStatus(
+            loadingModelName: "qwen", phase: .listening, permission: .ready) == loading)
+        #expect(MenuPanelModel.headerStatus(
+            loadingModelName: "qwen", phase: .working, permission: .ready) == loading)
+        #expect(MenuPanelModel.headerStatus(
+            loadingModelName: "qwen", phase: .error("x"), permission: .ready) == loading)
+    }
 }
