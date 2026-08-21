@@ -2,17 +2,30 @@ import Foundation
 
 /// 菜单面板的展示逻辑。全部纯函数，视图只画（与 HUDViewModel 同一条分工）。
 enum MenuPanelModel {
+    /// 展示的语气。设备卡与头部状态行共用同一套——设备卡目前只会用到
+    /// `.ok`（正常连接）与 `.error`（`.muted` 警示）两档，`.recording` /
+    /// `.busy` 是头部状态行专用的。视图侧用同一个 `toneColor(_:)` 取色，
+    /// 免得再手写一份「Bool → 颜色」的三元判断。
+    enum Tone: Equatable { case ok, recording, busy, error }
+
     // MARK: - 设备卡
 
-    struct DeviceCard: Equatable {
+    struct DeviceCard: Equatable, Identifiable {
+        /// 卡片对应哪个设备。**不用中文标题当身份**：`title` 目前恰好
+        /// 「遥控器」与「鼠标」不同才让 `ForEach(cards, id: \.title)` 凑巧
+        /// 能用，拿易变的展示文案当身份是个坑，所以另开一个稳定的 `kind`。
+        enum Kind: Hashable { case remote, mouse }
+
+        let kind: Kind
+        var id: Kind { kind }
         let title: String
         let detail: String
-        /// 警示卡（目前只有鼠标 .muted）：撞时长上限被强制退订，必须可见。
-        let warning: Bool
+        let tone: Tone
     }
 
     /// 连谁显示谁（用户 2026-08-20 定的：不是每台机器都同时连着两个设备）。
     /// 全断开 → 空数组，面板整块隐藏；内置麦是默认路径，不占卡。
+    /// **遥控器在前**（视图按数组顺序摆）——顺序是契约，不是巧合。
     ///
     /// 例外：鼠标 `.muted` 出警示卡。2026-08-18 的 11 分钟环境音事故靠的
     /// 就是菜单栏可见性，「没连上就不显示」不适用于「被我们主动踢掉」。
@@ -26,17 +39,19 @@ enum MenuPanelModel {
         var cards: [DeviceCard] = []
         if remote == .connected {
             cards.append(DeviceCard(
-                title: "遥控器", detail: batteryDetail(remoteBattery), warning: false))
+                kind: .remote, title: "遥控器", detail: batteryDetail(remoteBattery), tone: .ok))
         }
         if mouseEnabled {
             switch mouse {
             case .ready:
                 cards.append(DeviceCard(
-                    title: "鼠标", detail: batteryDetail(mouseBattery), warning: false))
+                    kind: .mouse, title: "鼠标", detail: batteryDetail(mouseBattery), tone: .ok))
             case .muted:
-                // 文案复用 model 层现成的（被测试钉着的）menuLabel，不新拼。
+                // 文案复用 model 层现成的（被测试钉着的）detailLabel——不带
+                // 「鼠标：」前缀那半截，title 已经是「鼠标」，不重复拼前缀。
                 cards.append(DeviceCard(
-                    title: "鼠标", detail: mouse.menuLabel(battery: mouseBattery), warning: true))
+                    kind: .mouse, title: "鼠标",
+                    detail: mouse.detailLabel(battery: mouseBattery), tone: .error))
             case .stopped, .bluetoothUnavailable, .searching, .connecting,
                  .discovering, .reconnecting:
                 break
@@ -50,8 +65,6 @@ enum MenuPanelModel {
     }
 
     // MARK: - 头部状态行
-
-    enum Tone: Equatable { case ok, recording, busy, error }
 
     struct HeaderStatus: Equatable {
         let text: String
