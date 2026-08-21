@@ -1498,3 +1498,24 @@ git commit -m "docs: M9 第一批（UI 现代化）验收记录"
 1. **规格覆盖**：定稿 ①→Task 3/4/5，②→Task 6/7，③→Task 1/2/7，④→Task 8，测试与验收→各任务 Step 5 + Task 9。「不做什么」清单没有任务与之冲突。
 2. **无占位**：每个代码步都有完整代码；Task 7 的设置四行标注了「照抄旧 MenuContent 对应子菜单」并给了对照清单——那是迁移（源码就在同一文件里），不是占位。
 3. **类型一致性**：`VMark.bars/rects(in:)`（T1）↔ StatusIcon（T2）↔ VMarkShape（T7）；`HUDViewModel.fontSize/lineHeight(forFontSize:)/charsPerLine(forFontSize:)`（T3）↔ HUDView（T5）；`MenuPanelModel.deviceCards/headerStatus`（T6）↔ MenuPanelView（T7）。两处待实施时核实的真实签名已标注：`AppModel.permissionStatus` 的类型名、`MouseBridgeState.menuLabel(battery:)`。
+
+## 真机验收发现（2026-08-21，用户实测）
+
+### R-1（阻塞）从面板点「开始听写」后菜单栏图标消失，无法点「结束听写」
+
+用户实测。`dismissMenuPanel()` 结尾的 `NSApp.hide(nil)` 把**整个应用**藏了，
+LSUIElement 应用的菜单栏状态项跟着一起消失——于是从面板起的听写变成
+**单向路**：图标没了，点不到「结束听写」，只能靠 ⌥D 或遥控器收尾。
+
+此前只推演到它会藏掉 HUD（B-2，已用 `panel.canHide = false` 修），
+**没想到它连状态项一起藏掉**——`canHide` 是单窗口属性，管不到状态项。
+
+日志佐证（同一轮实测，第 2 条验收项）：目标捕获与注入本身是好的——
+`目标应用已记录：com.apple.Terminal` → `注入成功 文本长度 11 字`。
+所以问题单独出在「藏应用」这个动作的副作用上，不在焦点交还的正确性上。
+
+**这说明 `NSApp.hide(nil)` 这条路本身选错了**，不是参数没调好：它要的是
+「把前台让给别人」，而 `hide` 给的是「把自己整个藏起来」，后者顺带带走了
+状态项与浮层。候选替代：`NSApp.deactivate()`；或记住面板打开前的前台应用
+并显式 `activate` 回去。修法要连同 B-2 的 `canHide` 一起复核——若不再用
+`hide`，那条可能就不需要了。
