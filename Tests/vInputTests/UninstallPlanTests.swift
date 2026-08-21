@@ -21,6 +21,34 @@ struct UninstallPlanTests {
         #expect(UninstallPlan.defaultsSuite == "com.vinput.app")
     }
 
+    /// **`defaultsSuite` 必须真的等于 app 的 bundle id。**
+    ///
+    /// `SystemUninstaller.clearDefaults` 用它去 `removePersistentDomain`——
+    /// 对不上就是「卸载完偏好还在」，而用户重装后会发现设置全都记得，
+    /// 以为没删干净。此前只有一行注释挡着，没有任何东西会红。
+    ///
+    /// 判据取自 `Resources/Info.plist` 本身，不是再抄一遍字面量：抄一遍的话
+    /// 改了 bundle id 两处一起改，这条测试就白写了。
+    @Test func defaultsSuiteMatchesTheRealBundleIdentifier() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // vInputTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // 仓库根
+        let plist = try Data(contentsOf: root.appendingPathComponent("Resources/Info.plist"))
+        let parsed = try PropertyListSerialization.propertyList(
+            from: plist, format: nil) as? [String: Any]
+        let bundleID = parsed?["CFBundleIdentifier"] as? String
+        let matches = bundleID == UninstallPlan.defaultsSuite
+        #expect(
+            matches,
+            """
+            UninstallPlan.defaultsSuite（\(UninstallPlan.defaultsSuite)）与
+            Info.plist 里的 CFBundleIdentifier（\(bundleID ?? "读不到")）对不上。
+            卸载会清一个不存在的偏好域——用户重装后发现设置全都还在。
+            """
+        )
+    }
+
     /// 体积是扫出来的，不是写死的数字。
     @Test func totalSizeSumsMeasuredBytes() {
         let bytes = UninstallPlan.totalBytes(
