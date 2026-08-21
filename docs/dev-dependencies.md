@@ -107,3 +107,26 @@ git -C "$M/swift-transformers" show 1.0.0:Package.swift | grep '\.package(url'
 M1 时因同样的网络问题改成了 `vendor/WhisperKit` 本地路径依赖（v1.1.0 的
 浅克隆），至今未改回。它比镜像方案更早、也更粗糙——`Package.swift` 里写
 的是本地路径而非正式 URL。网络条件改善后，两者都应回归远程依赖。
+
+## `.build` 被 OneDrive 打上 quarantine，测试加载不了（2026-08-21 遇到）
+
+症状：`swift test` 编译通过，跑起来却报
+
+```
+library load disallowed by system policy
+```
+
+`dlopen` 加载 `vInputPackageTests.xctest` 失败。成因是仓库在 OneDrive 同步
+目录里，同步回来的构建产物被打上 `com.apple.quarantine` 与
+`com.apple.FinderInfo` 扩展属性，Gatekeeper 因此拒绝加载。
+
+解法（只碰构建产物，仓库内容一个字节不动）：
+
+```bash
+xattr -cr .build
+codesign --force --sign - .build/*/debug/vInputPackageTests.xctest
+```
+
+排查时注意别误判成代码问题——它和「测试挂了」长得不一样，报错在加载阶段，
+一条测试都还没跑。实在反复出现就把 `DERIVED_DATA` / `.build` 挪到同步
+目录之外（与 `scripts/decode-sweep.sh` 把缓存挪出 `/tmp` 是同一类卫生问题）。
