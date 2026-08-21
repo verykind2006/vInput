@@ -1141,16 +1141,23 @@ struct VMarkShape: Shape {
             mouseEnabled: AppModel.mouseEnabled,
             mouse: model.mouseState, mouseBattery: model.mouseBattery)
         if !cards.isEmpty {
-            HStack(spacing: 8) {
-                ForEach(cards, id: \.title) { card in
+            // alignment: .top —— .muted 那张卡的文案会折成两行，不对齐顶部
+            // 会把兄弟卡一起撑歪（Task 6 QA 复核实测）。
+            HStack(alignment: .top, spacing: 8) {
+                // id 用 kind 不用 title：拿中文文案当身份是个坑
+                // （Task 6 QA 复核，DeviceCard 已 Identifiable）。
+                ForEach(cards) { card in
                     HStack(spacing: 5) {
-                        Circle().fill(card.warning ? Color.red : Color.green)
+                        // 复用头部那只 toneColor，不在视图里再手写一遍颜色判断。
+                        Circle().fill(toneColor(card.tone))
                             .frame(width: 5, height: 5)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(card.title).font(.system(size: 11))
                             Text(card.detail)
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer(minLength: 0)
                     }
