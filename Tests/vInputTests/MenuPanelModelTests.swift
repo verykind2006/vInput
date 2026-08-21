@@ -92,6 +92,55 @@ struct MenuPanelModelTests {
         #expect(!cards[0].detail.contains("鼠标："))
     }
 
+    // MARK: 随状态变的文案（两句话的那几处）
+
+    /// 主按钮：只有 `.listening` 说「结束」。
+    ///
+    /// `.working`（正在转写）也说「开始听写」是对的——那一刻确实可以再开
+    /// 一段。四个 phase 全列，免得「把判断写成 != .idle」这种变异压不中。
+    @Test func primaryButtonTitleSwitchesOnlyWhenListening() {
+        #expect(MenuPanelModel.primaryButtonTitle(phase: .listening) == "结束听写")
+        #expect(MenuPanelModel.primaryButtonTitle(phase: .idle) == "开始听写")
+        #expect(MenuPanelModel.primaryButtonTitle(phase: .working) == "开始听写")
+        #expect(MenuPanelModel.primaryButtonTitle(phase: .error("坏了")) == "开始听写")
+    }
+
+    /// 重试：**禁用那一句必须说出为什么点不动。**
+    ///
+    /// 这条是一次真事故的守卫：迁移时这两句话在视图里被并成一句「重试 ↻」，
+    /// 括号那半截没了，全仓 1121 条测试一条没红（1a0989b 才补回来）。
+    /// 括号原文逐字钉住——只置灰的话，用户分不清是「没有可重试的」还是
+    /// 「坏了」。
+    @Test func retryTitleSaysWhyItIsDisabled() {
+        #expect(MenuPanelModel.retryTitle(canRetry: true) == "重试 ↻")
+        #expect(MenuPanelModel.retryTitle(canRetry: false) == "重试 ↻（没有可重试的）")
+    }
+
+    /// 校正开关说的是**按下去会发生什么**，不是当前状态
+    /// （当前状态在设置行右侧的「开 / 关」上）。写反了的话，
+    /// 一个开着校正的人会看到「开启校正」，点一下把它关了。
+    @Test func correctionToggleTitleDescribesTheAction() {
+        #expect(MenuPanelModel.correctionToggleTitle(enabled: true) == "关闭校正")
+        #expect(MenuPanelModel.correctionToggleTitle(enabled: false) == "开启校正")
+    }
+
+    /// 校正模型那一行。未指定时**不许**说成「默认（首次使用时下载）」：
+    /// 开启校正现在必须先有一个本地合法目录，那句话会让人以为不选也能用。
+    @Test func correctionModelLineTellsWhenUnset() {
+        #expect(MenuPanelModel.correctionModelLine(name: "qwen3-4b") == "模型：qwen3-4b")
+        #expect(
+            MenuPanelModel.correctionModelLine(name: nil)
+                == "模型：未指定（开启校正时选择）")
+    }
+
+    /// API Key 按钮：有 key 是「更换」不是「输入」。
+    /// 写反的后果不是措辞问题——已存 key 的人点「输入」会以为在新增，
+    /// 而 `TranslationKey.write` 写的是同一个 Keychain 条目，是覆盖。
+    @Test func apiKeyButtonTitleDistinguishesReplaceFromEnter() {
+        #expect(MenuPanelModel.apiKeyButtonTitle(hasKey: true) == "更换 API Key…")
+        #expect(MenuPanelModel.apiKeyButtonTitle(hasKey: false) == "输入 API Key…")
+    }
+
     // MARK: 头部状态行（文案零增减：与旧 MenuContent.statusText 逐字相同）
 
     @Test func headerCopiesAreUnchanged() {

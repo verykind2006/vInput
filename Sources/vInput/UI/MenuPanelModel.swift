@@ -64,6 +64,58 @@ enum MenuPanelModel {
         battery.map { "电量 \($0)%" } ?? "已连接"
     }
 
+    // MARK: - 随状态变的文案
+
+    // 下面五条都是「同一个控件按状态说两句话」。搬进 model 层的理由是
+    // 一次真事故：迁移时「重试上次转写（没有可重试的）」在视图里被改成
+    // 纯置灰的「重试 ↻」，禁用理由整句丢失，全仓 1121 条测试一条没红
+    // （1a0989b 才补回来）。文案留在视图里就没有任何东西守得住它。
+    //
+    // **文案逐字照搬旧 `MenuContent`，一个字都不许改。**
+
+    /// 主按钮：听写中说「结束」，其余一律「开始」。
+    ///
+    /// 判据是 `.listening` 而不是「非 idle」：`.working`（正在转写）时按钮
+    /// 说「开始听写」是对的——那一刻确实可以再开一段。
+    nonisolated static func primaryButtonTitle(phase: AppModel.Phase) -> String {
+        phase == .listening ? "结束听写" : "开始听写"
+    }
+
+    /// 重试：禁用时把「为什么点不动」写进文案。
+    ///
+    /// 只置灰的话，用户分不清是「没有可重试的」还是「坏了」——这与旧菜单
+    /// 「禁用而不隐藏」是同一条道理（时有时无的话用户根本不知道有这么个
+    /// 东西），而括号里那半句是那条道理在文案上的落点。
+    nonisolated static func retryTitle(canRetry: Bool) -> String {
+        canRetry ? "重试 ↻" : "重试 ↻（没有可重试的）"
+    }
+
+    /// 校正开关按钮。说的是**按下去会发生什么**，不是当前状态
+    /// （当前状态在设置行右侧的「开 / 关」上）。
+    nonisolated static func correctionToggleTitle(enabled: Bool) -> String {
+        enabled ? "关闭校正" : "开启校正"
+    }
+
+    /// 校正模型那一行。
+    ///
+    /// 让用户知道当前用的是哪个模型——校正效果好坏几乎全由它决定。
+    /// 未指定时不再说「默认（首次使用时下载）」：开启校正现在必须先有一个
+    /// 本地合法目录，那句话会让人以为不选也能用。
+    ///
+    /// 与 `AppModel.translationModelMenuLine` / `cloudModelMenuLine` 对齐：
+    /// 三行「模型：…」全部由纯函数算出，没道理只有这一行在视图里插值拼。
+    nonisolated static func correctionModelLine(name: String?) -> String {
+        name.map { "模型：\($0)" } ?? "模型：未指定（开启校正时选择）"
+    }
+
+    /// API Key 那个按钮：有 key 是「更换」，没有是「输入」。
+    ///
+    /// 文案区分这两档不是修辞：已存了 key 的人点「输入」会以为自己在新增，
+    /// 而实际是覆盖（`TranslationKey.write` 是写同一个 Keychain 条目）。
+    nonisolated static func apiKeyButtonTitle(hasKey: Bool) -> String {
+        hasKey ? "更换 API Key…" : "输入 API Key…"
+    }
+
     // MARK: - 头部状态行
 
     struct HeaderStatus: Equatable {

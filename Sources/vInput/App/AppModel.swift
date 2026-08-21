@@ -119,7 +119,7 @@ final class AppModel {
     /// 与 `chooseCorrectionModelFolder` 同一条分工：`AppModel` 不该知道
     /// `NSAlert` 的存在，而「开启前必须先确认」这条流程要能被扫源码钉住。
     ///
-    /// **没接上 UI 时默认不开**（`toggleCloudBackend` 里的 `?? false`）：
+    /// **没接上 UI 时默认不开**（`useCloudBackend` 里的 `?? false`）：
     /// 一个出站开关的失败方向只能是「不出站」。
     var confirmCloudBackend: (@MainActor () -> Bool)?
     /// 上一次挂载校正流水线被会话拒绝（当时不在 idle）。
@@ -1356,6 +1356,61 @@ final class AppModel {
         AppLogger.shared.log("翻译后端已切回本机")
     }
 
+    /// 点「云端 Google」那一项该做什么。**三档，纯函数，可单测。**
+    ///
+    /// 抽出来是因为最要命的那一档在视图里守不住：原来的 `toggleCloudBackend()`
+    /// 是**切换**，已经在云端时再点一次会静默切回本机——用户以为自己点的是
+    /// 一个已选中的选项，实际把出站开关关掉了，而面板上两项都是常驻带勾的
+    /// 单选样式，正是最容易被再点一次的那种。守卫原来写在 SwiftUI 的按钮
+    /// 闭包里（`guard model.translationBackend == .local else { return }`），
+    /// 那里没有任何测试进得去。
+    ///
+    /// **已经在云端时 `confirm` 一次都不许被调用**：那会平白弹一个「你确定要
+    /// 把每句话发到 Google 吗」的确认框，而用户其实什么都没改。这一条由
+    /// `CloudBackendMenuTests` 拿一个会记录调用次数的闭包钉着。
+    ///
+    /// 开启要先确认、关闭（`useLocalBackend`）不必，这个不对称是有意的：
+    /// 关掉的方向是「更不出站」，任何时候都该一步到位；开启的方向会让用户
+    /// 说的每一句话离开本机，必须先看到后果再点一次（文案见
+    /// `cloudBackendConfirmation`）。没接上确认 UI 时**不开**：一个出站开关
+    /// 的失败方向只能是「不出站」（`?? false` 在下面那个调用点上）。
+    nonisolated static func cloudBackendRequest(
+        currentlyCloud: Bool, confirm: () -> Bool
+    ) -> CloudBackendRequest {
+        guard !currentlyCloud else { return .alreadyCloud }
+        return confirm() ? .enable : .cancelled
+    }
+
+    enum CloudBackendRequest: Equatable {
+        /// 已经在云端：什么都不做（**不切回本机，也不弹确认**）。
+        case alreadyCloud
+        /// 用户在确认框里点了取消：保持本机。
+        case cancelled
+        /// 开启云端。
+        case enable
+    }
+
+    /// 切到云端后端。与 `useLocalBackend()` 对称：**幂等**，已经在云端时
+    /// 再调是一次无操作。决策在 `cloudBackendRequest`，这里只执行。
+    func useCloudBackend() {
+        switch Self.cloudBackendRequest(
+            currentlyCloud: translationPreference.usesCloudBackend,
+            confirm: { confirmCloudBackend?() ?? false }
+        ) {
+        case .alreadyCloud:
+            return
+        case .cancelled:
+            AppLogger.shared.log("开启云端翻译被取消，翻译保持在本机")
+        case .enable:
+            translationPreference.usesCloudBackend = true
+            applyTranslationPreference()
+            // 出站是唯一需要用户事后能在日志里查证的那件事，
+            // 所以开关本身也留一条，而不只有挂载时那条。
+            AppLogger.shared.log(
+                "云端翻译已开启（输出语言为外语时，转写出来的文字会离开本机）")
+        }
+    }
+
     /// 选云端模型。
     func selectCloudModel(_ model: CloudTranslationModel) {
         translationPreference.cloudModel = model
@@ -1404,33 +1459,6 @@ final class AppModel {
         AppLogger.shared.log("翻译模型改回跟随校正模型")
     }
 
-    /// 切换云端翻译开关。**开启要先确认，关闭不必。**
-    ///
-    /// 不对称是有意的：关掉的方向是「更不出站」，任何时候都该一步到位；
-    /// 开启的方向会让用户说的每一句话离开本机，必须先看到后果再点一次
-    /// （文案见 `cloudBackendConfirmation`）。这与校正那边「关闭不做任何
-    /// 校验、开启必须先有合法模型目录」是同一种不对称。
-    ///
-    /// 没接上确认 UI 时**不开**：一个出站开关的失败方向只能是「不出站」。
-    func toggleCloudBackend() {
-        guard translationPreference.usesCloudBackend else {
-            guard confirmCloudBackend?() ?? false else {
-                AppLogger.shared.log("开启云端翻译被取消，翻译保持在本机")
-                return
-            }
-            translationPreference.usesCloudBackend = true
-            applyTranslationPreference()
-            // 出站是唯一需要用户事后能在日志里查证的那件事，
-            // 所以开关本身也留一条，而不只有挂载时那条。
-            AppLogger.shared.log(
-                "云端翻译已开启（输出语言为外语时，转写出来的文字会离开本机）")
-            return
-        }
-        translationPreference.usesCloudBackend = false
-        applyTranslationPreference()
-        AppLogger.shared.log("云端翻译已关闭，翻译回到本机")
-    }
-
     /// 重新查一次 Keychain 里有没有 API key，并刷新菜单上的状态。
     ///
     /// 菜单**不会**每次打开就去读 Keychain（理由见
@@ -1459,9 +1487,16 @@ final class AppModel {
     // MARK: - 运行时换模型
 
     /// 重新扫描模型目录。打开菜单时调用，这样新下载的模型无需重启即可出现。
+    ///
+    /// **留一条日志**：这是「面板每次打开都真的重建了」唯一可查证的痕迹。
+    /// 面板换成 `.window` 之后，「模型列表刷没刷新」与「展开的设置行有没有
+    /// 收回去」是同一个事实的两面（视图重建则两者都成立），而这件事在测试
+    /// 进程里跑不到——数三次开面板产生的三行日志就能一次回答两个问题，
+    /// 比肉眼「看着像刷新了」可靠。
     func refreshAvailableModels() {
         guard !modelRoot.isEmpty else { return }
         availableModels = ModelCatalog.discover(in: modelRoot)
+        AppLogger.shared.log("重扫模型目录，发现 \(availableModels.count) 个")
     }
 
     /// 能否切换模型。录音或转写进行中时不允许，避免换掉正在用的引擎。

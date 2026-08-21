@@ -15,11 +15,18 @@ import Testing
 /// - **防删除**：旧 `MenuContent` 的每一个动作入口在迁移后还在不在。
 ///   M9 Task 7 是一次性搬走十几个菜单项的迁移，漏一个的表现是「某个功能
 ///   从此点不到了」，而全仓测试一条都不会红。
-/// - **防就地拼文案**：面板里的每一句面向用户的话都必须来自 model 层那些
-///   被测试钉着的纯函数。拼在视图里就没有任何测试守得住它——
-///   「（缺模型目录）」这类警示后缀尤其是，那时选中的语言根本没生效。
+/// - **防就地拼文案**：面板里每一句随状态变的话都必须来自 model 层那些被
+///   测试钉着的纯函数。拼在视图里就没有任何测试守得住它——「重试」的禁用
+///   文案就是这么丢的（`1a0989b`）。
 ///
 /// 扫源码证明不了「它长得对」，那部分在 Task 9 的真机目检清单上。
+///
+/// # 断言一律先算成 Bool
+///
+/// 不要把整份源码交给 `#expect`：那样一旦红了，失败输出里会原样打出这 550
+/// 行文件（实测一次失败 484 行输出，`✘` 在第 26 行、自定义信息在第 405 行），
+/// 变异验证时「没红」和「红了但找不到」就分不开了。规矩来自
+/// `CloudBackendMenuTests` 里那段注释，循环断言尤其要守——一次能吐好几份。
 @Suite("菜单面板接线不变量")
 struct MenuPanelViewWiringTests {
     static func source(_ relativePath: String) throws -> String {
@@ -46,18 +53,17 @@ struct MenuPanelViewWiringTests {
     @Test("MenuBarExtra 用 .window 样式")
     func menuBarExtraUsesWindowStyle() throws {
         let source = try Self.appSource()
+        let usesWindowStyle = source.contains(".menuBarExtraStyle(.window)")
         #expect(
-            source.contains(".menuBarExtraStyle(.window)"),
+            usesWindowStyle,
             """
             vInputApp 的 MenuBarExtra 没有 .menuBarExtraStyle(.window)。
             默认样式会把 MenuPanelView 当原生菜单项渲染——自绘面板的按钮、
             渐变主按钮、面板内展开行全部失效。
             """
         )
-        #expect(
-            source.contains("MenuPanelView(model: delegate.model)"),
-            "MenuBarExtra 的内容不是 MenuPanelView。"
-        )
+        let usesPanel = source.contains("MenuPanelView(model: delegate.model)")
+        #expect(usesPanel, "MenuBarExtra 的内容不是 MenuPanelView。")
     }
 
     /// 旧的原生菜单必须真的删掉，而不是留在文件里没人引用。
@@ -67,19 +73,82 @@ struct MenuPanelViewWiringTests {
     @Test("旧的 MenuContent 已从 vInputApp 删除")
     func oldMenuContentIsGone() throws {
         let source = try Self.appSource()
+        let hasMenuContent = source.contains("MenuContent")
         #expect(
-            !source.contains("MenuContent"),
+            !hasMenuContent,
             "vInputApp.swift 里还有 MenuContent。迁移到 MenuPanelView 后它必须整块删掉。"
         )
         // 图标只有 StatusIcon 一条路径：旧 iconName 的 SF Symbol 与
         // StatusIcon 的五档映射并存的话，两处迟早对同一个状态说两套话。
+        let hasSFSymbolIcon = source.contains("Image(systemName:")
         #expect(
-            !source.contains("Image(systemName:"),
+            !hasSFSymbolIcon,
             "vInputApp.swift 里还在用 SF Symbol 当菜单栏图标，图标只能走 StatusIcon。"
         )
+        let usesStatusIcon = source.contains("StatusIcon.image(for: StatusIcon.state(")
+        #expect(usesStatusIcon, "菜单栏 label 没有走 StatusIcon.image(for: StatusIcon.state(...))。")
+    }
+
+    // MARK: - 点主按钮之前必须先把焦点还回去
+
+    /// **面板要先关，听写才能开。**
+    ///
+    /// 旧的原生菜单点一下自己就关了、前台应用从来没变过，这个行为是免费的；
+    /// `.window` 面板点完还开着，而 `TargetAppGuard.capture()` 在会话开始的
+    /// 那一刻记下前台应用。不关的两种坏结果：前台是 vInput 自己 → 文字被注进
+    /// 面板（等于消失）；用户点别处关面板 → 前台变了 → 注入前 `verify` 抛
+    /// `targetApplicationChanged`，用户看到「焦点已切到别的应用，文字没有输入」。
+    ///
+    /// 这正是以后重构会顺手删掉的那种行（「点个按钮为什么要 hide 一下？」），
+    /// 所以单独钉一条，并且连 `DispatchQueue.main.async` 一起钉：同一轮里
+    /// 紧接着 `toggle()` 的话，焦点还没交还，`capture()` 拿到的仍是 vInput。
+    @Test("主按钮先关面板再开听写")
+    func primaryButtonDismissesPanelBeforeToggling() throws {
+        let source = try Self.panelSource()
+        let dismisses = source.contains("dismissMenuPanel()")
         #expect(
-            source.contains("StatusIcon.image(for: StatusIcon.state("),
-            "菜单栏 label 没有走 StatusIcon.image(for: StatusIcon.state(...))。"
+            dismisses,
+            """
+            MenuPanelView 里没有 dismissMenuPanel()。
+            .window 面板不会自己关：面板开着时前台是 vInput 自己，
+            TargetAppGuard 记下的目标就是这个面板，转写出来的文字会注进面板里。
+            """
+        )
+        let deferred = source.contains("DispatchQueue.main.async { model.toggle() }")
+        #expect(
+            deferred,
+            """
+            model.toggle() 没有推到下一个 runloop turn。
+            焦点交还是异步的——同一轮里 capture() 拿到的还是 vInput 自己，
+            关不关面板都一样错。
+            """
+        )
+        guard let dismissRange = source.range(of: "dismissMenuPanel()"),
+            let toggleRange = source.range(of: "DispatchQueue.main.async { model.toggle() }")
+        else { return }
+        #expect(
+            dismissRange.lowerBound < toggleRange.lowerBound,
+            "先 toggle 再关面板：焦点还没还回去，会话已经开始了。")
+    }
+
+    // MARK: - 深色面板
+
+    /// 面板底色是写死的深色，文字颜色必须一起钉死。
+    ///
+    /// `.primary` / `.secondary` 跟系统外观走：浅色模式下删掉这一行，整块面板
+    /// 就是黑字压 #1D1D1F 深底，几乎读不出来——而开发机常年深色模式，
+    /// 这种缺陷在自己机器上永远看不见。
+    @Test("面板把配色方案钉死成深色")
+    func panelForcesDarkColorScheme() throws {
+        let source = try Self.panelSource()
+        let forcesDark = source.contains(#".environment(\.colorScheme, .dark)"#)
+        #expect(
+            forcesDark,
+            """
+            MenuPanelView 没有 .environment(\\.colorScheme, .dark)。
+            面板底色写死 #1D1D1F，而 .primary/.secondary 跟系统外观走——
+            浅色模式下正文会变成黑字压深底。
+            """
         )
     }
 
@@ -93,22 +162,55 @@ struct MenuPanelViewWiringTests {
     @Test("输出语言那行的文案走 AppModel.outputLanguageMenuTitle")
     func outputLanguageCopyComesFromModelLayer() throws {
         let source = try Self.panelSource()
+        let usesTitle = source.contains("AppModel.outputLanguageMenuTitle(")
         #expect(
-            source.contains("AppModel.outputLanguageMenuTitle("),
+            usesTitle,
             """
             MenuPanelView 没有调用 AppModel.outputLanguageMenuTitle。
-            自己拼语言名的话「（缺模型目录）」这条警示就没了，
+            自己拼语言名的话「缺模型目录」这条警示就没了，
             而那时用户看到「输出语言：西班牙文」，得到的却是中文。
             """
         )
+        let handWritesSuffix = source.contains("（缺模型目录）")
         #expect(
-            !source.contains("（缺模型目录）"),
-            "MenuPanelView 里出现了手写的「（缺模型目录）」——这个后缀只能由 AppModel 算出。"
+            !handWritesSuffix,
+            "MenuPanelView 里出现了手写的缺目录后缀——它只能由 AppModel 算出。"
         )
+        let usesTargetLabel = source.contains("target.menuLabel")
         #expect(
-            source.contains("target.menuLabel"),
+            usesTargetLabel,
             "六个输出语言选项的文案没有走 TranslationTarget.menuLabel（每项都带实测质量）。"
         )
+    }
+
+    /// 随状态变的五处文案必须走 `MenuPanelModel`。
+    ///
+    /// 这条是那次真事故的守卫：迁移时「重试上次转写（没有可重试的）」在视图
+    /// 里被写成纯置灰的单句「重试 ↻」，禁用理由整句丢失，而全仓 1121 条测试
+    /// 一条都没红（`1a0989b` 才补回来）。两句话的文案只要留在视图里，就没有
+    /// 任何东西守得住其中一句被删掉。
+    @Test("随状态变的文案全部走 MenuPanelModel")
+    func statefulCopyComesFromMenuPanelModel() throws {
+        let source = try Self.panelSource()
+        for call in [
+            "MenuPanelModel.primaryButtonTitle(phase: model.phase)",
+            "MenuPanelModel.retryTitle(canRetry: model.canRetry)",
+            "MenuPanelModel.correctionToggleTitle(enabled: model.correctionEnabled)",
+            "MenuPanelModel.correctionModelLine(name: model.correctionModelName)",
+            "MenuPanelModel.apiKeyButtonTitle(hasKey: model.hasCloudAPIKey)",
+        ] {
+            // 先算成 Bool：循环里直接 #expect(source.contains(...)) 的话，
+            // 一次失败会把整份源码吐好几遍。
+            let present = source.contains(call)
+            #expect(
+                present,
+                """
+                MenuPanelView 里找不到 \(call)。
+                这一处的文案随状态变（两句话），留在视图里就没有任何测试
+                守得住其中一句被删掉——「重试」的禁用文案就是这么丢的。
+                """
+            )
+        }
     }
 
     /// 翻译后端那一格四句话、二选一文案、说明行，全部来自 `AppModel` 的纯函数。
@@ -129,8 +231,9 @@ struct MenuPanelViewWiringTests {
             "AppModel.cloudAPIKeyMenuLine(",
             "CloudTranslationModel.known(known).menuLabel",
         ] {
+            let present = source.contains(call)
             #expect(
-                source.contains(call),
+                present,
                 """
                 MenuPanelView 没有调用 \(call)。
                 翻译后端那一格的每一句话都必须由 AppModel 的纯函数算出——
@@ -152,6 +255,7 @@ struct MenuPanelViewWiringTests {
         let source = try Self.panelSource()
         for action in [
             "model.toggle()",  // 开始/结束听写 ⌥D
+            "dismissMenuPanel()",  // 开听写之前先关面板、还焦点（见上面那条）
             "model.retryLastTranscription()",  // 重试
             "model.refreshAvailableModels()",  // 打开面板时重扫模型目录
             "model.selectModel(candidate)",  // 模型列表
@@ -162,7 +266,7 @@ struct MenuPanelViewWiringTests {
             "model.selectCorrectionModel(directory: url)",
             "model.selectOutputLanguage(target)",  // 六个输出语言
             "model.useLocalBackend()",  // 后端二选一：本机
-            "model.toggleCloudBackend()",  // 后端二选一：云端
+            "model.useCloudBackend()",  // 后端二选一：云端（幂等，守卫在 AppModel）
             "model.chooseTranslationModelFolder?()",  // 本机档：指定模型…
             "model.selectTranslationModel(directory: url)",
             "model.clearTranslationModel()",  // 改回跟随校正模型
@@ -178,8 +282,9 @@ struct MenuPanelViewWiringTests {
             "NSApplication.shared.terminate(nil)",  // 退出
             ".keyboardShortcut(\"q\")",  // ⌘Q
         ] {
+            let present = source.contains(action)
             #expect(
-                source.contains(action),
+                present,
                 """
                 MenuPanelView 里找不到 \(action)。
                 这是旧 MenuContent 的一个动作入口，迁移守则是「功能与文案零增减」；
@@ -203,55 +308,61 @@ struct MenuPanelViewWiringTests {
             "AppModel.benchEnabled",  // VINPUT_BENCH=1
             "AppModel.bleScanEnabled",  // VINPUT_BLE_SCAN=1
             "AppModel.mouseEnabled",  // 鼠标卡的门控
-            "guard model.translationBackend == .local else { return }",  // 防重复确认
             "if !model.translationModelIsInherited",  // 「改回跟随」只在单独指过时出现
             "if model.hasCloudAPIKey",  // 「删除 API Key」只在有 key 时出现
         ] {
+            let present = source.contains(guardExpression)
             #expect(
-                source.contains(guardExpression),
+                present,
                 """
                 MenuPanelView 里找不到 \(guardExpression)。
                 这是旧 MenuContent 的一条禁用条件/门控，迁移守则是「功能零增减」。
                 """
             )
         }
-        // 「重试」禁用时必须把理由说出来，见 `retryDisabledStateSaysWhy`。
         // 「换模型」的禁用条件有**两处**：列表里的每个模型，以及「其他目录…」。
         // 只数「有没有」的话，删掉其中一处这条断言照样绿——而漏掉「其他目录…」
         // 那处，用户就能在录音途中从磁盘换掉正在用的引擎。
+        // 云端那一档的幂等守卫**不许回到视图里**。它原来就写在按钮闭包里
+        // （`guard model.translationBackend == .local else { return }`），
+        // 那个位置没有任何测试进得去，而这一档点错的后果是把出站开关悄悄
+        // 关掉。现在决策在 `AppModel.cloudBackendRequest`，由纯函数用例钉着；
+        // 视图里再摆一份的话，两份松紧迟早各走各的（`attachTranslation` 同款）。
+        let guardsCloudInView = source.contains(
+            "guard model.translationBackend == .local else { return }")
         #expect(
-            source.components(separatedBy: ".disabled(!model.canSwitchModel)").count - 1 == 2,
+            !guardsCloudInView,
             """
-            .disabled(!model.canSwitchModel) 不是两处。
+            云端后端的守卫又回到了视图里。这条判断必须只留在
+            AppModel.cloudBackendRequest 一处——视图里那份没有测试进得去。
+            """
+        )
+        let switchGuards = source.components(separatedBy: ".disabled(!model.canSwitchModel)").count - 1
+        #expect(
+            switchGuards == 2,
+            """
+            .disabled(!model.canSwitchModel) 不是两处（现在是 \(switchGuards) 处）。
             模型列表项与「其他目录…」各要一处：少一处就能在录音/转写途中
             把正在用的引擎换掉。
             """
         )
     }
 
-    /// 「重试」禁用时要说清**为什么**点不动，不能只置灰。
+    /// 禁用态的主按钮必须**看起来**也是禁的。
     ///
-    /// 旧 `MenuContent` 的这一项写死了两套文案：能重试时是「重试上次转写」，
-    /// 不能时是「重试上次转写（没有可重试的）」，理由写在它旁边的注释里
-    /// ——禁用而不是隐藏，是因为「时有时无的话用户根本不会知道存在这么个
-    /// 东西」。同一条道理管着文案：光把按钮变灰，用户分不清是「没有可重试
-    /// 的」还是「坏了」，那条理由就丢了，而迁移守则是文案零增减。
-    ///
-    /// 这里连着钉三件事：括号那半句原文还在、它挂在 `canRetry` 的假分支上
-    /// （不是塞在注释里凑数）、以及能重试时不带这半句。
-    @Test("重试项禁用时说得出为什么点不动")
-    func retryDisabledStateSaysWhy() throws {
-        // 先算成 Bool 再断言：整份源码交给 #expect 的话，红了会把整个文件
-        // 打进失败输出，变异验证时数不到那条 ✘（CloudBackendWiringTests 同款）。
+    /// `.buttonStyle(.plain)` + 自绘渐变底不吃 `isEnabled`：光加 `.disabled`
+    /// 的话，模型加载那一两分钟里用户看到一个鲜亮如常的「开始听写」，点了
+    /// 没反应——与「重试」纯置灰丢掉禁用理由是同一类缺陷（用户分不清是
+    /// 「现在不能用」还是「坏了」）。
+    @Test("加载模型时主按钮看得出是禁用的")
+    func disabledPrimaryButtonLooksDisabled() throws {
         let source = try Self.panelSource()
-        let hasBranch = source.contains(
-            #"Button(model.canRetry ? "重试 ↻" : "重试 ↻（没有可重试的）")"#)
+        let dimmed = source.contains(".opacity(model.loadingModelName != nil ? 0.45 : 1)")
         #expect(
-            hasBranch,
+            dimmed,
             """
-            「重试」的禁用态文案没了。旧菜单在不能重试时写的是
-            「重试上次转写（没有可重试的）」——括号里那半句是「为什么点不动」
-            的唯一答案，只置灰的话用户分不清是没得重试还是坏了。
+            主按钮没有随 loadingModelName 压暗。自绘渐变底不吃 isEnabled，
+            只加 .disabled 的话按钮看上去和平时一模一样。
             """
         )
     }

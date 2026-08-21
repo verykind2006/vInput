@@ -38,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.promptForCloudAPIKey = { presentCloudAPIKeyPanel() }
         model.promptForCloudModelIdentifier = { presentCloudModelPanel(current: $0) }
         // 同上，也在 bootstrap 之前：开启云端翻译要先弹一次确认，而
-        // `AppModel` 不该知道 `NSAlert` 的存在。没接上时 `toggleCloudBackend`
+        // `AppModel` 不该知道 `NSAlert` 的存在。没接上时 `useCloudBackend`
         // 的失败方向是「不开」。
         model.confirmCloudBackend = { presentCloudBackendConfirmation() }
         model.bootstrap()

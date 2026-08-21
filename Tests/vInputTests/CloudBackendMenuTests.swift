@@ -31,7 +31,7 @@ import Testing
 /// | 把 `.cloudIdleBecauseChinese` 与 `.cloudActive` 的标题对调 | 1 条红：`menuTitlesArePinned` |
 /// | `.cloudIdleBecauseChinese` 的说明行删掉「一个字节都不会离开本机」 | 1 条红：`quietStatesSayTheyAreQuiet` |
 /// | `syncTranslationMirrors` 不再喂挂载结论（写死 `.detach`） | 1 条红：`statusComesFromTheAttachmentDecision` |
-/// | `toggleCloudBackend` 去掉确认直接开 | 1 条红：`enablingRequiresConfirmation` |
+/// | `useCloudBackend` 去掉确认直接开 | 1 条红：`enablingRequiresConfirmation` |
 /// | 菜单里加一句 `TranslationKey.read` | 1 条红：`menuNeverReadsKeychain` |
 /// | 协调器改成每次 `apply()` 都读 Keychain | 1 条红：`keychainIsReadOnlyWhenCloudActuallyRuns` |
 /// | `translationAttachment` 里语言判断与后端判断对调 | **6 条红**：`statusTable`、`menuClaimMatchesObservedEgress`、`keychainIsReadOnlyWhenCloudActuallyRuns`，以及既有的 3 条（`chineseWithCloudStillDetaches` 等） |
@@ -400,24 +400,57 @@ struct CloudBackendWiringTests {
         }
     }
 
+    /// **已经在云端时再点一次「云端 Google」，什么都不该发生。**
+    ///
+    /// 旧实现是 `toggleCloudBackend()`——**切换**语义：面板上两项都是常驻
+    /// 带勾的单选样式，用户点一下自以为选中的那项，实际把出站开关关掉了，
+    /// 而唯一的守卫是 SwiftUI 按钮闭包里的一行 guard，那里没有任何测试
+    /// 进得去。现在决策在纯函数里，三档各钉一条。
+    ///
+    /// 顺带钉住**已在云端时确认框一次都不许弹**：用户什么都没改，
+    /// 却被问一句「你确定要把每句话发到 Google 吗」，是纯噪音。
+    @Test("已在云端时再选云端是无操作，且不弹确认")
+    func cloudBackendRequestIsIdempotent() {
+        var confirmCalls = 0
+        let request = AppModel.cloudBackendRequest(currentlyCloud: true) {
+            confirmCalls += 1
+            return true
+        }
+        #expect(request == .alreadyCloud)
+        #expect(confirmCalls == 0, "已经在云端却弹了确认框——用户什么都没改")
+    }
+
+    /// 另外两档：本机 + 确认 → 开；本机 + 取消 → 保持本机。
+    ///
+    /// 取消那一档单独钉：一个出站开关的失败方向只能是「不出站」，
+    /// 而 `confirmCloudBackend` 没接上时（`?? false`）走的正是这一档。
+    @Test("从本机出发：确认才开，取消保持本机")
+    func cloudBackendRequestHonoursTheConfirmation() {
+        #expect(AppModel.cloudBackendRequest(currentlyCloud: false) { true } == .enable)
+        #expect(AppModel.cloudBackendRequest(currentlyCloud: false) { false } == .cancelled)
+    }
+
     /// **开启云端必须先弹确认，且确认在写偏好之前。**
     ///
     /// 顺序反了的话，用户点了取消，云端也已经开着了。
     @Test("开启云端前先弹确认，确认排在写偏好之前")
     func enablingRequiresConfirmation() throws {
         let source = try Self.source("Sources/vInput/App/AppModel.swift")
-        guard let start = source.range(of: "func toggleCloudBackend()") else {
-            Issue.record("找不到 toggleCloudBackend，这个测试的锚点失效了")
+        // M9 Task 7 QA 复核：`toggleCloudBackend()`（切换语义）换成了
+        // `useCloudBackend()`（幂等语义），锚点跟着搬——不搬的话
+        // `range(of:)` 找不到，这条只会记一条「锚点失效」然后放行。
+        guard let start = source.range(of: "func useCloudBackend()") else {
+            Issue.record("找不到 useCloudBackend，这个测试的锚点失效了")
             return
         }
         // 函数体只有二十来行，取一段足够长的窗口即可。
         let body = String(source[start.lowerBound...].prefix(1200))
         let confirm = try #require(
             body.range(of: "confirmCloudBackend?()"),
-            "toggleCloudBackend 里没有确认这一步——开启云端成了一次普通的开关切换")
+            "useCloudBackend 里没有确认这一步——开启云端成了一次普通的开关切换")
         let write = try #require(
             body.range(of: "usesCloudBackend = true"),
-            "toggleCloudBackend 里找不到写偏好那一句，锚点失效了")
+            "useCloudBackend 里找不到写偏好那一句，锚点失效了")
         #expect(
             confirm.lowerBound < write.lowerBound,
             "确认排在写偏好之后：用户点了取消，云端却已经开着了")

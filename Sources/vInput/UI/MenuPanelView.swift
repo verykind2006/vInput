@@ -7,12 +7,43 @@ import SwiftUI
 /// ——旧 `MenuContent` 里的每一个按钮、每一条禁用条件、每一道环境变量门控
 /// 都在这里有对应的一项（迁移对照清单在 Task 7 的提交信息里）。
 ///
-/// 视图里**不新写任何面向用户的字符串**：拼在视图里就没有任何测试守得住它
-/// （与 `HUDViewModel`、`MenuPanelModel` 同一条分工）。唯一的例外是设置四行
-/// 的行标题（「模型」「校正」「输出语言」「翻译后端」），它们是旧菜单标题
-/// 里那半截前缀搬了个位置——值那侧因此去掉重复的前缀，见 `stripPrefix`。
+/// ## 哪些文案在这里，哪些不在
+///
+/// **凡是随状态变的文案，一律在 model 层**（`MenuPanelModel` 的
+/// `primaryButtonTitle` / `retryTitle` / `correctionToggleTitle` /
+/// `correctionModelLine` / `apiKeyButtonTitle`，以及 `AppModel` 那一串
+/// `…MenuTitle` / `…MenuLine` / `…Label`）。理由不是洁癖：迁移时「重试上次
+/// 转写（没有可重试的）」在视图里被改成纯置灰的「重试 ↻」，禁用理由整句
+/// 丢失而全仓测试一条没红（`1a0989b` 才补回来）——两句话的文案留在视图里，
+/// 没有任何东西守得住它。
+///
+/// **不随状态变的固定标签仍然写在这里**，约二十处：设置四行的行标题
+/// （「模型」「校正」「输出语言」「翻译后端」「开发工具」）、头部的
+/// 「vInput」、卡片标题「上次转写」、快捷键徽章「⌥D」，以及一批一次性的
+/// 按钮字面量（「其他目录…」「指定校正模型…」「指定模型…」「改回跟随校正
+/// 模型」「选择模型」「自定义…」「删除 API Key」「重新检查 API Key」
+/// 「开始录制基准集」「结束 BLE 扫描并汇总」「重新开始 BLE 扫描」
+/// 「打开日志」「退出」）与空列表提示「vendor/models 下没有模型」。
+/// 它们只有一种取值，改动只会来自「有人主动改文案」，不会来自漏掉一个分支。
+///
+/// 设置四行的行标题是旧菜单标题里那半截前缀搬了个位置——值那侧因此去掉
+/// 重复的前缀，见 `stripPrefix`。
 struct MenuPanelView: View {
     let model: AppModel
+
+    /// 手风琴：一次只展开一行。
+    ///
+    /// **`.window` 面板不滚动**，超出屏幕的部分够不到，而四行同时展开
+    /// （云端档还嵌一层「选择模型」）实测能堆到 900–1000pt，13 寸的可用
+    /// 高度约 850pt。旧的原生菜单天然一次只开一个子菜单，这里把那条行为
+    /// 补回来，顺带解决「展开第四行把前三行顶出屏幕」。
+    @State private var openRow: SettingRow?
+
+    /// 可展开的行。用枚举而不是四个 Bool：四个 Bool 表示得出「同时开三行」
+    /// 这种非法状态，而这里要的恰恰是「至多一行」。
+    private enum SettingRow: Hashable {
+        case model, correction, outputLanguage, backend, devTools
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -68,12 +99,25 @@ struct MenuPanelView: View {
 
     // MARK: - 主按钮
 
+    /// 主按钮。**先关面板、把焦点还给原应用，下一个 runloop turn 再开听写。**
+    ///
+    /// 顺序不能反，也不能省：`TargetAppGuard.capture()` 在会话开始的那一刻
+    /// 记下前台应用，而面板开着的时候前台是 vInput 自己——同一轮里紧接着
+    /// `toggle()` 的话，记下的目标就是这个面板，转写出来的文字会被注进面板
+    /// 里（等于消失）；用户随后点别处关面板，则前台一变，注入前的 `verify`
+    /// 抛 `targetApplicationChanged`，用户看到「焦点已切到别的应用，文字没有
+    /// 输入」。旧的原生菜单点一下自己就关了，从来不会撞上这件事，
+    /// 换成 `.window` 之后必须自己补（详见 `dismissMenuPanel`）。
+    ///
+    /// 只有这个按钮需要：几个弹窗自己会 `activate`，「打开日志」交给 Finder。
     private var primaryButton: some View {
         Button {
-            model.toggle()
+            dismissMenuPanel()
+            // 焦点交还是异步的，同一轮里 capture() 拿到的还是 vInput 自己。
+            DispatchQueue.main.async { model.toggle() }
         } label: {
             HStack {
-                Text(model.phase == .listening ? "结束听写" : "开始听写")
+                Text(MenuPanelModel.primaryButtonTitle(phase: model.phase))
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Text("⌥D")
@@ -90,6 +134,11 @@ struct MenuPanelView: View {
                 in: RoundedRectangle(cornerRadius: 9))
         }
         .buttonStyle(.plain)
+        // 自绘的渐变底 + .plain 样式**不会**跟着 isEnabled 变灰：不自己压暗
+        // 的话，模型加载那一两分钟里用户看到的是一个鲜亮如常的「开始听写」，
+        // 点下去毫无反应——与「重试」纯置灰丢掉理由是同一类缺陷。
+        .opacity(model.loadingModelName != nil ? 0.45 : 1)
+        .saturation(model.loadingModelName != nil ? 0 : 1)
         .disabled(model.loadingModelName != nil)
         .padding(.horizontal, 12).padding(.bottom, 10)
     }
@@ -144,12 +193,10 @@ struct MenuPanelView: View {
                     // 只有测试在调 retry()）。禁用而不是隐藏：入口时有时无的话，
                     // 用户根本不会知道存在这么个东西，也就等不到需要它的那一刻。
                     //
-                    // 禁用时把「为什么点不动」写在文案里，括号那半句逐字沿用旧
-                    // `MenuContent`。只置灰的话丢的正是这条理由：用户看到一个点
-                    // 不动的按钮，分不清是「没有可重试的」还是「坏了」——按同一条
-                    // 「禁用不隐藏」的道理，说清楚才算数（迁移守则是零增减，
-                    // 光置灰是信息减少）。
-                    Button(model.canRetry ? "重试 ↻" : "重试 ↻（没有可重试的）") {
+                    // 禁用时把「为什么点不动」写在文案里。两句话都在
+                    // `MenuPanelModel.retryTitle`——正是这一处曾经在视图里被
+                    // 改成纯置灰的单句，全仓测试一条没红。
+                    Button(MenuPanelModel.retryTitle(canRetry: model.canRetry)) {
                         model.retryLastTranscription()
                     }
                         .buttonStyle(.plain)
@@ -173,17 +220,17 @@ struct MenuPanelView: View {
 
     private var settingsList: some View {
         VStack(spacing: 0) {
-            settingRow(title: "模型", value: modelValueLabel) { modelSection }
+            settingRow(.model, title: "模型", value: modelValueLabel) { modelSection }
             rowSeparator
-            settingRow(title: "校正", value: model.correctionEnabled ? "开" : "关") {
+            settingRow(.correction, title: "校正", value: model.correctionEnabled ? "开" : "关") {
                 correctionSection
             }
             rowSeparator
-            settingRow(title: "输出语言", value: outputLanguageValueLabel) {
+            settingRow(.outputLanguage, title: "输出语言", value: outputLanguageValueLabel) {
                 outputLanguageSection
             }
             rowSeparator
-            settingRow(title: "翻译后端", value: backendValueLabel) { backendSection }
+            settingRow(.backend, title: "翻译后端", value: backendValueLabel) { backendSection }
         }
         .background(VITheme.contentBackground, in: RoundedRectangle(cornerRadius: 9))
         .padding(.horizontal, 12).padding(.bottom, 10)
@@ -258,15 +305,14 @@ struct MenuPanelView: View {
     /// 校正（旧 `correctionMenu`）：开关与模型目录是同一件事的两个面。
     @ViewBuilder
     private var correctionSection: some View {
-        expandedButton(model.correctionEnabled ? "关闭校正" : "开启校正") {
+        expandedButton(MenuPanelModel.correctionToggleTitle(enabled: model.correctionEnabled)) {
             model.toggleCorrection()
         }
 
         Divider()
-        // 让用户知道当前用的是哪个模型——校正效果好坏几乎全由它决定。
-        // 未指定时不再说「默认（首次使用时下载）」：开启校正现在必须
-        // 先有一个本地合法目录，那句话会让人以为不选也能用。
-        infoLine(model.correctionModelName.map { "模型：\($0)" } ?? "模型：未指定（开启校正时选择）")
+        // 让用户知道当前用的是哪个模型——校正效果好坏几乎全由它决定
+        // （两句文案与「未指定」那句的理由都在 `correctionModelLine` 里）。
+        infoLine(MenuPanelModel.correctionModelLine(name: model.correctionModelName))
         expandedButton("指定校正模型…") {
             if let url = presentCorrectionModelFolderPanel() {
                 model.selectCorrectionModel(directory: url)
@@ -316,9 +362,10 @@ struct MenuPanelView: View {
             AppModel.backendChoiceLabel(cloud: true),
             checked: model.translationBackend != .local
         ) {
-            // 已经在云端时点它什么都不做，不再弹一次确认。
-            guard model.translationBackend == .local else { return }
-            model.toggleCloudBackend()
+            // 幂等：已经在云端时这一下什么都不做，也不弹确认。守卫在
+            // `AppModel.cloudBackendRequest` 里（视图里的 guard 没有测试
+            // 进得去，而这一档点错的后果是把出站开关悄悄关掉）。
+            model.useCloudBackend()
         }
 
         Divider()
@@ -381,7 +428,7 @@ struct MenuPanelView: View {
 
             Divider()
             infoLine(AppModel.cloudAPIKeyMenuLine(hasKey: model.hasCloudAPIKey))
-            expandedButton(model.hasCloudAPIKey ? "更换 API Key…" : "输入 API Key…") {
+            expandedButton(MenuPanelModel.apiKeyButtonTitle(hasKey: model.hasCloudAPIKey)) {
                 model.enterCloudAPIKey()
             }
             if model.hasCloudAPIKey {
@@ -400,7 +447,7 @@ struct MenuPanelView: View {
     private var devTools: some View {
         if AppModel.benchEnabled || AppModel.bleScanEnabled {
             VStack(spacing: 0) {
-                settingRow(title: "开发工具", value: "") {
+                settingRow(.devTools, title: "开发工具", value: "") {
                     // 菜单里只留一个入口，全部录制界面在独立窗口
                     // （`BenchRecordingWindowController`）：说明文字的字号与颜色
                     // 都改不动，用户照着读了 23 条之后反馈「字太小、灰字看不清」。
@@ -446,10 +493,20 @@ struct MenuPanelView: View {
     // MARK: - 行部件
 
     /// 设置一行：标题 + 琥珀橙当前值 + `›`（展开时转 90°），点整行展开。
+    ///
+    /// 展开状态**由 `openRow` 单独持有**，不用 `DisclosureGroup` 自带的内部
+    /// 状态：手风琴要的是「开这一行 = 关掉另外三行」，那必须有一个共同的
+    /// 真相源（理由见 `openRow`）。
     private func settingRow<Content: View>(
-        title: String, value: String, @ViewBuilder content: @escaping () -> Content
+        _ row: SettingRow, title: String, value: String,
+        @ViewBuilder content: @escaping () -> Content
     ) -> some View {
-        DisclosureGroup {
+        DisclosureGroup(
+            isExpanded: Binding(
+                get: { openRow == row },
+                set: { openRow = $0 ? row : nil }
+            )
+        ) {
             VStack(alignment: .leading, spacing: 4) { content() }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, 4)

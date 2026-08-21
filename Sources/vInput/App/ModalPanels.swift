@@ -7,6 +7,31 @@ import AppKit
 // 每个函数的注释都是真机踩坑记录（`activate` 为什么不能去掉、取消为什么是
 // 默认按钮、为什么用 NSSecureTextField），随代码一起搬，一行没删。
 
+/// 关掉菜单栏面板，并把焦点还给用户原来那个应用。
+///
+/// **旧的原生菜单免费拥有这个行为**：点一下菜单项，菜单自己关闭，前台应用
+/// 从来没变过。`.window` 样式的面板不是菜单——点完按钮它还开着，而这个应用
+/// 是往别人的输入框里注字的。
+///
+/// 不关的两种坏结果（`TargetAppGuard.capture()` 在会话开始时记下当时的前台
+/// 应用，`DictationSession` 注入前用 `verify` 比对）：
+///
+/// - 面板开着时前台是 vInput 自己 → 记下的目标是 vInput，转写出来的文字被
+///   注进这个面板，等于凭空消失。
+/// - 用户点别处关掉面板 → 前台在录音途中变了 → `verify` 抛
+///   `targetApplicationChanged`，用户看到「焦点已切到别的应用，文字没有
+///   输入」——说了半天，一个字都没进去。
+///
+/// `hide` 而不只是 `close`：LSUIElement 应用在面板关闭后仍可能是活跃应用，
+/// 只关窗口的话焦点不一定回到原应用。**调用方必须把真正的动作推到下一个
+/// runloop turn**（见 `MenuPanelView.primaryButton`）——焦点交还是异步的，
+/// 同一轮里紧接着 `capture()` 拿到的还是旧值。
+@MainActor
+func dismissMenuPanel() {
+    NSApp.keyWindow?.close()
+    NSApp.hide(nil)
+}
+
 /// 弹出校正模型目录选择器，返回用户选中的目录（取消时为 nil）。
 ///
 /// 提到文件作用域而不是留在菜单视图里：两个调用方（菜单里的「指定校正
