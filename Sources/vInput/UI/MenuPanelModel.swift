@@ -159,11 +159,6 @@ enum MenuPanelModel {
         return "位置：\((root as NSString).abbreviatingWithTildeInPath)"
     }
 
-    /// 设置行右侧那半截「当前值」。
-    nonisolated static func downloadSourceValueLabel(forced: DownloadSource?) -> String {
-        forced?.displayName ?? "自动"
-    }
-
     /// 三选一里的每一项。
     ///
     /// 「自动」后面那半句不是装饰：不写的话，用户无从判断「自动」到底做了

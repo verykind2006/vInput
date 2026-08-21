@@ -283,17 +283,6 @@ struct MenuPanelModelTests {
         #expect(!line.hasSuffix("："))
     }
 
-    /// 设置行右侧那半截：自动 / 官方源 / 国内镜像，三档各不相同。
-    @Test func downloadSourceValueLabels() {
-        #expect(MenuPanelModel.downloadSourceValueLabel(forced: nil) == "自动")
-        #expect(
-            MenuPanelModel.downloadSourceValueLabel(forced: .official)
-                == DownloadSource.official.displayName)
-        #expect(
-            MenuPanelModel.downloadSourceValueLabel(forced: .mirror)
-                == DownloadSource.mirror.displayName)
-    }
-
     /// 「自动」那一项必须说清它做了什么，否则用户无从判断该不该去动它。
     @Test func automaticChoiceExplainsItself() {
         let label = MenuPanelModel.downloadSourceChoiceLabel(nil)
