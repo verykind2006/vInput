@@ -42,12 +42,16 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 ditto --norsrc --noextattr --noqtn --noacl "$BIN_PATH" "$APP_DIR/Contents/MacOS/$APP_NAME"
 ditto --norsrc --noextattr --noqtn --noacl "$ROOT/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 
-# App 图标：icns 是生成物（.gitignore 里，母版是 render-icon.swift），缺了就
-# 现做——保证换机器 clone 下来第一次构建也能出对的图标，而不是无声地打出
-# 一个没有图标的空白应用包。
-if [[ ! -f "$ROOT/Resources/AppIcon.icns" ]]; then
-  "$ROOT/scripts/make-icon.sh"
-fi
+# App 图标：icns 是生成物（.gitignore 里，母版是 render-icon.swift）。
+#
+# 每次都重新生成，不做「文件存在就跳过」的优化：那种写法只判存在、不判
+# 内容是否过期——改了 render-icon.swift 再构建，`[[ -f ]]` 照样为真，
+# 于是签名、打包的是旧图标，而 icns 本身在 .gitignore 里，没有任何下游
+# 会发现这件事，这个「旧图标」状态会一直延续到有人手动删掉这个文件。
+# 顺带免疫 OneDrive 同步产生的占位符文件（内容未落地但 `-f` 判存在为真
+# 的情形）——不判存在就不会被这类占位符骗过。生成只要不到一秒，不值得
+# 为省这点时间换一个会静默发旧产物的正确性风险。
+"$ROOT/scripts/make-icon.sh"
 ditto --norsrc --noextattr --noqtn --noacl \
     "$ROOT/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 

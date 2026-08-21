@@ -1,5 +1,7 @@
+import AppKit
 import CoreGraphics
 import Foundation
+import SwiftUI
 import Testing
 @testable import vInput
 
@@ -104,18 +106,33 @@ struct ThemeTests {
     /// 里」这类改法是瞎的。
     @Test func vMarkGeometryMatchesIconScript() throws {
         let source = try Self.renderIconSource()
-        let scriptBars = try Self.parseBarsIn56(from: source)
 
-        #expect(
-            scriptBars.count == VMark.bars.count,
-            """
-            scripts/render-icon.swift 里 barsIn56 解出 \(scriptBars.count) 条，
-            Theme.swift 的 VMark.bars 有 \(VMark.bars.count) 条——数目对不上，
-            要么脚本的数组被改动过，要么这条测试的解析锚点失效了。
-            """
-        )
+        let scriptBars: [(x: Double, y: Double, width: Double, height: Double)]
+        do {
+            scriptBars = try Self.parseBarsIn56(from: source)
+        } catch {
+            // 解析本身失败（锚点没找到/数组没收尾），跟"几何数字对不上"是两件
+            // 完全不同的事，绝不能混着报——见下面 parseBarsIn56 里的详细说明。
+            Issue.record("解析 scripts/render-icon.swift 的 barsIn56 失败：\(error)")
+            return
+        }
 
-        for i in 0..<min(scriptBars.count, VMark.bars.count) {
+        guard scriptBars.count == VMark.bars.count else {
+            Issue.record(
+                """
+                scripts/render-icon.swift 里 barsIn56 解出 \(scriptBars.count) 条，
+                Theme.swift 的 VMark.bars 有 \(VMark.bars.count) 条。这可能是真的
+                几何改动（加/删了一根柱子），也可能是脚本排版变了导致解析漏掉了
+                某几条——两种都有可能、分不清之前，**不是几何漂移的确证**：先去
+                scripts/render-icon.swift 里手数一遍 barsIn56 实际有几条，再判断
+                是该改数据还是改这条测试的解析器。数目已经对不上、位置多半错位，
+                这里不再逐根柱子比对（比了也是噪音，会指认根本不存在的柱子）。
+                """
+            )
+            return
+        }
+
+        for i in 0..<scriptBars.count {
             let script = scriptBars[i]
             let theme = VMark.bars[i]
             // 脚本里是 56 单位的绝对数，Theme.swift 是归一化到 0…1 的分数，
@@ -141,6 +158,73 @@ struct ThemeTests {
         }
     }
 
+    // MARK: - scripts/render-icon.swift 配色同步（同一套机器守卫，扩到颜色上）
+
+    /// 几何有机器守卫之后，颜色曾经只剩一句注释「照抄 VITheme」，没人核对——
+    /// 复核实测过：把脚本里的琥珀渐变改成绿色，旧版这条测试文件照样全绿。
+    /// 这里核对四个颜色：`VITheme.iconTileTop/iconTileBottom`（瓦片深色渐变）
+    /// 与 `VITheme.accentGradientTop/accentGradientBottom`（琥珀渐变），按它们
+    /// 在 render-icon.swift 源码里出现的顺序（瓦片渐变先画、V mark 渐变后画）
+    /// 逐一比对 RGB 分量。
+    @Test @MainActor func vMarkColorsMatchIconScript() throws {
+        let source = try Self.renderIconSource()
+
+        let scriptColors: [(r: Double, g: Double, b: Double)]
+        do {
+            scriptColors = try Self.parseNSColors(from: source)
+        } catch {
+            Issue.record("解析 scripts/render-icon.swift 的 NSColor 字面量失败：\(error)")
+            return
+        }
+
+        // 源码里的出现顺序：瓦片渐变起 → 瓦片渐变止 → V mark 渐变起 → V mark 渐变止。
+        let themeColors: [(name: String, color: Color)] = [
+            ("iconTileTop", VITheme.iconTileTop),
+            ("iconTileBottom", VITheme.iconTileBottom),
+            ("accentGradientTop", VITheme.accentGradientTop),
+            ("accentGradientBottom", VITheme.accentGradientBottom),
+        ]
+
+        guard scriptColors.count == themeColors.count else {
+            Issue.record(
+                """
+                render-icon.swift 里解出 \(scriptColors.count) 个
+                NSColor(red:green:blue:alpha:) 字面量，预期 \(themeColors.count) 个
+                （瓦片渐变两端 + V mark 渐变两端）。可能是脚本加/删了一处渐变色，
+                也可能是格式变了导致解析漏掉——先去脚本里手数一遍，再判断是该
+                改数据还是改这条测试的解析器；这里不再逐个颜色比对（数目对不上，
+                位置多半错位）。
+                """
+            )
+            return
+        }
+
+        for (i, expected) in themeColors.enumerated() {
+            let script = scriptColors[i]
+            let (r, g, b) = Self.rgbComponents(of: expected.color)
+            // 0.01 的容差是给 Color → NSColor 桥接时色彩空间转换留的余量，
+            // 不是在放水：琥珀改绿这种量级的变异，分量差是几十倍于这个容差。
+            let matches = abs(script.r - r) < 0.01 && abs(script.g - g) < 0.01 && abs(script.b - b) < 0.01
+            #expect(
+                matches,
+                """
+                第 \(i) 个颜色（对应 VITheme.\(expected.name)）对不上：
+                render-icon.swift = (r: \(script.r), g: \(script.g), b: \(script.b))
+                VITheme.\(expected.name) = (r: \(r), g: \(g), b: \(b))
+                两处颜色已经漂移——App 图标会和 HUD/面板/菜单栏图标用的颜色不一致。
+                改了 Theme.swift 的 VITheme 之后，记得同步
+                scripts/render-icon.swift 里对应的 NSColor 字面量，反之亦然。
+                """
+            )
+        }
+    }
+
+    @MainActor
+    private static func rgbComponents(of color: Color) -> (r: Double, g: Double, b: Double) {
+        let ns = NSColor(color).usingColorSpace(.deviceRGB) ?? NSColor(color)
+        return (Double(ns.redComponent), Double(ns.greenComponent), Double(ns.blueComponent))
+    }
+
     private static func renderIconSource() throws -> String {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // vInputTests
@@ -152,37 +236,87 @@ struct ThemeTests {
         )
     }
 
-    /// 只在 `let barsIn56 = [...]` 这个数组字面量的范围内找 `CGRect(x:…)`，
-    /// 不扫全文件——脚本里另有两处 `CGRect(...)`（tile、mark），参数是
-    /// `side * 0.1` 这类表达式而非数字字面量，本来就匹配不上这条纯数字
-    /// 正则，但把搜索范围收在数组内更明确，也不依赖这个巧合。
+    private struct SourceParseFailure: Error, CustomStringConvertible {
+        let reason: String
+        var description: String { reason }
+    }
+
+    /// 定位 `barsIn56` 数组、解析出每根柱子的 (x, y, width, height)。
+    ///
+    /// 锚点故意用正则而不是整段字面量字符串：早先用
+    /// `"let barsIn56: [CGRect] = ["` 精确字面量匹配，只要脚本里这行的空格、
+    /// 类型注解写法稍有不同（哪怕语义完全不变），匹配就会失败，而失败信息
+    /// 只会说「数目对不上」——读的人会去找根本不存在的几何漂移。改成正则
+    /// `let\s+barsIn56\b[^=\[]*=\s*\[` 之后：
+    /// - `\s+` 容忍空白变化；
+    /// - `[^=\[]*` 吃掉 `barsIn56` 与 `=` 之间的任何字符（比如冒号、空格），
+    ///   但吃不过方括号——这就要求脚本里的声明写成不带显式类型注解的
+    ///   `let barsIn56 = [...]`（Swift 能从字面量元素类型推断出 `[CGRect]`，
+    ///   这也更地道），二者天然兼容；
+    /// - 找不到锚点、或找不到收尾的 `]`，都视为**解析失败**而不是「柱子数
+    ///   量变了」，调用方要把这两类失败分开报告。
+    ///
+    /// 数组体内逐条 `CGRect(...)` 用另一条正则解析，`CGRect\(` 之后补了
+    /// `\s*`——不补的话，光是在 `CGRect(` 后面换一行（纯排版，语义不变）
+    /// 就会让这一条解析失败、总数少一条，连带把后面每一根柱子的下标都错位，
+    /// 报出一串「第 N 根柱子对不上」的假指控（复核实测过）。
     private static func parseBarsIn56(
         from source: String
     ) throws -> [(x: Double, y: Double, width: Double, height: Double)] {
-        // 精确锚到「= [」之后：只搜 "let barsIn56" 会连类型注解 `[CGRect]`
-        // 里那个 `]` 一起框进来，导致下面找「第一个 ]」时提前收口，一条都
-        // 解不出来（已实测踩过）。
-        guard let arrayStart = source.range(of: "let barsIn56: [CGRect] = [") else {
-            struct ArrayNotFound: Error {}
-            throw ArrayNotFound()
-        }
-        guard let arrayEnd = source.range(of: "]", range: arrayStart.upperBound..<source.endIndex) else {
-            struct ArrayNotClosed: Error {}
-            throw ArrayNotClosed()
-        }
-        let arraySlice = String(source[arrayStart.upperBound..<arrayEnd.upperBound])
+        let nsSource = source as NSString
+        let fullRange = NSRange(location: 0, length: nsSource.length)
 
-        let pattern = #"CGRect\(x:\s*([\d.]+),\s*y:\s*([\d.]+),\s*width:\s*([\d.]+),\s*height:\s*([\d.]+)\)"#
-        let regex = try NSRegularExpression(pattern: pattern)
-        let nsSlice = arraySlice as NSString
-        let matches = regex.matches(in: arraySlice, range: NSRange(location: 0, length: nsSlice.length))
+        let anchorPattern = #"let\s+barsIn56\b[^=\[]*=\s*\["#
+        let anchorRegex = try NSRegularExpression(pattern: anchorPattern)
+        guard let anchorMatch = anchorRegex.firstMatch(in: source, range: fullRange) else {
+            throw SourceParseFailure(
+                reason: """
+                没能定位到 barsIn56 数组的声明（锚点 "\(anchorPattern)" 没匹配上）。
+                大概率是脚本被重排版了（改了变量名、加回了类型注解），不是几何
+                被删空——去检查/更新这条测试的解析锚点，不要去动
+                render-icon.swift 里的坐标数字。
+                """
+            )
+        }
+
+        let arrayBodyStart = anchorMatch.range.location + anchorMatch.range.length
+        let searchRange = NSRange(location: arrayBodyStart, length: nsSource.length - arrayBodyStart)
+        let closeRange = nsSource.range(of: "]", options: [], range: searchRange)
+        guard closeRange.location != NSNotFound else {
+            throw SourceParseFailure(
+                reason: "找到了 barsIn56 数组开头，但没找到收尾的 \"]\"——脚本可能被截断了，不是几何漂移。"
+            )
+        }
+
+        let body = nsSource.substring(with: NSRange(location: arrayBodyStart, length: closeRange.location - arrayBodyStart))
+        let itemPattern = #"CGRect\(\s*x:\s*([\d.]+),\s*y:\s*([\d.]+),\s*width:\s*([\d.]+),\s*height:\s*([\d.]+)\s*\)"#
+        let itemRegex = try NSRegularExpression(pattern: itemPattern)
+        let nsBody = body as NSString
+        let matches = itemRegex.matches(in: body, range: NSRange(location: 0, length: nsBody.length))
 
         return matches.map { match in
-            let x = Double(nsSlice.substring(with: match.range(at: 1)))!
-            let y = Double(nsSlice.substring(with: match.range(at: 2)))!
-            let width = Double(nsSlice.substring(with: match.range(at: 3)))!
-            let height = Double(nsSlice.substring(with: match.range(at: 4)))!
+            let x = Double(nsBody.substring(with: match.range(at: 1)))!
+            let y = Double(nsBody.substring(with: match.range(at: 2)))!
+            let width = Double(nsBody.substring(with: match.range(at: 3)))!
+            let height = Double(nsBody.substring(with: match.range(at: 4)))!
             return (x, y, width, height)
+        }
+    }
+
+    /// 解析脚本全文里所有 `NSColor(red:green:blue:alpha:)` 字面量，按出现
+    /// 顺序返回。不像 `parseBarsIn56` 那样先框定一个数组范围——脚本里这四处
+    /// 颜色分散在两个 `NSGradient(...)` 调用里，没有一个共同的外层数组可框，
+    /// 直接按源码顺序解析即可（顺序本身就是调用方要核对的东西之一）。
+    private static func parseNSColors(from source: String) throws -> [(r: Double, g: Double, b: Double)] {
+        let pattern = #"NSColor\(\s*red:\s*([\d.]+),\s*green:\s*([\d.]+),\s*blue:\s*([\d.]+),\s*alpha:\s*([\d.]+)\s*\)"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let nsSource = source as NSString
+        let matches = regex.matches(in: source, range: NSRange(location: 0, length: nsSource.length))
+        return matches.map { match in
+            let r = Double(nsSource.substring(with: match.range(at: 1)))!
+            let g = Double(nsSource.substring(with: match.range(at: 2)))!
+            let b = Double(nsSource.substring(with: match.range(at: 3)))!
+            return (r, g, b)
         }
     }
 }

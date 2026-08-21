@@ -7,17 +7,32 @@
 // 两处**不共享代码**——本脚本独立于 SPM 包之外运行（`swift
 // scripts/render-icon.swift <目录>`，跑在包外，不能 import vInput），
 // 是刻意的重复，不是疏漏。改 Theme.swift 的 VMark/VITheme 必须同步改这里；
-// 反过来改这里的数字也要去 Theme.swift 对一遍。几何数的同步义务有机器
-// 守卫——Tests/vInputTests/ThemeTests.swift 的 vMarkGeometryMatchesIconScript()
-// 会解析本文件的 barsIn56 并与 VMark.bars 逐项核对，改漏一个数字它会红；
-// 配色目前没有等价的机器守卫，只能靠人核对。
+// 反过来改这里的数字也要去 Theme.swift 对一遍。几何与配色的同步义务都有
+// 机器守卫——Tests/vInputTests/ThemeTests.swift 的 vMarkGeometryMatchesIconScript()
+// 解析本文件的 barsIn56 并与 VMark.bars 逐项核对，vMarkColorsMatchIconScript()
+// 解析本文件里的 NSColor(red:green:blue:alpha:) 字面量并与 VITheme 的四个
+// 颜色逐项核对；改漏一处，对应测试就会红。
+//
+// `barsIn56` 的声明**必须**不带显式数组类型注解（靠 Swift 从字面量元素
+// 类型推断出 `[CGRect]`）——上面那条测试的解析锚点认不出带 `: [CGRect]`
+// 这种写法（类型注解自带的方括号会把锚点正则带偏），加回类型注解会让
+// 测试的解析器报"锚点失效"，不是几何真的漂移，但也别为了省事去改测试
+// 放过这个约束。
 //
 // 用法：swift scripts/render-icon.swift <iconset 目录>
 // 产出 iconutil 要求的十个档位 PNG（icon_16x16.png … icon_512x512@2x.png）。
 import AppKit
 
-// 与 Theme.swift 的 VMark.bars 逐项对应（56 单位、y 向下为正）。
-let barsIn56: [CGRect] = [
+// barsIn56 的坐标单位——56 个「设计单位」的正方形，与 Theme.swift 里
+// VMark.bars 的分母同一个数。改这个数必须同时去 VMark.bars 那边核对
+// （虽然 ThemeTests 的机器守卫比的是换算后的分数值，对分母本身改错
+// 这种变异不敏感——例如把这里全改成 64，只要 barsIn56 里的坐标跟着等比
+// 放大，换算出来的分数依旧对得上。这个常量把「分母」收成一处，至少不会
+// 出现「有的地方用 56、有的地方手滑写成别的数」这种不一致）。
+let designUnit: CGFloat = 56
+
+// 与 Theme.swift 的 VMark.bars 逐项对应（designUnit 单位、y 向下为正）。
+let barsIn56 = [
     CGRect(x: 2, y: 4, width: 7, height: 48),
     CGRect(x: 13, y: 16, width: 7, height: 36),
     CGRect(x: 24.5, y: 28, width: 7, height: 24),
@@ -52,12 +67,12 @@ func render(pixels: Int) -> NSBitmapImageRep {
         width: markSide, height: markSide)
     let markPath = NSBezierPath()
     for b in barsIn56 {
-        // 56 单位几何 y 向下，这里的绘制坐标系 y 向上：翻转 y。
+        // designUnit 单位几何 y 向下，这里的绘制坐标系 y 向上：翻转 y。
         let r = CGRect(
-            x: mark.minX + b.minX / 56 * mark.width,
-            y: mark.minY + (56 - b.maxY) / 56 * mark.height,
-            width: b.width / 56 * mark.width,
-            height: b.height / 56 * mark.height)
+            x: mark.minX + b.minX / designUnit * mark.width,
+            y: mark.minY + (designUnit - b.maxY) / designUnit * mark.height,
+            width: b.width / designUnit * mark.width,
+            height: b.height / designUnit * mark.height)
         markPath.append(NSBezierPath(roundedRect: r, xRadius: r.width / 2, yRadius: r.width / 2))
     }
     // 琥珀橙渐变 #FFB340 → #FF8A00，与 VITheme.accentGradientTop/Bottom 同值。
