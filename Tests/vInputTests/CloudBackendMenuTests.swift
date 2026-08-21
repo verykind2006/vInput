@@ -345,7 +345,10 @@ struct CloudBackendWiringTests {
         // **先算成 Bool 再断言**，不要把整份源码交给 `#expect`：那样一旦红了，
         // 失败输出里会原样打出整个文件，连那条 ✘ 行都被埋掉——变异验证时
         // 「数不到红行」和「真的没红」就分不开了（第 8 条的同款）。
-        let view = try Self.source("Sources/vInput/App/vInputApp.swift")
+        // M9 Task 7：菜单从 vInputApp.swift 里的原生 `MenuContent` 换成了
+        // `.window` 样式的自绘面板 `MenuPanelView`，这条守卫跟着搬过去
+        // ——锚点不搬的话它会扫一份不再有菜单的文件，从此永远绿。
+        let view = try Self.source("Sources/vInput/UI/MenuPanelView.swift")
         let usesTitle = view.contains("AppModel.translationBackendMenuTitle(")
         let usesDetail = view.contains("AppModel.translationBackendDetailLines(")
         // 2026-08-19 菜单重排：单个「开/关」按钮换成本机/云端两个并列选项
@@ -377,7 +380,14 @@ struct CloudBackendWiringTests {
     /// 本仓库一天栽过三次这个坑。
     @Test("菜单与 AppModel 都不直接读 Keychain")
     func menuNeverReadsKeychain() throws {
-        for path in ["Sources/vInput/App/vInputApp.swift", "Sources/vInput/App/AppModel.swift"] {
+        // 菜单面板（M9 Task 7 之后是 MenuPanelView）与 AppModel 都不许读。
+        // vInputApp.swift 一并留着扫：那里现在只剩场景与 AppDelegate，
+        // 但它照样是「每次打开菜单都会跑到」的代码。
+        for path in [
+            "Sources/vInput/UI/MenuPanelView.swift",
+            "Sources/vInput/App/vInputApp.swift",
+            "Sources/vInput/App/AppModel.swift",
+        ] {
             let readsKeychain = try Self.source(path).contains("TranslationKey.read")
             #expect(
                 !readsKeychain,
