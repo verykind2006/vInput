@@ -52,27 +52,42 @@ struct RoutingTextSink: TextSink {
 /// `DictationSession.sink` 是 `let`，会话建好之后换不掉。装一个引用类型进去，
 /// 之后改它的 `redirect` 属性即可——不必为了向导去动会话的生命周期。
 ///
+/// ## 改道闭包必须回答「这一次归我吗」，不能无条件吞
+///
+/// 返回 `Bool`，不是 `Void`。这一条是 2026-08-22 复审揪出来的一个 Critical，
+/// 失效链完整记在这里，因为改回 `Void` 看上去更简洁：
+///
+/// 向导停在「试说一句」那一步时改道是挂着的。用户此刻**很可能切到微信去试**
+/// 欢迎页刚承诺的那件事（「打进你正在用的那个窗口」）——他按 ⌥D 说了一句，
+/// 而 `TargetAppGuard` 一路放行（捕获的是微信、微信仍在前台、`verify` 通过），
+/// 于是这句话被吞进向导的输入框，微信里**什么都没出现**。文字凭空消失，
+/// 正是这个应用最不能出的那一类事故，而且是从设计防守的反方向撞进来的。
+///
+/// 所以判据不是「向导停在第几步」，而是「这次听写是不是向导发起的」——
+/// 由改道闭包自己回答（`OnboardingCoordinator` 的判据是它自己的窗口是不是
+/// key window）。返回 `false` 时原样落回 `fallback`，行为与没挂改道时一致。
+///
 /// ## 谁负责摘掉
 ///
-/// 谁挂谁摘（`OnboardingCoordinator` 在离开该步骤与关窗时都会摘）。
-/// 忘了摘的后果很难查：此后每一次听写都静默消失，日志里还写着「注入成功」。
+/// 谁挂谁摘（`OnboardingCoordinator` 在关窗与完成时都会摘）。忘了摘的后果
+/// 已经被上面那个 `Bool` 兜住了一层，但仍然该摘干净：挂着的闭包会一直
+/// 持有协调器。
 @MainActor
 final class RedirectableTextSink: TextSink {
-    /// 平常那条路。改道闭包为 nil 时原样转交。
+    /// 平常那条路。改道闭包为 nil、或它说「这次不归我」时，原样转交。
     private let fallback: TextSink
 
-    /// 接上它，文本就交给它而不出应用。
-    var redirect: ((String) -> Void)?
+    /// 接上它，**它说归自己的那几次**文本就不出应用。
+    ///
+    /// 返回值语义：`true` = 我收下了，别再往下送；`false` = 不归我，照常走。
+    var redirect: ((String) -> Bool)?
 
     init(fallback: TextSink) {
         self.fallback = fallback
     }
 
     func send(_ text: String) throws {
-        if let redirect {
-            redirect(text)
-            return
-        }
+        if let redirect, redirect(text) { return }
         try fallback.send(text)
     }
 }

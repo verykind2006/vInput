@@ -223,7 +223,10 @@ struct OnboardingView: View {
                 }
             }
 
-            // 「说出来了才算过」——`canFinish` 在 coordinator 上，测得到。
+            // 框里有字才让点「完成」。**手打也算**——这不是漏洞，是逃生口：
+            // 未完成的向导每次启动都会抢焦点，而麦克风坏了、模型加载不出来、
+            // 或者人就是不想现在试的情形都真实存在，没有出口的话这扇窗会
+            // 每次开机都糊在脸上。判据在 `coordinator.canFinish` 上，测得到。
             secondaryButton("完成") { coordinator.complete() }
                 .disabled(!coordinator.canFinish)
         }

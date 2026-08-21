@@ -267,6 +267,24 @@ struct OnboardingWiringTests {
         controller.close()
     }
 
+    /// 向导不许能被最小化。
+    ///
+    /// 这是个 LSUIElement 应用，Dock 上没有它的图标——缩进去就再也点不回来，
+    /// 而向导没走完的话它下次启动还会再弹。
+    @Test("向导不能被最小化")
+    func windowIsNotMiniaturizable() {
+        let controller = OnboardingWindowController()
+        controller.show(Text("向导"))
+        let mask = controller.window?.styleMask ?? []
+        #expect(
+            !mask.contains(.miniaturizable),
+            "向导窗口可以最小化：LSUIElement 应用 Dock 上没有图标，缩进去就找不回来了。"
+        )
+        // 关得掉是另一半——两条一起才构成「用户不会被困住」。
+        #expect(mask.contains(.closable))
+        controller.close()
+    }
+
     // MARK: - 轮询器本身
 
     /// 没授权时不回调，授权后回调**一次**并自己停掉。
@@ -314,7 +332,10 @@ struct OnboardingWiringTests {
         let sink = RedirectableTextSink(fallback: fallback)
 
         var received: [String] = []
-        sink.redirect = { received.append($0) }
+        sink.redirect = {
+            received.append($0)
+            return true  // 「这次归我」
+        }
         try sink.send("你好")
         #expect(received == ["你好"])
         #expect(
@@ -348,12 +369,20 @@ struct OnboardingWiringTests {
         chooseFolder: URL? = nil,
         onAdopt: @escaping (String) -> Void = { _ in },
         probeCounter: ProbeCounter = ProbeCounter(),
-        onRedirect: @escaping (((String) -> Void)?) -> Void = { _ in }
+        restoredStep: OnboardingState.Step? = nil,
+        ownsDictation: (() -> Bool)? = { true },
+        onRedirect: @escaping (((String) -> Bool)?) -> Void = { _ in }
     ) -> (OnboardingCoordinator, OnboardingState) {
         // 默认参数表达式在 nonisolated 上下文里求值，而 FakeDownloadBackend
         // 是 @MainActor 的——只能在这里造。
         let backend = backend ?? FakeDownloadBackend()
-        let state = OnboardingState(defaults: makeDefaults())
+        // `restoredStep` 模拟「上次没走完就退出了」：写进 defaults 再造
+        // `OnboardingState`，走的正是 `init` 里那条恢复路径。
+        let defaults = makeDefaults()
+        if let restoredStep {
+            defaults.set(restoredStep.rawValue, forKey: OnboardingState.stepKey)
+        }
+        let state = OnboardingState(defaults: defaults)
         var wiring = OnboardingCoordinator.Wiring()
         var permissions = Permissions()
         permissions.microphoneAuthorized = { microphone }
@@ -370,6 +399,7 @@ struct OnboardingWiringTests {
         wiring.chooseModelFolder = { chooseFolder }
         wiring.adoptModelFolder = onAdopt
         wiring.setTranscriptRedirect = onRedirect
+        wiring.wizardOwnsDictation = ownsDictation
         return (OnboardingCoordinator(state: state, wiring: wiring), state)
     }
 
@@ -641,7 +671,7 @@ struct OnboardingWiringTests {
     /// 说出来了才允许「完成」。
     @Test("试说的文字落进向导自己的输入框，说了才算过")
     func dictationLandsInTheWizardsOwnField() {
-        var handler: ((String) -> Void)?
+        var handler: ((String) -> Bool)?
         let (coordinator, state) = makeCoordinator(
             alreadyPresent: true,
             onRedirect: { handler = $0 })
@@ -652,14 +682,288 @@ struct OnboardingWiringTests {
         #expect(state.step == .testDictation)
         #expect(coordinator.canFinish == false, "一个字都没说就能点「完成」。")
 
-        // 模拟会话把转写结果交给改道口。
-        handler?("今天天气不错")
+        // 模拟会话把转写结果交给改道口（此刻向导是 key window）。
+        _ = handler?("今天天气不错")
         #expect(coordinator.dictationText == "今天天气不错")
         #expect(coordinator.canFinish)
 
         coordinator.complete()
         #expect(state.isComplete, "完成向导之后 isComplete 没有落盘，下次启动会再弹一次。")
         #expect(coordinator.isWindowOpen == false)
+    }
+
+    // MARK: - C-1：重启后恢复到中途，入场动作要补做
+
+    /// 上次退出时停在辅助功能那一步 → 这次开窗轮询就该已经在跑。
+    ///
+    /// 不补做的话，那一页上写着的「打开之后直接切回来就行，这个窗口会自己
+    /// 继续」**就是假话**，用户必须再点一次「打开系统设置」才能恢复。
+    /// 而这偏偏是最可能重启的一步：macOS 授予辅助功能后经常要求重开应用。
+    @Test("重启后恢复到辅助功能步，轮询要自己起来")
+    func restoringToAccessibilityStartsPolling() {
+        let (coordinator, state) = makeCoordinator(
+            accessibility: false, alreadyPresent: true, restoredStep: .accessibility)
+        #expect(state.step == .accessibility)
+
+        coordinator.present()
+        #expect(
+            coordinator.isPollingAccessibility,
+            """
+            重启后恢复到辅助功能步，轮询没有起来。
+            那一页写着「打开之后直接切回来就行，这个窗口会自己继续」——
+            不轮询的话这句话是假的，用户勾完开关切回来会看到向导发呆。
+            """
+        )
+        coordinator.close()
+    }
+
+    /// 上次退出时停在「试说一句」→ 这次开窗改道就该已经挂上。
+    ///
+    /// 不补做的话 `RedirectableTextSink` 直接落到 `TypingSink`，
+    /// 而真机上它还常常「看起来能用」——向导在前台，CGEvent 恰好落进它自己的
+    /// 输入框。那正是这套设计明确拒绝的「碰巧」。
+    @Test("重启后恢复到试说一句，改道要自己挂上")
+    func restoringToTestDictationAttachesRedirect() {
+        var handler: ((String) -> Bool)?
+        let (coordinator, state) = makeCoordinator(
+            alreadyPresent: true, restoredStep: .testDictation,
+            onRedirect: { handler = $0 })
+        #expect(state.step == .testDictation)
+
+        coordinator.present()
+        #expect(
+            handler != nil,
+            """
+            重启后恢复到「试说一句」，转写改道没有挂上。
+            这条路上文本会走 TypingSink 投递 CGEvent——落进向导自己的输入框
+            只是碰巧（向导恰好在前台），用户点一下别的窗口就打进别人的文档。
+            """
+        )
+        // 挂上的那个闭包必须真的能收字，不能只是个空壳。
+        _ = handler?("重启之后说的一句")
+        #expect(coordinator.dictationText == "重启之后说的一句")
+        coordinator.close()
+    }
+
+    // MARK: - C-2：改道只吞「向导自己发起的」那次听写
+
+    /// **向导停在第五步，但窗口不是 key —— 文本必须照常注入目标应用。**
+    ///
+    /// 失效链（复审当场复现）：用户走到第五步，切到微信去试欢迎页刚承诺的
+    /// 那件事，按 ⌥D 说了一句。`TargetAppGuard` 一路放行（捕获的是微信、
+    /// 微信仍在前台、`verify` 通过），而按步骤无条件吞的改道把这句话收进了
+    /// 向导的输入框——**微信里什么都没出现**。向导可以就这么开着一小时，
+    /// 期间每一次听写都消失。
+    @Test("向导不是 key window 时，听写照常注入目标应用")
+    func dictationFallsThroughWhenWizardIsNotKey() {
+        var handler: ((String) -> Bool)?
+        var isKey = false
+        let (coordinator, state) = makeCoordinator(
+            alreadyPresent: true, restoredStep: .testDictation,
+            ownsDictation: { isKey },
+            onRedirect: { handler = $0 })
+        coordinator.present()
+        #expect(state.step == .testDictation)
+
+        // 用户切到了微信：向导还开着、还停在第五步，但不是 key window。
+        let handled = handler?("在微信里说的一句") ?? true
+        #expect(
+            handled == false,
+            """
+            向导不是 key window，改道却还是把这次听写吞了。
+            用户在微信里按 ⌥D 说的话会凭空消失——文字消失是这个应用最不能
+            出的那一类事故，而且是从设计防守的反方向撞进来的。
+            """
+        )
+        #expect(
+            coordinator.dictationText.isEmpty,
+            "别的应用里的听写内容被写进了向导的输入框。"
+        )
+
+        // 用户切回向导：这一次才归它。
+        isKey = true
+        let ownHandled = handler?("在向导里说的一句") ?? false
+        #expect(ownHandled, "向导是 key window 时反而没收下这次听写。")
+        #expect(coordinator.dictationText == "在向导里说的一句")
+        coordinator.close()
+    }
+
+    /// 改道说「不归我」时，`RedirectableTextSink` 必须原样落回平常那条路。
+    ///
+    /// 上一条钉的是协调器怎么判，这一条钉的是 sink 认不认这个判断——
+    /// 两边只要有一边写错，微信里那句话就还是会消失。
+    @Test("改道返回 false 时文本落回平常那条路")
+    func sinkFallsBackWhenRedirectDeclines() throws {
+        let fallback = RecordingSink()
+        let sink = RedirectableTextSink(fallback: fallback)
+
+        var seen: [String] = []
+        var owns = false
+        sink.redirect = { text in
+            seen.append(text)
+            return owns
+        }
+
+        try sink.send("不归向导的一句")
+        #expect(
+            fallback.sent == ["不归向导的一句"],
+            "改道说了「不归我」，sink 却没有把文本交回平常那条路：这句话消失了。"
+        )
+
+        owns = true
+        try sink.send("归向导的一句")
+        #expect(
+            fallback.sent == ["不归向导的一句"],
+            "改道说了「归我」，sink 却仍然投递了一次——那是一个真的 CGEvent。"
+        )
+        #expect(seen == ["不归向导的一句", "归向导的一句"])
+    }
+
+    /// **不注入判据时的默认行为必须是「不吞」。**
+    ///
+    /// 真判据是 `window.isKeyWindow`，而测试进程没有窗口服务器（实测：
+    /// 非应用包进程里 `makeKeyAndOrderFront` 之后它仍是 false），两个分支
+    /// 取不到。这一条至少钉住默认值不是 `{ true }`——失败方向必须是安全的
+    /// 那一边（宁可不吞，也不要吞掉别的应用的听写）。
+    /// 真判据本身在 Task 8 的真机清单上。
+    @Test("默认判据失败方向是不吞")
+    func defaultOwnershipFailsClosed() {
+        var handler: ((String) -> Bool)?
+        let (coordinator, _) = makeCoordinator(
+            alreadyPresent: true, restoredStep: .testDictation,
+            ownsDictation: nil,  // 走真判据
+            onRedirect: { handler = $0 })
+        coordinator.present()
+
+        let handled = handler?("说了一句") ?? true
+        #expect(
+            handled == false,
+            "默认判据在没有窗口服务器的进程里也说「归我」：它多半被写成了恒真。"
+        )
+        coordinator.close()
+    }
+
+    // MARK: - 权限动作真的被调到了（I-3）
+
+    /// 麦克风：点按钮 → 真的弹了系统框 → 给了就自己翻页。
+    @Test("麦克风授权后自己翻页")
+    func microphoneGrantAdvances() async throws {
+        var asked = 0
+        var granted = false
+        let state = OnboardingState(defaults: makeDefaults())
+        var wiring = OnboardingCoordinator.Wiring()
+        var permissions = Permissions()
+        permissions.microphoneAuthorized = { granted }
+        permissions.accessibilityTrusted = { true }
+        permissions.requestMicrophoneAccess = {
+            // 计数与「授权成功」都发生在这里，模拟用户点了「好」。
+            granted = true
+            return true
+        }
+        wiring.permissions = permissions
+        wiring.alreadyPresent = { _ in true }
+        let coordinator = OnboardingCoordinator(state: state, wiring: wiring)
+
+        coordinator.present()
+        coordinator.advance()  // welcome → microphone（麦克风还没给）
+        #expect(state.step == .microphone)
+
+        coordinator.requestMicrophone()
+        asked += 1
+        try await waitUntil { state.step != .microphone }
+        #expect(
+            state.step == .downloadModel,
+            "麦克风给了之后向导没有自己往前走，用户会停在一个已经没事可做的页面上。"
+        )
+        #expect(asked == 1)
+        coordinator.close()
+    }
+
+    /// 麦克风被拒：停在原地，不能假装成功往前走。
+    @Test("麦克风被拒时停在原地")
+    func microphoneDenialStaysPut() async throws {
+        let state = OnboardingState(defaults: makeDefaults())
+        var wiring = OnboardingCoordinator.Wiring()
+        var permissions = Permissions()
+        permissions.microphoneAuthorized = { false }
+        permissions.accessibilityTrusted = { true }
+        permissions.requestMicrophoneAccess = { false }
+        wiring.permissions = permissions
+        wiring.alreadyPresent = { _ in true }
+        let coordinator = OnboardingCoordinator(state: state, wiring: wiring)
+
+        coordinator.present()
+        coordinator.advance()
+        #expect(state.step == .microphone)
+        coordinator.requestMicrophone()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(
+            state.step == .microphone,
+            "麦克风被拒了向导还是往前走了：后面每一步都建立在一个不成立的前提上。"
+        )
+        coordinator.close()
+    }
+
+    /// 辅助功能：点按钮真的去开了系统设置，而且此刻轮询确实在跑。
+    ///
+    /// 「按钮调了什么」与「轮询在不在跑」必须一起断言：只开设置不轮询的话，
+    /// 用户勾完开关切回来向导发呆；只轮询不开设置的话，他根本到不了那一页。
+    @Test("点开系统设置时轮询确实在跑")
+    func openingSettingsAlsoPolls() {
+        var opened = 0
+        let state = OnboardingState(defaults: makeDefaults())
+        var wiring = OnboardingCoordinator.Wiring()
+        var permissions = Permissions()
+        permissions.microphoneAuthorized = { true }
+        permissions.accessibilityTrusted = { false }
+        permissions.openAccessibilitySettingsAction = { opened += 1 }
+        wiring.permissions = permissions
+        wiring.alreadyPresent = { _ in true }
+        let coordinator = OnboardingCoordinator(state: state, wiring: wiring)
+
+        coordinator.present()
+        coordinator.advance()
+        #expect(state.step == .accessibility)
+
+        coordinator.openAccessibilitySettings()
+        #expect(opened == 1, "「打开系统设置」按钮没有真的去开系统设置。")
+        #expect(
+            coordinator.isPollingAccessibility,
+            "用户被送去系统设置了，向导却没在等他勾完回来。"
+        )
+        coordinator.close()
+    }
+
+    /// **轮询没在跑的时候点「打开系统设置」，它必须把轮询拉起来。**
+    ///
+    /// 上一条证明不了这件事：走到那一步时 `attachStepActions` 已经把轮询开起来
+    /// 了，`openAccessibilitySettings()` 里那次「确保一次」删掉也照样绿
+    /// （2026-08-22 变异清扫实测）。这一条不经 `present()`，直接把协调器摆在
+    /// 「停在辅助功能步、但什么都没挂」的状态上，那次「确保一次」才是唯一
+    /// 能让轮询跑起来的东西。
+    @Test("轮询没在跑时点按钮要把它拉起来")
+    func openingSettingsStartsPollingWhenItIsNotRunning() {
+        let defaults = makeDefaults()
+        defaults.set(
+            OnboardingState.Step.accessibility.rawValue, forKey: OnboardingState.stepKey)
+        let state = OnboardingState(defaults: defaults)
+        var wiring = OnboardingCoordinator.Wiring()
+        var permissions = Permissions()
+        permissions.microphoneAuthorized = { true }
+        permissions.accessibilityTrusted = { false }
+        permissions.openAccessibilitySettingsAction = {}
+        wiring.permissions = permissions
+        wiring.alreadyPresent = { _ in true }
+        let coordinator = OnboardingCoordinator(state: state, wiring: wiring)
+
+        // 故意不 present()：轮询此刻没在跑。
+        #expect(coordinator.isPollingAccessibility == false)
+
+        coordinator.openAccessibilitySettings()
+        #expect(
+            coordinator.isPollingAccessibility,
+            "点了「打开系统设置」，轮询却没跑起来：用户勾完开关切回来会看到向导发呆。"
+        )
     }
 
     // MARK: - 「一共几步」
@@ -713,6 +1017,32 @@ struct OnboardingWiringTests {
     ///
     /// 早一版把非 2xx 也判成 unreachable，结果 huggingface.co 对 HEAD 回 405
     /// 就被判死——一个其实能用的源被排除掉，向导只好去要用户手动导入模型。
+    /// 探测不能用共享会话：那会把这个进程碰巧存下的 cookie 一起发给
+    /// huggingface.co 和 hf-mirror.com。
+    ///
+    /// 出站面白名单里给这个文件写的那句「对面只知道有人问了这个公开仓库
+    /// 在不在」，只有在这里成立时才是真话。
+    @Test("探测用的是一次性会话，不带 cookie")
+    func probeUsesEphemeralSession() {
+        let config = EndpointProbe.session.configuration
+        #expect(
+            EndpointProbe.session !== URLSession.shared,
+            "探测用了 URLSession.shared：它带着进程共享的 cookie 存储。"
+        )
+        #expect(config.httpCookieStorage == nil, "探测会话带着 cookie 存储。")
+        #expect(config.httpShouldSetCookies == false, "探测会话会收下对面下发的 cookie。")
+        #expect(config.urlCache == nil, "探测会话会落缓存。")
+        // **这一条专门钉「底子是 .ephemeral 而不是 .default」**。
+        // 上面三条是显式设的，`.default` 加同样三行也能通过——分不出来。
+        // 凭据存储分得出来：`.default` 用的是进程共享的那个，`.ephemeral` 自带
+        // 一个私有的。共享凭据存储意味着这个进程存过的任何 HTTP 认证都可能
+        // 被带给 huggingface.co / hf-mirror.com。
+        #expect(
+            config.urlCredentialStorage !== URLCredentialStorage.shared,
+            "探测会话用的是进程共享的凭据存储：它的底子不是 .ephemeral。"
+        )
+    }
+
     @Test("只有传输层失败才算不通")
     func probeResultMapping() {
         #expect(EndpointProbe.result(elapsed: 0.12, failed: false) == .responded(millis: 120))

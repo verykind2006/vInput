@@ -27,9 +27,31 @@ import Foundation
 /// 这是**并发**探测（`choose` 里 `async let` 两条一起发），两个都不通时
 /// 用户要干等的就是这个数。用户此刻站在向导第一步，等待期本该被后面的
 /// 权限步骤吸收掉；超时定长一点只会把「两个源都连不上」这句话说得更晚。
+///
+/// ## 给后来人的一条提醒
+///
+/// `TranslationAttachmentCoordinatorTests.sourceHasSingleCloudEgressPath`
+/// 那道出站面守卫是**按文件名**匹配的，本文件已经在它的白名单里。也就是说
+/// **今后往这个文件里新加任何 `URLSession` 用法都自动豁免**，不会再有测试
+/// 拦你一次。要加新的出站请求，请回那份清单把三问重答一遍
+/// （发的是什么、用户能不能禁掉、怎么验证真的禁掉了）。
 enum EndpointProbe {
     /// 单次探测的超时。理由见类型注释。
     static let timeout: TimeInterval = 2.5
+
+    /// 探测专用的会话：**不带 cookie、不落缓存、不进钥匙串**。
+    ///
+    /// 不能用 `URLSession.shared`：它带着进程共享的 cookie 存储。白名单注释里
+    /// 那句「对面只知道有人问了这个公开仓库在不在」，只有在这里成立时才是
+    /// 真话——共享会话会把这个进程碰巧存下的任何 cookie 一起发给
+    /// huggingface.co 和 hf-mirror.com。
+    static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.urlCache = nil
+        return URLSession(configuration: config)
+    }()
 
     /// 探测用的仓库路径。
     static func probeURL(for source: DownloadSource) -> URL? {
@@ -67,7 +89,7 @@ enum EndpointProbe {
     /// 真正发请求的那一层。**测试进程里跑不到**（要真联网），
     /// 因此除了计时与转交，它一行判断都不做。
     static func probe(
-        _ source: DownloadSource, session: URLSession = .shared
+        _ source: DownloadSource, session: URLSession = EndpointProbe.session
     ) async -> DownloadSource.ProbeResult {
         guard let request = request(for: source) else { return .unreachable }
         let started = Date()

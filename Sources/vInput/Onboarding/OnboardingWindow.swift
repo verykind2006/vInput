@@ -36,6 +36,12 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     var isOpen: Bool { window != nil }
 
+    /// 向导此刻是不是 key window。
+    ///
+    /// 「试说一句」用它判断这次听写归不归自己——不判的话，向导开着期间
+    /// **别的应用里的每一次听写都会被吞掉**（见 `handleDictation`）。
+    var isKey: Bool { window?.isKeyWindow ?? false }
+
     /// 打开窗口；已经开着时只把它带到前台。
     ///
     /// 不重建是有意的：重建会把用户从第四步弹回第一步，而第四步可能已经
@@ -211,7 +217,11 @@ final class OnboardingCoordinator {
         /// 开始 / 结束一次听写。就是 ⌥D 那一支。
         var toggleDictation: () -> Void = {}
         /// 挂上/摘掉转写改道。传 nil 表示摘掉，文本回到平常那条路。
-        var setTranscriptRedirect: (((String) -> Void)?) -> Void = { _ in }
+        /// 闭包返回 `true` 表示「这次归向导」，`false` 表示照常注入目标应用。
+        var setTranscriptRedirect: (((String) -> Bool)?) -> Void = { _ in }
+        /// 「这次听写是不是向导发起的」。nil 表示问窗口自己（真判据）。
+        /// 注入点只为测试而存在，理由见 `wizardOwnsThisDictation`。
+        var wizardOwnsDictation: (() -> Bool)?
     }
 
     let state: OnboardingState
@@ -234,7 +244,6 @@ final class OnboardingCoordinator {
     /// 试说出来的那句话。它就是向导输入框里的内容——**没有任何 CGEvent
     /// 被投递到任何应用**，见 `RedirectableTextSink`。
     var dictationText: String = ""
-    private(set) var isRedirecting = false
 
     init(state: OnboardingState, wiring: Wiring = Wiring()) {
         self.state = state
@@ -304,6 +313,20 @@ final class OnboardingCoordinator {
             accessibility: wiring.permissions.accessibilityTrusted())
         window.onClose = { [weak self] in self?.teardown() }
         window.show(OnboardingView(coordinator: self))
+        // **恢复到中途某一步时，入场动作必须补做**（2026-08-22 复审的 C-1）。
+        //
+        // `OnboardingState.init` 会从 UserDefaults 把 step 读回来，但入场动作
+        // 全在 `enter()` 里，而重启这条路一次都不会走 `enter()`。两条真实的
+        // 失效链：
+        //
+        // - 恢复到 `.accessibility`：轮询没起来，而那一页上白纸黑字写着
+        //   「打开之后直接切回来就行，这个窗口会自己继续」——那句话就成了
+        //   假话。偏偏这是最可能重启的一步：macOS 授予辅助功能后经常要求
+        //   重开应用。
+        // - 恢复到 `.testDictation`：改道没挂，试说一句直接落到 `TypingSink`，
+        //   而它「看起来还能用」（向导在前台，CGEvent 恰好落进它自己的
+        //   输入框）——正是设计明确拒绝的那种「碰巧」。
+        attachStepActions(state.step)
         startModelDownload()
     }
 
@@ -341,20 +364,38 @@ final class OnboardingCoordinator {
     /// （点按钮翻页、授权后自动翻页、关窗），逐个出口去收迟早漏一个，
     /// 而漏掉的表现分别是「空转」和「此后所有听写静默消失」。
     private func enter(_ step: OnboardingState.Step) {
-        poller.stop()
-        setRedirect(nil)
-
+        detachStepActions()
         state.advance(to: step)
         AppLogger.shared.log("向导进入步骤：\(step.rawValue)")
+        attachStepActions(step)
+    }
 
+    /// 某一步的入场动作。
+    ///
+    /// **两个调用方**：`enter()`（正常翻页）与 `present()`（重启后恢复到
+    /// 中途某一步）。抽出来正是因为原先只有前者，重启那条路整条断掉。
+    private func attachStepActions(_ step: OnboardingState.Step) {
         switch step {
         case .accessibility:
             startAccessibilityPolling()
         case .testDictation:
-            setRedirect { [weak self] text in self?.receiveDictation(text) }
+            setRedirect { [weak self] text in self?.handleDictation(text) ?? false }
         case .welcome, .microphone, .downloadModel:
             break
         }
+    }
+
+    /// 离场动作。
+    ///
+    /// **`setRedirect(nil)` 这一行目前不可达**，如实标注而不是让注释说假话：
+    /// 唯一挂着改道的步骤是最后一步，而从最后一步出发的 `advance()` 会走
+    /// `finish()`（那边经由 `teardown()` 摘，那条路是被测着的），不会回到
+    /// `enter()`。保留它是因为它与 `poller.stop()` 是同一件事的两半——将来
+    /// 加一个「上一步」按钮时漏掉它的代价，是改道一直挂着。
+    /// `poller.stop()` 那一半是真的会走到的（辅助功能 → 下载模型），有测试钉着。
+    private func detachStepActions() {
+        poller.stop()
+        setRedirect(nil)
     }
 
     private func finish() {
@@ -514,9 +555,35 @@ final class OnboardingCoordinator {
         wiring.toggleDictation()
     }
 
-    private func receiveDictation(_ text: String) {
+    /// 这一次听写归不归向导？归就收下（返回 true，文本不出应用），
+    /// 不归就返回 false，让它照常注入用户正在用的那个应用。
+    ///
+    /// **判据是「向导的窗口是不是 key window」，不是「向导停在第几步」**
+    /// （2026-08-22 复审的 C-2）。按步骤判的失效链：向导停在第五步、被压在
+    /// 别的窗口后面，用户切到微信去试欢迎页刚承诺的那件事，按 ⌥D 说了一句
+    /// ——`TargetAppGuard` 一路放行（捕获的是微信、微信仍在前台），
+    /// 而这句话被吞进向导的输入框，**微信里什么都没出现**。
+    /// 向导可以就这么开着一小时，期间每一次听写都消失。
+    private func handleDictation(_ text: String) -> Bool {
+        guard wizardOwnsThisDictation else {
+            AppLogger.shared.log("向导：这次听写不是从向导发起的（窗口不是 key），照常注入目标应用")
+            return false
+        }
         dictationText = text
         AppLogger.shared.log("向导：试说一句已落进向导自己的输入框，长度 \(text.count)")
+        return true
+    }
+
+    /// 向导自己是不是此刻的 key window。
+    ///
+    /// `Wiring.wizardOwnsDictation` 存在的唯一理由是**测试进程没有窗口服务器**
+    /// ——实测（`/tmp/keyprobe`，非应用包进程）`makeKeyAndOrderFront` 之后
+    /// `isKeyWindow` 仍是 false，真判据在测试里只能取到一个值。注入点让两个
+    /// 分支都跑得到；不注入时走真判据，而它在这个进程里恒为 false，
+    /// 也就是**失败方向是「不吞」**——这正是安全的那一边。
+    private var wizardOwnsThisDictation: Bool {
+        if let override = wiring.wizardOwnsDictation { return override() }
+        return window.isKey
     }
 
     /// 说出来了就算过。
@@ -527,8 +594,7 @@ final class OnboardingCoordinator {
         finish()
     }
 
-    private func setRedirect(_ handler: ((String) -> Void)?) {
+    private func setRedirect(_ handler: ((String) -> Bool)?) {
         wiring.setTranscriptRedirect(handler)
-        isRedirecting = handler != nil
     }
 }

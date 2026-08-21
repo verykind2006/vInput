@@ -161,10 +161,10 @@ final class AppModel {
 
     /// 挂上 / 摘掉转写改道。传 nil 摘掉，文本回到平常那条路。
     ///
-    /// **谁挂谁摘**：忘了摘的后果是此后每一次听写都静默消失，
-    /// 而日志里还写着「注入成功」。`OnboardingCoordinator` 在离开
-    /// 「试说一句」那步与关窗时各摘一次。
-    func setTranscriptRedirect(_ handler: ((String) -> Void)?) {
+    /// 闭包返回 `true` 表示「这一次归我，别再往下送」，返回 `false` 表示
+    /// 「不归我」——**无条件吞会让向导开着时别的应用里的听写凭空消失**，
+    /// 理由见 `RedirectableTextSink`。
+    func setTranscriptRedirect(_ handler: ((String) -> Bool)?) {
         redirectSink?.redirect = handler
         AppLogger.shared.log("转写改道：\(handler == nil ? "已摘掉" : "已挂上")")
     }
