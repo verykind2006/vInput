@@ -126,31 +126,40 @@ struct ForegroundHandoffTests {
         )
     }
 
-    /// **不许对 key window 调 `close()`。**
+    /// **不许对任何窗口下手。**
     ///
-    /// 那个 key window 是 `MenuBarExtra(.window)` 的宿主窗口，由 SwiftUI 创建
-    /// 和持有，而 `NSWindow.isReleasedWhenClosed` **默认为 true**——`close()`
-    /// 让它把自己释放掉，菜单栏状态项跟着消失且不会自己回来。
+    /// 这条路径误判过两次，两次的表现都是「从面板点开始听写，菜单栏图标就
+    /// 没了」（用户真机实测两轮）：
     ///
-    /// 用户真机实测（2026-08-21）：从面板点「开始听写」之后 vInput 图标就没了。
-    /// 上一轮把 `NSApp.hide(nil)` 当成凶手换掉了，问题照旧——真凶是这一行。
-    /// `orderOut(nil)` 只移出屏幕、从不释放，用户看到的效果完全一样。
-    @Test("dismissMenuPanel 不对 key window 调 close")
-    func dismissDoesNotCloseHostWindow() throws {
+    /// 1. `key.close()` —— 以为是 SwiftUI 宿主窗口被释放（
+    ///    `isReleasedWhenClosed` 默认 true）；
+    /// 2. 改成 `key.orderOut(nil)` —— **症状一模一样**。
+    ///
+    /// 事后量到的事实推翻了这两种解释：状态项根本没被销毁（辅助功能接口
+    /// 报个数 1、位置 882、尺寸 36×24），只是画不出来。也就是说
+    /// `NSApp.keyWindow` 拿到的多半不是面板窗口，而是 `NSStatusItem` 按钮
+    /// 挂着的那个窗口——它同样没有标题栏，穿得过任何按 `.titled` 做的过滤。
+    ///
+    /// 所以这里不再挑「该关哪个窗口」，一个都不碰：`.window` 样式的
+    /// MenuBarExtra 面板失去 key 状态时自己会关，而让位（激活别的应用）
+    /// 恰好造成这一点。
+    @Test("dismissMenuPanel 不对任何窗口下手")
+    func dismissTouchesNoWindow() throws {
         let source = try MenuPanelViewWiringTests.codeOnly(
             MenuPanelViewWiringTests.source("Sources/vInput/App/ModalPanels.swift"))
-        let closes = source.contains("key.close()")
-        #expect(
-            !closes,
-            """
-            ModalPanels.swift 里又出现了 key.close()。
-            MenuBarExtra 的宿主窗口是 SwiftUI 持有的，isReleasedWhenClosed
-            默认 true——close() 会连菜单栏状态项一起销毁（用户真机实测）。
-            要用 key.orderOut(nil)。
-            """
-        )
-        let ordersOut = source.contains("key.orderOut(nil)")
-        #expect(ordersOut, "dismissMenuPanel 不再把面板移出屏幕了，点完按钮面板会一直开着。")
+        for forbidden in ["key.close()", "key.orderOut(", ".close()", ".orderOut("] {
+            let touches = source.contains(forbidden)
+            #expect(
+                !touches,
+                """
+                ModalPanels.swift 里又出现了 \(forbidden)。
+                这条路径误判过两次：close() 与 orderOut() 症状一模一样，
+                因为 NSApp.keyWindow 拿到的多半是状态项自己的窗口（同样没有
+                标题栏），关它就是把菜单栏图标藏掉。面板不需要我们去关——
+                让位激活别的应用之后它自己会关。
+                """
+            )
+        }
     }
 
     /// 让位这一步必须真的在 `dismissMenuPanel()` 里。

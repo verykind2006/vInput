@@ -57,26 +57,38 @@ import AppKit
 /// 不可错关一个。
 @MainActor
 func dismissMenuPanel() {
-    if let key = NSApp.keyWindow, !key.styleMask.contains(.titled) {
-        // **`orderOut` 而不是 `close`。**
-        //
-        // 这里的 key window 就是 `MenuBarExtra(.window)` 的宿主窗口，而它是
-        // SwiftUI 自己创建、自己持有的。`NSWindow.isReleasedWhenClosed`
-        // **默认为 true**——对这样一个窗口调 `close()` 等于让它把自己释放掉，
-        // 菜单栏状态项跟着一起消失，且不会自己回来（要重启应用）。
-        //
-        // 用户实测（2026-08-21）：从面板点「开始听写」之后 vInput 的图标就
-        // 没了。上一轮以为是 `NSApp.hide(nil)` 干的、换掉了它，问题照旧——
-        // 真凶是这一行。`orderOut` 只把窗口移出屏幕，从不释放，
-        // 而「面板消失」这个用户可见的效果两者完全一样。
-        key.orderOut(nil)
+    // **一个窗口都不要碰。**
+    //
+    // 这里原先对 `NSApp.keyWindow` 动过手：先是 `close()`（把 SwiftUI 持有的
+    // 宿主窗口释放掉），改成 `orderOut(nil)` 之后**症状一模一样**——用户两轮
+    // 真机实测都是「从面板点开始听写，图标就没了」。而事后量到的事实是：
+    // 状态项**没有被销毁**（辅助功能接口报个数 1、位置 882、尺寸 36×24），
+    // 只是画不出来。
+    //
+    // 这就把嫌疑锁定在「拿到的 keyWindow 根本不是面板窗口」：`NSStatusItem`
+    // 的按钮挂在一个真实的 `NSWindow` 上，它同样没有标题栏、照样能穿过下面
+    // 那道 `.titled` 过滤——对它 `orderOut` 就是把图标藏起来。
+    //
+    // 正确的做法是不去猜哪个窗口该关：`.window` 样式的 MenuBarExtra 面板在
+    // 失去 key 状态时**自己就会关**，而 `handBackForeground()` 激活别的应用
+    // 恰好就让它失去 key。一步做两件事，且不碰任何窗口。
+    //
+    // 那行日志留着不是调试残留：这条路径已经误判过两次，下次再出问题时，
+    // 「当时的 keyWindow 到底是谁」是唯一能一击定案的证据，而它只在真机上
+    // 才有意义（测试进程里没有状态项，也没有 MenuBarExtra）。
+    if let key = NSApp.keyWindow {
+        AppLogger.shared.log(
+            "关闭面板前 keyWindow=\(type(of: key)) 标题=「\(key.title)」 "
+                + "层级=\(key.level.rawValue) 有标题栏=\(key.styleMask.contains(.titled))"
+        )
+    } else {
+        AppLogger.shared.log("关闭面板前没有 keyWindow")
     }
+
     if !ForegroundAppTracker.shared.handBackForeground() {
         // 兜底：不知道该还给谁（或系统拒绝了这次 activate）。探针实测
         // `deactivate()` 交还前台并不可靠，所以这只是「至少别赖在前台」的
-        // 尽力而为——但它绝不会藏掉状态项，那才是 R-1 的要害。
-        // 正常情况走不到这里：`ForegroundAppTracker` 在启动时就播了种，
-        // 而 LSUIElement 应用启动时不激活，那一刻的前台必然是别人。
+        // 尽力而为——但它绝不会藏掉状态项，那才是要害。
         NSApp.deactivate()
     }
 }
