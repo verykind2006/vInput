@@ -37,12 +37,71 @@ struct MenuPanelView: View {
     /// （云端档还嵌一层「选择模型」）实测能堆到 900–1000pt，13 寸的可用
     /// 高度约 850pt。旧的原生菜单天然一次只开一个子菜单，这里把那条行为
     /// 补回来，顺带解决「展开第四行把前三行顶出屏幕」。
+    ///
+    /// R-3 把字号整体调大一档之后重新量过（离屏渲染，最深的那一档：云端
+    /// 后端展开 + 嵌套的「选择模型」也展开 + 设备卡 + 上次转写）：旧尺寸
+    /// 666pt，新尺寸 719pt，离 850 还有 131pt。**手风琴仍然是这条余量的
+    /// 唯一来源**——去掉它，四行一起开就回到 900pt 以上。
     @State private var openRow: SettingRow?
 
     /// 可展开的行。用枚举而不是四个 Bool：四个 Bool 表示得出「同时开三行」
     /// 这种非法状态，而这里要的恰恰是「至多一行」。
     private enum SettingRow: Hashable {
         case model, correction, outputLanguage, backend, devTools
+    }
+
+    /// 面板宽度。
+    ///
+    /// **300 → 320（R-3，2026-08-21）**：字号整体调大一档后，最长的那几行
+    /// 设置值在 300 里只剩十几点余量（实测最长的「翻译后端：云端（缺 API
+    /// key，未生效）」在 13/12pt 下要 259pt，300 宽可用 276pt），而设备卡的
+    /// 说明行会折成两行、两张卡一高一低。320 把余量拉回 37pt，设备卡回到
+    /// 单行。这是这批唯一改变面板比例的地方，请用户过目。
+    ///
+    /// 高度不受影响的证据：离屏渲染实测，最深一档（云端后端展开 + 嵌套的
+    /// 「选择模型」也展开 + 设备卡 + 上次转写）旧版 666pt、新版 719pt，
+    /// 13 寸屏可用高度约 850pt，仍有 131pt 余量。
+    static let panelWidth: CGFloat = 320
+
+    /// 头部与底栏的左右留白。
+    ///
+    /// **14 → 20（R-2，2026-08-21 用户真机实测「底栏两个按钮显示不全」）**。
+    ///
+    /// 不是宽度不够：离屏实测底栏在 300 宽里只要 102pt，横向余量将近 200pt，
+    /// 300 宽下渲染出来的「打开日志」「退出」一个像素都没少。真正的区别是
+    /// **离边有多近**——面板里别的东西都在卡片里（卡片外边距 12 + 卡内边距
+    /// 8 = 文字离面板边至少 20pt），只有头部和底栏是直接贴着 14pt 写的。
+    /// 宿主窗口的圆角、材质边、以及 `MenuBarExtra` 自己给内容加的那层内缩，
+    /// 吃掉的都是最外面这几点，于是**整块面板里只有底栏会被啃掉一角**。
+    /// 把这两处推到 20pt，整块面板里再没有任何文字比卡片内的文字更靠边。
+    static let edgeGutter: CGFloat = 20
+
+    /// 面板的字号表（R-3：用户「字体稍微放大一些，目前太小了」）。
+    ///
+    /// **集中成一张表，而不是散在各处写字面量**，理由有二：
+    ///
+    /// - 「放大但保持层级」这件事，只有在能一眼看见全部档位时才谈得上。
+    ///   之前是 10 / 10.5 / 11 / 11.5 / 12 / 13 六档散在十几处，改一处
+    ///   很容易把层级压平。
+    /// - 视图里的字面量没有任何测试守得住，而这一批恰恰是用户点名要改的。
+    ///   写成常量之后 `MenuPanelLayoutTests` 才能直接断言「头部 ≥ 正文 ≥
+    ///   次要」，不必去扫源码。
+    ///
+    /// 基准是系统菜单的 13pt：正文档就是它，比它小的都是次要信息。
+    enum TypeScale {
+        /// 头部「vInput」与主按钮标题。整块面板里最大的两处。
+        static let header: CGFloat = 14
+        /// 正文：设置行标题、展开区的每一项、上次转写正文、底栏、设备卡标题。
+        static let body: CGFloat = 13
+        /// 次要：设置行的当前值、说明行、头部状态、⌥D 徽章。
+        static let secondary: CGFloat = 12
+        /// 更次一级：「上次转写」这个小标题与它旁边的「重试」。
+        static let detail: CGFloat = 11.5
+        /// 设备卡的说明行（等宽字）。两张卡并排，每张只有约 118pt 放字，
+        /// 跟到 11.5 会折行、两张卡一高一低（离屏渲染实测）。
+        static let cardDetail: CGFloat = 11
+        /// ✓ 与 › 两个 SF Symbol 的字号。**不是文字**，不参与上面的层级。
+        static let glyph: CGFloat = 10
     }
 
     var body: some View {
@@ -55,7 +114,7 @@ struct MenuPanelView: View {
             devTools
             footer
         }
-        .frame(width: 300)
+        .frame(width: Self.panelWidth)
         .background(VITheme.panelBackground)
         // 面板底色是写死的深色 #1D1D1F，而 `.primary` / `.secondary` 会跟着
         // 系统外观走——浅色模式下不钉死的话正文会是黑字压深底，读不了。
@@ -76,16 +135,18 @@ struct MenuPanelView: View {
         return HStack(spacing: 8) {
             VMarkShape(bars: VMark.bars)
                 .fill(VITheme.accent)
-                .frame(width: 15, height: 15)
-            Text("vInput").font(.system(size: 13, weight: .semibold))
+                .frame(width: 16, height: 16)
+            Text("vInput").font(.system(size: TypeScale.header, weight: .semibold))
             Spacer()
             Circle().fill(toneColor(status.tone)).frame(width: 6, height: 6)
             Text(status.text)
-                .font(.system(size: 11))
+                .font(.system(size: TypeScale.secondary))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-        .padding(.init(top: 12, leading: 14, bottom: 10, trailing: 14))
+        .padding(
+            .init(
+                top: 12, leading: Self.edgeGutter, bottom: 10, trailing: Self.edgeGutter))
     }
 
     private func toneColor(_ tone: MenuPanelModel.Tone) -> Color {
@@ -118,12 +179,15 @@ struct MenuPanelView: View {
         } label: {
             HStack {
                 Text(MenuPanelModel.primaryButtonTitle(phase: model.phase))
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: TypeScale.header, weight: .semibold))
                 Spacer()
+                // 内边距 h6/v1 → h7/v3、圆角 4 → 5：离屏渲染实测，旧尺寸下
+                // 那块底片紧贴字形外框，⌥（U+2325，比等宽字体的其他字形高）
+                // 上下都顶到边，看上去像被裁了。字号调大只会更挤，一起放宽。
                 Text("⌥D")
-                    .font(.system(size: 11, design: .monospaced))
-                    .padding(.horizontal, 6).padding(.vertical, 1)
-                    .background(Color.black.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
+                    .font(.system(size: TypeScale.secondary, design: .monospaced))
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(Color.black.opacity(0.15), in: RoundedRectangle(cornerRadius: 5))
             }
             .foregroundStyle(Color(red: 0.10, green: 0.07, blue: 0.02))
             .padding(.horizontal, 12).padding(.vertical, 9)
@@ -161,11 +225,15 @@ struct MenuPanelView: View {
                     HStack(spacing: 5) {
                         // 复用头部那只 toneColor，不在视图里再手写一遍颜色判断。
                         Circle().fill(toneColor(card.tone))
-                            .frame(width: 5, height: 5)
+                            .frame(width: 6, height: 6)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(card.title).font(.system(size: 11))
+                            Text(card.title).font(.system(size: TypeScale.body))
+                            // 说明行只跟到 11pt（正文是 13）：两张卡并排，每张
+                            // 只有约 118pt 放字。离屏实测 11.5pt 时「未连接，
+                            // 长按侧键唤醒」会折成两行、两张卡一高一低；11pt
+                            // 回到单行。
                             Text(card.detail)
-                                .font(.system(size: 10, design: .monospaced))
+                                .font(.system(size: TypeScale.cardDetail, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(2)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -187,7 +255,7 @@ struct MenuPanelView: View {
         if !model.lastText.isEmpty {
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
-                    Text("上次转写").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text("上次转写").font(.system(size: TypeScale.detail)).foregroundStyle(.secondary)
                     Spacer()
                     // 转写失败时音频保留着，此前却点不到（Transcriber.swift:17：全仓
                     // 只有测试在调 retry()）。禁用而不是隐藏：入口时有时无的话，
@@ -200,12 +268,12 @@ struct MenuPanelView: View {
                         model.retryLastTranscription()
                     }
                         .buttonStyle(.plain)
-                        .font(.system(size: 10))
+                        .font(.system(size: TypeScale.detail))
                         .foregroundStyle(model.canRetry ? VITheme.accent : Color.secondary)
                         .disabled(!model.canRetry)
                 }
                 Text(model.lastText.prefix(60))
-                    .font(.system(size: 11.5))
+                    .font(.system(size: TypeScale.body))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
@@ -420,11 +488,13 @@ struct MenuPanelView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             } label: {
                 HStack(spacing: 0) {
-                    Text("选择模型").font(.system(size: 11.5))
+                    Text("选择模型").font(.system(size: TypeScale.body))
                     Spacer(minLength: 0)
                 }
             }
-            .disclosureGroupStyle(PanelDisclosureStyle(horizontalPadding: 0, verticalPadding: 3))
+            // verticalPadding 3 → 4：跟着 R-3 的字号一起长（这一格的标题从
+            // 11.5 到了 13），否则「选择模型」和它上下两行几乎贴在一起。
+            .disclosureGroupStyle(PanelDisclosureStyle(horizontalPadding: 0, verticalPadding: 4))
 
             Divider()
             infoLine(AppModel.cloudAPIKeyMenuLine(hasKey: model.hasCloudAPIKey))
@@ -474,20 +544,42 @@ struct MenuPanelView: View {
 
     // MARK: - 底栏
 
+    /// 底栏（R-2：用户真机实测这两个按钮「显示不全」）。
+    ///
+    /// 三处改动，各自对应一个已排除或已确认的原因：
+    ///
+    /// - **左右留白 14 → `edgeGutter`(20)**。这是主因，理由整段写在
+    ///   `edgeGutter` 上：横向宽度从来就不缺（离屏实测底栏只要 102pt，
+    ///   300 宽里余量近 200pt），缺的是「离面板边缘的距离」——底栏是整块
+    ///   面板里唯一贴着边写的文字。
+    /// - **字号 11 → 13**（R-3 的一部分）。11pt 的次要灰字压在 #1D1D1F 上
+    ///   本来就临界，被啃掉一角之后更像是「没画完」。
+    /// - **每个按钮各自 `.lineLimit(1).fixedSize()`**。两个标签都是定长
+    ///   文案，宁可把面板顶宽，也不许被截断成半个字——「显示不全」这四个字
+    ///   最坏的一种成因就是无声的截断，而截断在源码扫描测试里看不见。
+    ///   `fixedSize` 只能加在两个按钮上、不能加在外层 `HStack` 上：加在外层
+    ///   会连 `Spacer` 一起按理想宽度（0）算，整条底栏缩成一团居中，
+    ///   「一左一右」当场没了。
     private var footer: some View {
         HStack {
             Button("打开日志") {
                 NSWorkspace.shared.selectFile(
                     AppLogger.shared.path, inFileViewerRootedAtPath: "")
             }
-            Spacer()
+            .lineLimit(1)
+            .fixedSize()
+            Spacer(minLength: 12)
             Button("退出") { NSApplication.shared.terminate(nil) }
                 .keyboardShortcut("q")
+                .lineLimit(1)
+                .fixedSize()
         }
         .buttonStyle(.plain)
-        .font(.system(size: 11))
+        .font(.system(size: TypeScale.body))
         .foregroundStyle(.secondary)
-        .padding(.init(top: 8, leading: 14, bottom: 10, trailing: 14))
+        .padding(
+            .init(
+                top: 10, leading: Self.edgeGutter, bottom: 12, trailing: Self.edgeGutter))
     }
 
     // MARK: - 行部件
@@ -515,10 +607,10 @@ struct MenuPanelView: View {
             // 里头那个 Spacer 要把「当前值」推到最右，而摊平后由谁来布局
             // 取决于外层样式的实现，写死一层最稳。
             HStack(spacing: 0) {
-                Text(title).font(.system(size: 12))
+                Text(title).font(.system(size: TypeScale.body))
                 Spacer(minLength: 8)
                 Text(value)
-                    .font(.system(size: 11))
+                    .font(.system(size: TypeScale.secondary))
                     .foregroundStyle(VITheme.accent)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -545,11 +637,11 @@ struct MenuPanelView: View {
             HStack(spacing: 5) {
                 if let checked {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.system(size: TypeScale.glyph, weight: .bold))
                         .foregroundStyle(VITheme.accent)
                         .opacity(checked ? 1 : 0)
                 }
-                Text(title).font(.system(size: 11.5))
+                Text(title).font(.system(size: TypeScale.body))
                 Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
@@ -560,7 +652,7 @@ struct MenuPanelView: View {
     /// 展开区里的说明文字（旧菜单里那些不可点的 `Text`）。
     private func infoLine(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 11))
+            .font(.system(size: TypeScale.secondary))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -573,7 +665,8 @@ struct MenuPanelView: View {
 /// 这条排版顶掉一格，四行对不齐。
 struct PanelDisclosureStyle: DisclosureGroupStyle {
     var horizontalPadding: CGFloat = 10
-    var verticalPadding: CGFloat = 8
+    /// 8 → 9：行高要跟着 R-3 的字号一起长，否则 13pt 的行标题贴着分隔线。
+    var verticalPadding: CGFloat = 9
 
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -583,7 +676,7 @@ struct PanelDisclosureStyle: DisclosureGroupStyle {
                 HStack(spacing: 6) {
                     configuration.label
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: MenuPanelView.TypeScale.glyph, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
                 }

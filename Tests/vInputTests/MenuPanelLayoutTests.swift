@@ -1,0 +1,171 @@
+import CoreGraphics
+import Foundation
+import Testing
+
+@testable import vInput
+
+/// 面板的排版尺寸（R-2 底栏显示不全、R-3 字号偏小，2026-08-21 用户真机实测）。
+///
+/// # 为什么这一份不是扫源码
+///
+/// `MenuPanelViewWiringTests` 那一套扫源码，是因为视图跑不起来。但**尺寸不是
+/// 视图**：`panelWidth` / `edgeGutter` / `TypeScale` 都是纯常量，可以直接断言。
+/// R-3 要的「放大但保持层级」本来就是常量之间的大小关系，扫源码反而看不见。
+///
+/// 这也正是把字号从视图里的十几处字面量收成一张表的理由：字面量没有任何
+/// 测试守得住，而这一批恰恰是用户点名要改、并且会亲自复看的。
+///
+/// # 这里证明不了什么
+///
+/// 证明不了「它长得好看」，也证明不了底栏在真机上不再被裁——后者取决于
+/// `MenuBarExtra` 宿主窗口怎么内缩，那在进程内没有可观测量。能钉的是：
+/// 底栏不再是整块面板里最靠边的那一个（R-2 的判断依据），字号不再退回旧档。
+@Suite("菜单面板排版尺寸")
+struct MenuPanelLayoutTests {
+    typealias Scale = MenuPanelView.TypeScale
+
+    // MARK: - R-3：放大之后层级还在
+
+    /// 层级：头部 > 正文 > 次要 > 更次一级 ≥ 设备卡说明行。
+    ///
+    /// **「整体调大」最容易出的错是把层级压平**——比如为了让说明行看清而
+    /// 把它也提到 13，于是行标题和说明行一样大，一整块面板变成一片同样
+    /// 粗细的字。这条链式断言把每一层的相对关系都钉住。
+    @Test("字号层级：头部 > 正文 > 次要 > 细节")
+    func typeScaleKeepsHierarchy() {
+        let headerOverBody = Scale.header > Scale.body
+        #expect(
+            headerOverBody,
+            "头部字号 \(Scale.header) 没有大于正文 \(Scale.body)，头部不再是头部。")
+
+        let bodyOverSecondary = Scale.body > Scale.secondary
+        #expect(
+            bodyOverSecondary,
+            "正文 \(Scale.body) 没有大于次要信息 \(Scale.secondary)，设置行的标题和它的当前值会一样重。")
+
+        let secondaryOverDetail = Scale.secondary > Scale.detail
+        #expect(
+            secondaryOverDetail,
+            "次要 \(Scale.secondary) 没有大于细节 \(Scale.detail)。")
+
+        let detailOverCardDetail = Scale.detail >= Scale.cardDetail
+        #expect(
+            detailOverCardDetail,
+            "细节 \(Scale.detail) 小于设备卡说明行 \(Scale.cardDetail)，最小的那一档跑到中间去了。")
+    }
+
+    /// 正文必须至少是系统菜单的默认字号 13pt。
+    ///
+    /// 这是 R-3 的原话（「字体稍微放大一些，目前太小了」）能被机器检查的那
+    /// 一半：旧版正文散在 11–12pt，比系统菜单小一档；用户是拿它跟别的菜单
+    /// 比出来的。低于 13 就等于回到那个状态。
+    @Test("正文不小于系统菜单默认的 13pt")
+    func bodyMatchesSystemMenuDefault() {
+        let bigEnough = Scale.body >= 13
+        #expect(
+            bigEnough,
+            """
+            面板正文字号是 \(Scale.body)，小于系统菜单默认的 13pt。
+            用户真机反馈「字体稍微放大一些，目前太小了」正是拿系统菜单
+            比出来的（R-3）。
+            """
+        )
+    }
+
+    /// 面板里最小的**文字**字号不许回到 11 以下。
+    ///
+    /// 旧版有 10pt 的「上次转写」小标题和 10pt 的设备卡说明行——两处都是
+    /// 灰字压 #1D1D1F 深底，是「太小了」这句反馈里最刺眼的两处。
+    /// `glyph`（✓ 与 ›）不在此列：它们是 SF Symbol，不是要读的字。
+    @Test("最小的文字字号不小于 11pt")
+    func smallestTextIsAtLeast11() {
+        let smallest = min(Scale.cardDetail, Scale.detail, Scale.secondary, Scale.body, Scale.header)
+        let bigEnough = smallest >= 11
+        #expect(
+            bigEnough,
+            """
+            面板里最小的文字字号是 \(smallest)，小于 11pt。
+            旧版那两处 10pt（「上次转写」小标题、设备卡说明行）是灰字压深底，
+            正是 R-3 里最刺眼的两处，不许退回去。
+            """
+        )
+    }
+
+    // MARK: - R-2：底栏不再是最靠边的那一个
+
+    /// 头部与底栏离面板边缘的距离，不许小于卡片里文字离面板边缘的距离。
+    ///
+    /// **这就是 R-2 的整个判断依据。** 底栏横向从来不缺地方（离屏实测：
+    /// 300 宽的面板里底栏只要 102pt），它与面板里其他所有文字的唯一区别是
+    /// 离边更近——卡片外边距 12 + 卡内边距 8 = 20pt，而头部/底栏原来直接
+    /// 写 14pt。宿主窗口的圆角与内缩吃掉的正是最外面那几点，于是整块面板
+    /// 里只有底栏（和头部最右那两个字）会被啃掉一角。
+    ///
+    /// 把这条写成断言而不是注释：14 这个数字是「随手写的合理值」，正是
+    /// 以后重构会顺手写回去的那种。
+    @Test("头部与底栏不比卡片内文字更靠边")
+    func edgeGutterIsNotTighterThanCardContent() {
+        // 卡片：外边距 12（`.padding(.horizontal, 12)`）+ 卡内边距 8（`.padding(8)`）
+        let cardTextInset: CGFloat = 12 + 8
+        let notTighter = MenuPanelView.edgeGutter >= cardTextInset
+        #expect(
+            notTighter,
+            """
+            头部/底栏的左右留白是 \(MenuPanelView.edgeGutter)，比卡片内文字的
+            \(cardTextInset)pt 更靠边。整块面板里最先被宿主窗口圆角/内缩啃掉的
+            就是它——用户真机实测底栏两个按钮「显示不全」（R-2）。
+            """
+        )
+    }
+
+    /// 常量光对还不够——头部和底栏必须真的用它。
+    ///
+    /// 上一条断的是 `edgeGutter` 这个数；这一条断的是「有人把底栏改回写死
+    /// 的 14，而常量原封不动地留在那里」——那样上一条照样绿，而用户看到的
+    /// 还是被啃掉一角的底栏。两处（头部、底栏）各一次，少一处就红。
+    @Test("头部与底栏真的在用 edgeGutter")
+    func headerAndFooterUseTheGutterConstant() throws {
+        let source = try MenuPanelViewWiringTests.codeOnly(
+            MenuPanelViewWiringTests.source("Sources/vInput/UI/MenuPanelView.swift"))
+        let uses = source.components(separatedBy: "leading: Self.edgeGutter").count - 1
+        #expect(
+            uses == 2,
+            """
+            MenuPanelView 里用到 Self.edgeGutter 的地方是 \(uses) 处，不是 2 处
+            （头部一处、底栏一处）。少一处就意味着那一处又写回了贴边的字面量，
+            而 edgeGutter 常量本身还是对的——上面那条断言察觉不到。
+            """
+        )
+    }
+
+    /// 面板宽度要放得下最长的那一行设置值。
+    ///
+    /// 算式（13pt 行标题 + 12pt 当前值，中日文字形按 1.0 em、拉丁字形按
+    /// 0.55 em 估）：最长的一行是「翻译后端」+「云端（缺 API key，未生效）」
+    ///
+    ///     行标题 4 字 × 13            = 52
+    ///     当前值 9 个全角 × 12         = 108
+    ///     当前值 " API key" 8 字 × 6.6 ≈ 53
+    ///     Spacer 最小 8 + › 约 12 + 间距 6 = 26
+    ///     行内左右各 10                = 20
+    ///     合计                        ≈ 259
+    ///
+    /// 加上设置卡自己的左右外边距 12×2 = 24，面板至少要 283pt 才不截断。
+    /// 300 只剩 17pt 余量（且设备卡的说明行会折成两行），320 留 37pt。
+    @Test("面板宽度放得下最长的设置行")
+    func panelIsWideEnoughForLongestRow() {
+        let longestRow: CGFloat = 259
+        let settingsCardMargins: CGFloat = 12 * 2
+        let required = longestRow + settingsCardMargins
+        let wideEnough = MenuPanelView.panelWidth >= required
+        #expect(
+            wideEnough,
+            """
+            面板宽 \(MenuPanelView.panelWidth)，放不下最长的设置行（约 \(required)pt：
+            「翻译后端」+「云端（缺 API key，未生效）」在 13/12pt 下）。
+            窄了的表现是当前值被 truncationMode(.tail) 悄悄截掉后半句，
+            而「（缺 API key，未生效）」正是那半句。
+            """
+        )
+    }
+}
