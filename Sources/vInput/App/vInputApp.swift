@@ -15,9 +15,12 @@ struct vInputApp: App {
         MenuBarExtra {
             MenuPanelView(model: delegate.model)
         } label: {
-            Image(nsImage: StatusIcon.image(for: StatusIcon.state(
-                loadingModelName: delegate.model.loadingModelName,
-                phase: delegate.model.phase)))
+            // 包成真正的 View（`StatusIconLabel`），不要在这里直接算图。
+            // `Image` 没有自己的 body，写在这里等于把状态读取放进 Scene 的
+            // body——Scene 只在启动时求值一次，图标从此不再跟着状态变
+            // （2026-08-21 实测：听写中图标全程不变琥珀橙）。理由写在
+            // `StatusIconLabel` 的注释里。
+            StatusIconLabel(model: delegate.model)
         }
         .menuBarExtraStyle(.window)
     }
