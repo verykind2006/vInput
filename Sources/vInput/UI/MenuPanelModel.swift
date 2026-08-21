@@ -5,7 +5,7 @@ enum MenuPanelModel {
     /// 展示的语气。设备卡与头部状态行共用同一套——设备卡目前只会用到
     /// `.ok`（正常连接）与 `.error`（`.muted` 警示）两档，`.recording` /
     /// `.busy` 是头部状态行专用的。视图侧用同一个 `toneColor(_:)` 取色，
-    /// 免得再手写一份「Bool → 颜色」的三元判断。
+    /// 免得在视图里再手写一份颜色判断。
     enum Tone: Equatable { case ok, recording, busy, error }
 
     // MARK: - 设备卡

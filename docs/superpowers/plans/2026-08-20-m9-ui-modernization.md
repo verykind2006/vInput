@@ -806,6 +806,14 @@ git commit -m "feat: HUD 换皮——纯色深底 + 琥珀橙 + 动态字号（C
 
 ### Task 6: MenuPanelModel 纯逻辑
 
+> **本节片段已过时，以源码为准**（QA 复核后的落地形态，提交 `61e9d0c`）：
+> `DeviceCard` 的 `warning: Bool` 改成了 `tone: Tone`（视图直接复用
+> `toneColor`，不再手写颜色判断），并加了 `kind: Kind` 做身份
+> （`Identifiable`，`ForEach` 不再拿中文标题当 id）；鼠标 `.muted` 的
+> 文案改用新拆出的 `MouseBridgeState.detailLabel(battery:)`——
+> `menuLabel` = 「鼠标：」+ 它，卡片标题已经是「鼠标」，不该再重复一遍。
+> 复核实测：拆分前后 `menuLabel` 的输出逐字节不变。
+
 **Files:**
 - Create: `Sources/vInput/UI/MenuPanelModel.swift`
 - Test: `Tests/vInputTests/MenuPanelModelTests.swift`
