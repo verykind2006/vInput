@@ -93,9 +93,13 @@ head 截断、已确认+未确认双色）全是真机反馈磨出来的，只�
 ## ④ App 图标
 
 - 深色渐变底（`#2A2A2E→#131315`）圆角方块 + 琥珀橙渐变 V mark。
-- **一份 SVG 母版进版本库**（`assets/` 下），脚本渲染 16–1024 全档
-  PNG → `iconutil` 出 `.icns`，接进 `scripts/build-app.sh` 与
-  Info.plist。生成物可重建，不进版本库；母版与脚本进。
+- **母版就是脚本本身**（`scripts/render-icon.swift`），不额外放 SVG：
+  几何已经在 `VMark.bars` 里定死了，再存一份 SVG 等于第三处同源数据，
+  而三处必然分叉。脚本渲染 16–1024 全档 PNG → `iconutil` 出 `.icns`，
+  接进 `scripts/build-app.sh` 与 Info.plist。生成物（`.icns`）可重建、
+  不进版本库；脚本进。
+  *（订正于 2026-08-21：定稿时写的是「一份 SVG 母版进 `assets/`」，
+  实施时按计划走了脚本单一来源。此处以落地形态为准。）*
 - 小尺寸（16/32）已在样机里验证可辨。
 
 ## 不做什么
