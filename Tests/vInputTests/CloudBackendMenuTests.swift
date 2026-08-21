@@ -383,8 +383,18 @@ struct CloudBackendWiringTests {
         // 菜单面板（M9 Task 7 之后是 MenuPanelView）与 AppModel 都不许读。
         // vInputApp.swift 一并留着扫：那里现在只剩场景与 AppDelegate，
         // 但它照样是「每次打开菜单都会跑到」的代码。
+        //
+        // **ModalPanels.swift 是 Task 9 QA 复核补进来的。** M9 Task 7 把
+        // vInputApp.swift 里那几个 `present…Panel()` 拆成了新文件，这条守卫
+        // 当时只跟着改了「菜单」那一项的文件名（MenuContent → MenuPanelView），
+        // 没意识到扫描面同时被拆走了一块——而拆走的恰恰是**离 Keychain 最近**
+        // 的那块（`presentCloudAPIKeyPanel` 就在里面），且它由面板上的按钮
+        // 直接调起，一样属于「用户每天点很多次」的路径。
+        // 复核实测：往 ModalPanels.swift 里塞一句真的 `TranslationKey.read(...)`，
+        // 补这一行之前这条用例照样绿。
         for path in [
             "Sources/vInput/UI/MenuPanelView.swift",
+            "Sources/vInput/App/ModalPanels.swift",
             "Sources/vInput/App/vInputApp.swift",
             "Sources/vInput/App/AppModel.swift",
         ] {
