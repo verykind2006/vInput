@@ -110,31 +110,33 @@ final class HUDPanel {
         panel.isOpaque = false
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
-        // **把 HUD 从 `NSApp.hide(nil)` 的作用范围里摘出去。**
+        // **把 HUD 从「应用被隐藏」的作用范围里摘出去。**
         //
         // `hidesOnDeactivate = false` 只挡「本应用失去活跃状态」，挡不住显式的
-        // `NSApp.hide`——后者会把 `canHide == true` 的窗口一律 orderOut。探针
-        // 实测（复刻本函数全部样式）：`canHide` 默认 true，`orderFrontRegardless()`
-        // 后 `isVisible == true`，`NSApp.hide(nil)` 之后 `isVisible == false`；
-        // 而随后再 `orderFrontRegardless()` 虽然能显示，却会把「应用已隐藏」这个
-        // 状态一并撤销（`NSApp.isHidden` 翻回 false）。设成 false 后两条都不再发生。
+        // 隐藏——后者会把 `canHide == true` 的窗口一律 orderOut。探针实测两次
+        // （复刻本函数全部样式，2026-08-20 与 2026-08-21 各一次）：`canHide`
+        // 默认 true 时，`orderFrontRegardless()` 后 `isVisible == true`，
+        // `NSApp.hide(nil)` 之后翻成 false；对照组 `canHide = false` 则 hide
+        // 之后仍是 true。同一次实测里，样式与本函数一致但 `canHide` 保持默认的
+        // 菜单面板窗口被 orderOut，正是这条属性起作用的直接证据。
         //
         // 理由：HUD 与「应用隐藏」这个语义无关——它不是本应用的窗口界面，而是
         // 贴在**别人应用**上的浮层，用户隐藏 vInput 的意思是收起菜单面板，不是
         // 把正在进行的听写提示一起吞掉。
         //
-        // 唯一会触发这条路径的调用方是 `dismissMenuPanel()`（`App/ModalPanels.swift`），
-        // 它以 `NSApp.hide(nil)` 结尾来把焦点还给用户原来那个应用。不设这行的两个后果：
+        // **这一行原本是为 `dismissMenuPanel()` 里的 `NSApp.hide(nil)` 加的
+        // （B-2）；那个调用已经在 R-1 里删掉了，但这一行留着**，理由换成一条与
+        // 本应用代码无关、且用户随时按得到的：任意应用的「隐藏其他」（⌘⌥H）
+        // 会隐藏包括 vInput 在内的所有其他应用。用户在编辑器里口述到一半按下
+        // 它，若没有这一行，HUD 当场消失，而这条路径上没有任何补救——
         //
-        // - 从面板点「结束听写」→ HUD 被藏 → 会话进入 `.transcribing`，而
-        //   `AppModel` 的重开闸门是 `wasIdle`（`.listening → .transcribing` 不满足），
-        //   不会再 `show()`；收尾时 `endHUD()` 在 `notice != nil` 那一支只排隐藏
-        //   计时器、不 `show()`（它假设面板还开着）。于是「本次未校正」等附注一个字
-        //   都到不了用户眼前——而下面那整套 `showGeneration` 机制存在的理由就是
-        //   保住这条提示。
-        // - 从面板点「开始听写」→ hide → 下一轮 `beginHUD()` → `show()` → 撤销隐藏；
-        //   撤销隐藏若顺带抢了前台，注入前 `TargetAppGuard.verify` 就抛
-        //   `targetApplicationChanged`。
+        // - 会话此时进入 `.transcribing`，`AppModel` 的重开闸门是 `wasIdle`
+        //   （`.listening → .transcribing` 不满足），不会再 `show()`；收尾时
+        //   `endHUD()` 在 `notice != nil` 那一支只排隐藏计时器、不 `show()`
+        //   （它假设面板还开着）。于是「本次未校正」等附注一个字都到不了用户
+        //   眼前——而下面那整套 `showGeneration` 机制存在的理由就是保住它。
+        // - 反过来，若靠 `show()` 去撤销隐藏，撤销隐藏会顺带抢前台，注入前
+        //   `TargetAppGuard.verify` 就抛 `targetApplicationChanged`。
         panel.canHide = false
         // 在所有 Space 与全屏应用之上显示——用户可能在全屏编辑器里口述。
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]

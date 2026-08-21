@@ -22,10 +22,30 @@ import AppKit
 ///   `targetApplicationChanged`，用户看到「焦点已切到别的应用，文字没有
 ///   输入」——说了半天，一个字都没进去。
 ///
-/// `hide` 而不只是 `close`：LSUIElement 应用在面板关闭后仍可能是活跃应用，
-/// 只关窗口的话焦点不一定回到原应用。**调用方必须把真正的动作推到下一个
-/// runloop turn**（见 `MenuPanelView.primaryButton`）——焦点交还是异步的，
-/// 同一轮里紧接着 `capture()` 拿到的还是旧值。
+/// **不许用 `NSApp.hide(nil)`。** 这是 R-1（2026-08-21 用户真机实测）：
+/// `hide` 要的是「把自己整个藏起来」，而这里要的是「把前台让给别人」——前者
+/// 顺带把 LSUIElement 应用的菜单栏状态项一起带走，于是从面板起的听写变成
+/// **单向路**：图标没了，点不到「结束听写」，只能靠 ⌥D 或遥控器收尾。
+/// （`HUDPanel` 的 `canHide = false` 是单窗口属性，管不到状态项。）
+///
+/// 换成「显式激活面板打开前的那个应用」。三种机制的探针实测
+/// （LSUIElement .app 包 + 状态项 + 浮层 + 真实目标应用 TextEdit，
+/// 前置条件校验过「执行前自己确实是前台」）：
+///
+/// | 机制 | 前台还回去了吗 | 应用被藏 | 面板窗口 |
+/// | --- | --- | --- | --- |
+/// | `NSApp.hide(nil)` | +0.05s 回到 TextEdit | **是** | 被 orderOut |
+/// | `NSApp.deactivate()` | **没有**：+0.5s 时自己仍是前台，+1.5s 前台变成了
+///   一个无关应用（Terminal），始终没回到 TextEdit | 否 | 留着 |
+/// | `previousApp.activate()` | +0.05s 回到 TextEdit，直到 +3.0s 都稳定 | 否 | 留着 |
+///
+/// 所以 `deactivate()` 被实测排除：它不交还前台，而不交还前台恰好会打掉
+/// 日志里已经验证是好的那条链（`目标应用已记录：com.apple.Terminal`）——
+/// `TargetAppGuard.capture()` 会记成 vInput 自己，文字注进面板等于消失。
+///
+/// **调用方必须把真正的动作推到下一个 runloop turn**（见
+/// `MenuPanelView.primaryButton`）——焦点交还是异步的（探针实测 +0.05s 才
+/// 生效），同一轮里紧接着 `capture()` 拿到的还是旧值。
 /// **不认「谁是 key 就关谁」。** 面板若压根没成为 key window，
 /// `NSApp.keyWindow` 就是当时碰巧是 key 的那个，而 `VINPUT_BENCH=1` 下那
 /// 可能是基准集录制窗口（`BenchRecordingWindow.swift:83`，`.titled`）。
@@ -33,14 +53,89 @@ import AppKit
 /// 结束掉**——开发期工具被静默中断是很难查的那种事故。
 ///
 /// 判据用 `.titled`：本应用自己拉起的有标题栏的窗口只有基准集录制窗，
-/// 而 MenuBarExtra 的宿主窗口没有标题栏。宁可少关一个（`hide` 兜底），
+/// 而 MenuBarExtra 的宿主窗口没有标题栏。宁可少关一个（让位那步兜底），
 /// 不可错关一个。
 @MainActor
 func dismissMenuPanel() {
     if let key = NSApp.keyWindow, !key.styleMask.contains(.titled) {
         key.close()
     }
-    NSApp.hide(nil)
+    if !ForegroundAppTracker.shared.handBackForeground() {
+        // 兜底：不知道该还给谁（或系统拒绝了这次 activate）。探针实测
+        // `deactivate()` 交还前台并不可靠，所以这只是「至少别赖在前台」的
+        // 尽力而为——但它绝不会藏掉状态项，那才是 R-1 的要害。
+        // 正常情况走不到这里：`ForegroundAppTracker` 在启动时就播了种，
+        // 而 LSUIElement 应用启动时不激活，那一刻的前台必然是别人。
+        NSApp.deactivate()
+    }
+}
+
+/// 记住「vInput 抢到前台之前，用户在用的是哪个应用」，供 `dismissMenuPanel()`
+/// 把前台还回去。
+///
+/// **为什么不是「面板打开时问一次 `NSWorkspace.frontmostApplication`」**：
+/// 点状态项的那一下已经把 vInput 激活了，`MenuPanelView.onAppear` 跑的时候
+/// 前台很可能已经是 vInput 自己——问到自己等于没记，而「把前台让给自己」是
+/// 空操作，坏结果与不让位完全一样（文字注进面板）。
+///
+/// 那个时序在本仓库里**测不出来**（`MenuBarExtra` 要真 App 生命周期加一次
+/// 真鼠标点击），所以这里挑了一条与时序无关的路：订阅激活通知，只记最后
+/// 一个不是自己的应用。什么时候记的不重要，记的一定不是自己。
+@MainActor
+final class ForegroundAppTracker {
+    static let shared = ForegroundAppTracker()
+
+    /// 最后一个成为前台的、不是 vInput 自己的应用。
+    private(set) var previousApp: NSRunningApplication?
+
+    private var observer: NSObjectProtocol?
+
+    /// 「自己」的进程号。**两个来源都收**：真机上两者相同，而在没有应用包的
+    /// 进程里（比如 `swift test` 的宿主）`NSRunningApplication.current` 的
+    /// `processIdentifier` 是 -1——只认其中一个的话，要么真机漏过滤、要么
+    /// 测试里根本验不到这条过滤。多收一个 -1 不会误伤：没有应用的 pid 是 -1。
+    private let selfProcessIdentifiers: Set<pid_t> = [
+        NSRunningApplication.current.processIdentifier,
+        ProcessInfo.processInfo.processIdentifier,
+    ]
+
+    /// 启动时调用一次（`AppDelegate.applicationDidFinishLaunching`）。
+    ///
+    /// 先播种再订阅：LSUIElement 应用启动时不激活自己，此刻的前台就是用户
+    /// 正在用的那个应用；只订阅不播种的话，用户从启动到第一次切换应用之间
+    /// 点开面板，`previousApp` 是 nil。
+    func start(center: NotificationCenter = NSWorkspace.shared.notificationCenter) {
+        record(NSWorkspace.shared.frontmostApplication)
+        guard observer == nil else { return }
+        observer = center.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main
+        ) { note in
+            MainActor.assumeIsolated {
+                ForegroundAppTracker.shared.record(
+                    note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)
+            }
+        }
+    }
+
+    /// **过滤掉自己是这个类存在的全部理由。**
+    ///
+    /// 比 `processIdentifier` 而不是比对象：`NSRunningApplication` 没有重写
+    /// `isEqual`，同一个应用在不同通知里可能是两个不同的对象，`==` 会漏判。
+    ///
+    /// `nil` 也直接返回：通知的 userInfo 取不到应用时（系统偶发，或 key 改名）
+    /// 不能把已经记住的那个抹掉，抹掉的后果与记成自己一样——让位无处可还。
+    func record(_ app: NSRunningApplication?) {
+        guard let app, !selfProcessIdentifiers.contains(app.processIdentifier) else { return }
+        previousApp = app
+    }
+
+    /// 把前台还给 `previousApp`。返回是否真的发出了这次让位。
+    @discardableResult
+    func handBackForeground() -> Bool {
+        guard let previousApp else { return false }
+        return previousApp.activate()
+    }
 }
 
 /// 弹出校正模型目录选择器，返回用户选中的目录（取消时为 nil）。

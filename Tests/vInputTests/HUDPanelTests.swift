@@ -101,25 +101,29 @@ struct HUDPanelTests {
         )
     }
 
-    // MARK: - HUD 不受 NSApp.hide 影响（QA 复核，探针实测）
+    // MARK: - HUD 不受「隐藏应用」影响（QA 复核，探针实测）
 
-    /// `NSApp.hide(nil)` 不许把 HUD 一起藏掉。
+    /// 应用被隐藏时不许把 HUD 一起藏掉。
     ///
-    /// `dismissMenuPanel()`（`App/ModalPanels.swift`）以 `NSApp.hide(nil)` 结尾，
-    /// 用来把焦点还给用户原来那个应用；而 `hidesOnDeactivate = false` 挡不住
-    /// **显式**的 `NSApp.hide`——探针实测（复刻 `makePanel()` 全部样式）：
-    /// `canHide` 默认 true，hide 之后 `isVisible` 从 true 变 false；对照组
-    /// `canHide = false` 则 hide 之后仍可见。
+    /// `hidesOnDeactivate = false` 只挡「失去活跃状态」，挡不住**显式**的
+    /// 隐藏——探针实测两次（复刻 `makePanel()` 全部样式）：`canHide` 默认 true
+    /// 时 hide 之后 `isVisible` 从 true 变 false；对照组 `canHide = false`
+    /// 则 hide 之后仍可见。
     ///
-    /// 删掉这一行的后果不是「HUD 闪一下」，是两条都看不见：
+    /// **这条测试的理由在 R-1 里换过一次，不是历史包袱。** 原来的理由是
+    /// `dismissMenuPanel()` 以 `NSApp.hide(nil)` 结尾；那个调用已经删了
+    /// （它会连菜单栏状态项一起藏掉，用户点不到「结束听写」）。现在的理由与
+    /// 本仓库的代码无关，且用户随时按得到：任意应用的「隐藏其他」（⌘⌥H）
+    /// 会隐藏包括 vInput 在内的所有其他应用——用户在编辑器里口述到一半按下
+    /// 它，没有这一行的话 HUD 当场消失，而这条路径上没有补救：
     ///
-    /// - 从面板点「结束听写」→ HUD 被藏 → 会话进 `.transcribing`，`AppModel`
-    ///   的重开闸门是 `wasIdle` 不满足、`endHUD()` 在有附注那一支也只排计时器
-    ///   不 `show()` → **「本次未校正」等末尾附注一个字都到不了用户眼前**，
-    ///   而上面那套 `showGeneration` 机制存在的理由就是保住这条提示。
-    /// - 从面板点「开始听写」→ 下一轮 `show()` 会把「应用已隐藏」撤销，
-    ///   抢回前台则注入前 `TargetAppGuard.verify` 抛 `targetApplicationChanged`。
-    @Test("HUD 面板不被 NSApp.hide 藏掉")
+    /// - 会话进 `.transcribing`，`AppModel` 的重开闸门是 `wasIdle` 不满足、
+    ///   `endHUD()` 在有附注那一支也只排计时器不 `show()` → **「本次未校正」
+    ///   等末尾附注一个字都到不了用户眼前**，而上面那套 `showGeneration`
+    ///   机制存在的理由就是保住这条提示。
+    /// - 反过来靠 `show()` 撤销隐藏的话，撤销隐藏会抢回前台，注入前
+    ///   `TargetAppGuard.verify` 抛 `targetApplicationChanged`。
+    @Test("HUD 面板不被「隐藏应用」藏掉")
     func panelOptsOutOfAppHide() throws {
         let source = try Self.hudPanelSource()
         let optsOut = source.contains("panel.canHide = false")
@@ -127,9 +131,9 @@ struct HUDPanelTests {
             optsOut,
             """
             HUDPanel.makePanel() 里没有 panel.canHide = false。
-            dismissMenuPanel() 结尾的 NSApp.hide(nil) 会把 HUD 一起 orderOut
-            （hidesOnDeactivate = false 挡不住显式 hide，探针实测）：从面板点
-            「结束听写」之后 HUD 不会再出现，末尾附注（「本次未校正」等）
+            应用一被隐藏（用户在别的应用里按「隐藏其他」⌘⌥H 就会发生），
+            HUD 会被一起 orderOut（hidesOnDeactivate = false 挡不住显式 hide，
+            探针实测）：口述到一半 HUD 消失，末尾附注（「本次未校正」等）
             一个字都到不了用户眼前。
             """
         )

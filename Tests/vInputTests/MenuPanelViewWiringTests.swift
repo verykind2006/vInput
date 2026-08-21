@@ -42,6 +42,26 @@ struct MenuPanelViewWiringTests {
         try source("Sources/vInput/UI/MenuPanelView.swift")
     }
 
+    /// 扫源码前先把 `//` 行注释去掉。
+    ///
+    /// 这一条是写 `ForegroundHandoffTests` 时当场撞上的：`ModalPanels.swift`
+    /// 的注释里必须写清「原来用的是 NSApp 的 hide、为什么不能再用」，而整份
+    /// `contains` 分不清注释和代码——把历史写进注释就等于让守卫永远红着。
+    /// 反过来（为了让测试绿而不敢在注释里提它）更糟：下一个人不知道这条路
+    /// 走过。本文件里那些老断言不走这里，它们钉的是**必须存在**的调用，
+    /// 注释里多提一句只会让它更容易绿，不会漏判。
+    ///
+    /// 只处理行注释，不处理块注释与字符串里的 `//`：被扫的这几份文件里没有
+    /// 那两种形态，多写的解析反而更容易出错。
+    static func codeOnly(_ source: String) -> String {
+        source.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> Substring in
+                guard let slashes = line.range(of: "//") else { return line }
+                return line[line.startIndex..<slashes.lowerBound]
+            }
+            .joined(separator: "\n")
+    }
+
     static func appSource() throws -> String {
         try source("Sources/vInput/App/vInputApp.swift")
     }
@@ -99,10 +119,15 @@ struct MenuPanelViewWiringTests {
     /// 面板（等于消失）；用户点别处关面板 → 前台变了 → 注入前 `verify` 抛
     /// `targetApplicationChanged`，用户看到「焦点已切到别的应用，文字没有输入」。
     ///
-    /// 这正是以后重构会顺手删掉的那种行（「点个按钮为什么要 hide 一下？」），
+    /// 这正是以后重构会顺手删掉的那种行（「点个按钮为什么还要先关一下面板？」），
     /// 所以单独钉一条，并且连 `DispatchQueue.main.async` 一起钉：同一轮里
     /// 紧接着 `toggle()` 的话，焦点还没交还，`capture()` 拿到的仍是 vInput。
-    @Test("主按钮先关面板再开听写")
+    ///
+    /// **钉的是行为，不是机制的名字。** 「关面板 + 让位」这一步具体怎么实现
+    /// 换过一次（`NSApp.hide(nil)` → 显式激活原前台应用，R-1），换的理由是
+    /// `hide` 会连菜单栏状态项一起藏掉。这里只管「开听写之前先走过那一步」；
+    /// 那一步内部不许再藏整个应用，由 `ForegroundHandoffTests` 单独钉。
+    @Test("主按钮先关面板让位再开听写")
     func primaryButtonDismissesPanelBeforeToggling() throws {
         let source = try Self.panelSource()
         let dismisses = source.contains("dismissMenuPanel()")
@@ -110,8 +135,9 @@ struct MenuPanelViewWiringTests {
             dismisses,
             """
             MenuPanelView 里没有 dismissMenuPanel()。
-            .window 面板不会自己关：面板开着时前台是 vInput 自己，
-            TargetAppGuard 记下的目标就是这个面板，转写出来的文字会注进面板里。
+            .window 面板不会自己关、也不会自己把前台让出去：面板开着时前台是
+            vInput 自己，TargetAppGuard 记下的目标就是这个面板，转写出来的
+            文字会注进面板里。
             """
         )
         let deferred = source.contains("DispatchQueue.main.async { model.toggle() }")

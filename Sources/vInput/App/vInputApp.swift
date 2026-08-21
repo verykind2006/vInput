@@ -30,6 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 越早越好：它要记的是「vInput 抢到前台之前用户在用哪个应用」，
+        // 而这一刻（LSUIElement 应用启动、尚未激活自己）的前台恰好就是答案。
+        // 不启动它的话 `dismissMenuPanel()` 无处可还，从面板起的听写会把
+        // 文字注进面板自己（R-1）。
+        ForegroundAppTracker.shared.start()
         // 在 bootstrap 之前注入：开启校正而没有合法模型时 AppModel 要弹这个
         // 面板。放在这里而不是菜单视图里，是因为它与视图的生命周期无关，
         // 而菜单视图每次打开都会重建。
