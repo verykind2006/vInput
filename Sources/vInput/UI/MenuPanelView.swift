@@ -143,7 +143,15 @@ struct MenuPanelView: View {
                     // 转写失败时音频保留着，此前却点不到（Transcriber.swift:17：全仓
                     // 只有测试在调 retry()）。禁用而不是隐藏：入口时有时无的话，
                     // 用户根本不会知道存在这么个东西，也就等不到需要它的那一刻。
-                    Button("重试 ↻") { model.retryLastTranscription() }
+                    //
+                    // 禁用时把「为什么点不动」写在文案里，括号那半句逐字沿用旧
+                    // `MenuContent`。只置灰的话丢的正是这条理由：用户看到一个点
+                    // 不动的按钮，分不清是「没有可重试的」还是「坏了」——按同一条
+                    // 「禁用不隐藏」的道理，说清楚才算数（迁移守则是零增减，
+                    // 光置灰是信息减少）。
+                    Button(model.canRetry ? "重试 ↻" : "重试 ↻（没有可重试的）") {
+                        model.retryLastTranscription()
+                    }
                         .buttonStyle(.plain)
                         .font(.system(size: 10))
                         .foregroundStyle(model.canRetry ? VITheme.accent : Color.secondary)
