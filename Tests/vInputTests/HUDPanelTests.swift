@@ -101,6 +101,40 @@ struct HUDPanelTests {
         )
     }
 
+    // MARK: - HUD 不受 NSApp.hide 影响（QA 复核，探针实测）
+
+    /// `NSApp.hide(nil)` 不许把 HUD 一起藏掉。
+    ///
+    /// `dismissMenuPanel()`（`App/ModalPanels.swift`）以 `NSApp.hide(nil)` 结尾，
+    /// 用来把焦点还给用户原来那个应用；而 `hidesOnDeactivate = false` 挡不住
+    /// **显式**的 `NSApp.hide`——探针实测（复刻 `makePanel()` 全部样式）：
+    /// `canHide` 默认 true，hide 之后 `isVisible` 从 true 变 false；对照组
+    /// `canHide = false` 则 hide 之后仍可见。
+    ///
+    /// 删掉这一行的后果不是「HUD 闪一下」，是两条都看不见：
+    ///
+    /// - 从面板点「结束听写」→ HUD 被藏 → 会话进 `.transcribing`，`AppModel`
+    ///   的重开闸门是 `wasIdle` 不满足、`endHUD()` 在有附注那一支也只排计时器
+    ///   不 `show()` → **「本次未校正」等末尾附注一个字都到不了用户眼前**，
+    ///   而上面那套 `showGeneration` 机制存在的理由就是保住这条提示。
+    /// - 从面板点「开始听写」→ 下一轮 `show()` 会把「应用已隐藏」撤销，
+    ///   抢回前台则注入前 `TargetAppGuard.verify` 抛 `targetApplicationChanged`。
+    @Test("HUD 面板不被 NSApp.hide 藏掉")
+    func panelOptsOutOfAppHide() throws {
+        let source = try Self.hudPanelSource()
+        let optsOut = source.contains("panel.canHide = false")
+        #expect(
+            optsOut,
+            """
+            HUDPanel.makePanel() 里没有 panel.canHide = false。
+            dismissMenuPanel() 结尾的 NSApp.hide(nil) 会把 HUD 一起 orderOut
+            （hidesOnDeactivate = false 挡不住显式 hide，探针实测）：从面板点
+            「结束听写」之后 HUD 不会再出现，末尾附注（「本次未校正」等）
+            一个字都到不了用户眼前。
+            """
+        )
+    }
+
     @Test("resizeObserver 在 deinit 里被摘掉")
     func removesResizeObserverOnDeinit() throws {
         let source = try Self.hudPanelSource()
