@@ -220,20 +220,34 @@ struct CorrectionPipelineTests {
     ///
     /// 假对象必须用**不响应取消**的忙等，不能用 `Task.sleep`——后者可取消，
     /// 测不出这个问题。
-    @Test("工作不响应取消时，超时仍在预算内返回")
+    /// **判据是「工作还没做完」，不是秒表读数。**
+    ///
+    /// 这条断言原本写的是 `elapsed < 800ms`，而同一个假对象故意忙等 2 秒、
+    /// 不检查取消（那是它存在的理由）——忙等会跟计时任务抢协作线程池的
+    /// 调度槽，系统一忙就把 elapsed 推过 800ms，实测撞见过 0.879s 与 1.2s
+    /// 两次假红：超时逻辑明明在 200ms 就正确触发了，测试却报失败。
+    ///
+    /// 把「返回得够快吗」换成「返回时工作跑完了吗」，问的还是同一件事，
+    /// 但零计时依赖：等到工作自然结束的实现必然让 `finished == true`，
+    /// 而正确实现在 200ms 就返回，此时距工作结束还有约 1.8 秒余量。
+    /// 保留一条很松的墙钟兜底（远小于 2 秒的工作时长），防「返回了但其实
+    /// 等满了」这种两头都不像的情形。
+    @Test("工作不响应取消时，超时不等工作自然结束")
     func timeoutReturnsEvenIfWorkIgnoresCancellation() async {
-        let pipeline = CorrectionPipeline(
-            corrector: UncancellableCorrector(inferenceSeconds: 2.0),
-            timeout: .milliseconds(200)
-        )
+        let corrector = UncancellableCorrector(inferenceSeconds: 2.0)
+        let pipeline = CorrectionPipeline(corrector: corrector, timeout: .milliseconds(200))
         let start = ContinuousClock.now
         let result = await pipeline.correct("小米耀空气").text
         let elapsed = ContinuousClock.now - start
 
         #expect(result == "小米耀空气")
         #expect(
-            elapsed < .milliseconds(800),
-            "超时应在预算内返回，实际耗时 \(elapsed)——说明等到了工作自然结束"
+            !corrector.finished,
+            "超时没有中断等待——`correct` 返回时那份 2 秒的工作已经跑完了"
+        )
+        #expect(
+            elapsed < .milliseconds(1_500),
+            "耗时 \(elapsed) 已接近工作时长（2 秒），像是等满了才返回"
         )
     }
 
@@ -440,6 +454,16 @@ private final class DoneFlag: @unchecked Sendable {
 /// 循环不响应。要测「超时是否真的能中断等待」，替身必须模仿后者。
 private final class UncancellableCorrector: Corrector, @unchecked Sendable {
     private let inferenceSeconds: Double
+    private let lock = NSLock()
+    private var _finished = false
+
+    /// 这份工作有没有跑完。**判「超时是否真的中断了等待」靠它，不靠秒表**
+    /// ——见 `timeoutReturnsEvenIfWorkIgnoresCancellation` 的注释。
+    var finished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _finished
+    }
 
     init(inferenceSeconds: Double) {
         self.inferenceSeconds = inferenceSeconds
@@ -452,6 +476,9 @@ private final class UncancellableCorrector: Corrector, @unchecked Sendable {
         while Date() < deadline {
             // 刻意不检查 Task.isCancelled——模仿真实 MLX 同步推理循环
         }
+        lock.lock()
+        _finished = true
+        lock.unlock()
         return [CorrectionEdit(original: "耀空气", replacement: "遥控器")]
     }
 }

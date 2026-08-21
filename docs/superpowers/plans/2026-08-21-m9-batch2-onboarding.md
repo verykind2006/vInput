@@ -969,7 +969,7 @@ mv vendor/models.bak vendor/models     # 验收后立刻改回
 7. 面板「高级」区：储存位置显示是否正确、「在访达中显示」是否打开对的目录。
 8. **卸载**（放最后，会清掉一切）：体积数字是否合理、确认框的默认按钮是不是「取消」、删完是否退出；重启后是否回到全新状态（向导重新弹）。
 
-- [ ] **Step 3b: 顺带修一条既有的 flaky 测试**（Task 1 发现，与本批无关）
+- [x] **Step 3b: 顺带修一条既有的 flaky 测试**（Task 1 发现；**已于 Task 3 期间提前修掉**，因为它每跑几次就绊一次、开始干扰正常验证。判据从秒表改成语义：断言「`correct` 返回时那份 2 秒的工作还没跑完」，零计时依赖。变异验证：把超时调到比工作还长 → 精确变红。全量连跑 3 次绿。）
 
 `Tests/vInputTests/CorrectionPipelineTests.swift` 的
 `timeoutReturnsEvenIfWorkIgnoresCancellation`：它用真实墙钟量一次异步调用，
