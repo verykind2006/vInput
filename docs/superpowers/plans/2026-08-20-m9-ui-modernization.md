@@ -1261,7 +1261,7 @@ footer：
     }
 ```
 
-删除 `MenuContent` 整个 struct 与 `iconName`（其статус文案已被 Task 6 的 `headerStatus` 接管、图标已被 StatusIcon 接管——删除前 grep 确认无他处引用）。
+删除 `MenuContent` 整个 struct 与 `iconName`（其状态文案已被 Task 6 的 `headerStatus` 接管、图标已被 StatusIcon 接管——删除前 grep 确认无他处引用）。
 
 - [ ] **Step 6: 迁移对照清单（逐项打勾进提交信息）**
 
