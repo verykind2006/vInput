@@ -96,18 +96,64 @@ struct UninstallPlanTests {
     /// 反过来的话（先退出）后面几步根本不会发生。
     @Test func executesFilesThenDefaultsThenQuits() async {
         let recorder = RecordingUninstaller()
-        await UninstallPlan.execute(items: UninstallPlan.items(home: "/Users/x"), using: recorder)
+        let failed = await UninstallPlan.execute(
+            items: UninstallPlan.items(home: "/Users/x"), using: recorder)
+        #expect(failed.isEmpty)
         #expect(recorder.log.first?.hasPrefix("remove:") == true)
         #expect(recorder.log.contains("defaults"))
         #expect(recorder.log.contains("keychain"))
         #expect(recorder.log.last == "quit")
+    }
+
+    /// **删不掉东西就不许退出。**
+    ///
+    /// 退出之后再说什么都晚了：用户看到应用干净地关掉，以为删完了。而日志
+    /// 帮不上忙——日志目录本身就在待删清单里（`items[1]`），
+    /// `AppLogger` 只在 init 时建目录，删掉之后后面每一行都静默丢失。
+    /// 所以「有失败」这件事只能靠**还活着的界面**说出来。
+    @Test func partialFailureKeepsTheAppAlive() async {
+        let recorder = RecordingUninstaller()
+        let logs = UninstallPlan.items(home: "/Users/x")[1]
+        recorder.failing = [logs.path]
+
+        let failed = await UninstallPlan.execute(
+            items: UninstallPlan.items(home: "/Users/x"), using: recorder)
+
+        #expect(failed == [logs], "没能删掉的那一项没有被回报上来。")
+        let quit = recorder.log.contains("quit")
+        #expect(!quit, "有东西没删掉却还是退出了——用户会以为卸载成功了。")
+        // 剩下的步骤仍然要走完：少删一样，不等于剩下的都不删了。
+        #expect(recorder.log.contains("defaults"))
+        #expect(recorder.log.contains("keychain"))
+    }
+
+    /// 全删干净时不弹任何提示（`failureNotice` 返回 nil）。
+    @Test func noNoticeWhenEverythingWasDeleted() {
+        #expect(UninstallPlan.failureNotice(failed: []) == nil)
+    }
+
+    /// 提示必须点名**是哪一样、在哪**：用户此刻唯一能做的就是自己去删，
+    /// 而「有一样没删掉」这种话帮不了他。两个目录都在 `~/Library` 下，
+    /// Finder 默认不显示，所以路径也得给全。
+    @Test func failureNoticeNamesTheItemAndItsPath() throws {
+        let logs = UninstallPlan.items(home: "/Users/x")[1]
+        let notice = try #require(UninstallPlan.failureNotice(failed: [logs]))
+        #expect(notice.message.contains(logs.label))
+        #expect(notice.message.contains(logs.path))
+        // 还要说清「所以我没退出」，否则用户不知道现在是什么状态。
+        #expect(notice.message.contains("没有退出"))
     }
 }
 
 @MainActor
 private final class RecordingUninstaller: Uninstalling {
     var log: [String] = []
-    func removeItem(at path: String) { log.append("remove:\(path)") }
+    /// 这些路径删不掉（模拟权限不足 / 正被占用）。
+    var failing: Set<String> = []
+    func removeItem(at path: String) -> Bool {
+        log.append("remove:\(path)")
+        return !failing.contains(path)
+    }
     func clearDefaults() { log.append("defaults") }
     func clearKeychain() { log.append("keychain") }
     func quit() { log.append("quit") }

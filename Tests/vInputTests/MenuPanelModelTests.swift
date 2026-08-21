@@ -271,16 +271,56 @@ struct MenuPanelModelTests {
     /// 家目录缩成 `~`：面板只有 320pt 宽，前半截对用户没有信息量。
     @Test func storageLocationAbbreviatesHome() {
         let root = NSHomeDirectory() + "/Library/Application Support/vInput"
-        let line = MenuPanelModel.storageLocationLine(root: root)
+        let line = MenuPanelModel.storageLocationLine(root: root, exists: { _ in true })
         #expect(line == "位置：~/Library/Application Support/vInput")
     }
 
     /// 还没解析出根目录时说「尚未确定」，不留空行——空行会让人以为
     /// 「什么都没存」，而这一格存在的理由恰恰是让用户看见那几个 GB 在哪。
     @Test func emptyRootSaysSo() {
-        let line = MenuPanelModel.storageLocationLine(root: "")
+        let line = MenuPanelModel.storageLocationLine(root: "", exists: { _ in true })
         #expect(line.contains("尚未确定"))
         #expect(!line.hasSuffix("："))
+    }
+
+    /// **目录还没建时必须明说。** 首次下载之前 `resolveRoot` 照样返回那个
+    /// 路径，用户点「在访达中显示」只会看到上级目录——而他刚在这行读到
+    /// 「位置：~/Library/…」。不写这半句的话，那一下就像是按钮坏了。
+    @Test func storageLocationSaysWhenFolderIsNotThereYet() {
+        let line = MenuPanelModel.storageLocationLine(
+            root: "/Users/x/Library/Application Support/vInput", exists: { _ in false })
+        let warns = line.contains("还没建")
+        #expect(warns, "目录不存在却没说：\(line)")
+        // 路径本身仍然要给全——「将来会出现在哪」是这一行的主要信息。
+        #expect(line.contains("Library/Application Support/vInput"))
+    }
+
+    // MARK: - 在访达中显示：目录还不存在时退到最近的祖先
+
+    @Test func revealTargetIsTheFolderItselfWhenItExists() {
+        let root = "/Users/x/Library/Application Support/vInput"
+        #expect(MenuPanelModel.revealTarget(root: root, exists: { _ in true }) == root)
+    }
+
+    /// 首次下载之前的常态：目标不存在，退到最近一个存在的祖先。
+    ///
+    /// Finder 拿到不存在的路径是**静默无反应**的，而静默无反应与「这个按钮
+    /// 坏了」在用户那里分不开。
+    @Test func revealTargetFallsBackToNearestExistingAncestor() {
+        let existing = "/Users/x/Library"
+        let target = MenuPanelModel.revealTarget(
+            root: "/Users/x/Library/Application Support/vInput",
+            exists: { $0 == existing })
+        #expect(target == existing)
+    }
+
+    /// 一个祖先都不存在（外接盘拔了、家目录换了）时返回 nil，
+    /// 由调用方什么都不做——总比把 Finder 打开在一个莫名其妙的地方好。
+    @Test func revealTargetGivesUpWhenNothingExists() {
+        #expect(
+            MenuPanelModel.revealTarget(
+                root: "/Volumes/gone/vInput", exists: { _ in false }) == nil)
+        #expect(MenuPanelModel.revealTarget(root: "", exists: { _ in true }) == nil)
     }
 
     /// 「自动」那一项必须说清它做了什么，否则用户无从判断该不该去动它。

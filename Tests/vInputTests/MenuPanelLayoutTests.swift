@@ -1,5 +1,7 @@
+import AppKit
 import CoreGraphics
 import Foundation
+import SwiftUI
 import Testing
 
 @testable import vInput
@@ -167,5 +169,140 @@ struct MenuPanelLayoutTests {
             而「（缺 API key，未生效）」正是那半句。
             """
         )
+    }
+}
+
+// MARK: - 高度：离屏渲染真量，不估
+
+/// 面板到底有多高——**量出来的**。
+///
+/// # 为什么必须量
+///
+/// `.window` 面板不滚动：超出屏幕的部分够不到，而作者的屏幕大，怎么点都撞
+/// 不上。13 寸的可用高度约 850pt（菜单栏下沿到屏幕底），这是整块面板唯一
+/// 会真正伤到人的排版指标。
+///
+/// R-3 那次的估算偏了 50pt（估 666、实测 719），所以这一批不再写估算值：
+/// `NSHostingView` 在测试进程里能布局（没有窗口服务器也行），
+/// `MenuPanelView(model:initiallyOpen:)` 的第二个参数就是为这几条用例开的。
+///
+/// # 这里量不到什么（都会抬高真机上的数字）
+///
+/// 四样东西在测试进程里摆不出来，它们的状态全是 `private(set)`、
+/// 只能由真设备/真会话写进去：
+///
+/// - **设备卡**（遥控器/鼠标连上时）：一行卡片 + 下边距。
+/// - **上次转写卡**：最多两行正文 + 标题行。
+/// - **模型列表里的条目**：这里 `availableModels` 是空的（`modelRoot` 没解析），
+///   真机上每个模型一行。
+/// - **云端后端展开 + 嵌套的「选择模型」也展开**：`useCloudBackend()` 要
+///   协调器（`bootstrap()` 才有），这里切不过去，量到的是本机档。
+///   R-3 实测的 719pt 就是那一档（且含设备卡与上次转写）。
+///
+/// 所以下面断言的是**能量到的那部分**要留足余量，剩下的余量给上面四样。
+/// 真机目检仍在 Task 9 的清单上，但现在它去核对的是一个具体数字。
+@MainActor
+@Suite("菜单面板高度（离屏实测）")
+struct MenuPanelHeightTests {
+    /// 13 寸屏（1440×900 缩放档）菜单栏下沿到屏幕底部的可用高度，约 850pt。
+    /// 这个数字来自 R-3 那次实测，本批沿用。
+    static let available: CGFloat = 850
+
+    /// 能量到的那部分的预算。
+    ///
+    /// 850 − 640 = 210pt 留给上面列的四样量不到的东西（设备卡约 52、
+    /// 上次转写约 60、模型列表 1–3 行约 22–66、云端嵌套若干）。
+    /// 手风琴保证**一次只开一行**，所以「高级展开」与「云端嵌套展开」
+    /// 不会同时发生——这条预算是按前者算的。
+    static let budget: CGFloat = 640
+
+    private func height(_ view: MenuPanelView) -> CGFloat {
+        let host = NSHostingView(rootView: view)
+        host.layoutSubtreeIfNeeded()
+        return host.fittingSize.height
+    }
+
+    /// 本批新增的「高级」是**最深的那一行**（本机档下），这件事要写下来。
+    ///
+    /// 2026-08-22 实测（离屏，`fittingSize`）：
+    /// 收起 310、模型 363、校正 339、输出语言 459、翻译后端（本机）476、
+    /// **高级 511**。也就是说本批把「最深一档」从 476 抬到了 511。
+    @Test("高级是本机档下最深的一行，且各行深度符合实测")
+    func advancedIsTheDeepestRow() {
+        let model = AppModel()
+        let base = height(MenuPanelView(model: model))
+        let advanced = height(MenuPanelView(model: model, initiallyOpen: .advanced))
+        let others = [
+            MenuPanelView.SettingRow.model, .correction, .outputLanguage, .backend,
+        ].map { height(MenuPanelView(model: model, initiallyOpen: $0)) }
+
+        let deepest = others.allSatisfy { advanced >= $0 }
+        #expect(
+            deepest,
+            """
+            「高级」不再是最深的一行（高级 \(advanced)，其余 \(others)）。
+            这不是错，但**最深一档变了就得重新量一次**：面板不滚动，
+            13 寸屏的可用高度只有约 \(Self.available)pt。
+            """
+        )
+        // 收起态也钉一下：多一行设置行的代价（约 35pt）不该悄悄膨胀。
+        let collapsedIsSane = base < 400
+        #expect(collapsedIsSane, "收起态已经 \(base)pt 了，比实测的 310 高出一大截。")
+    }
+
+    /// **最坏的可构造情形**：高级展开 + 两行在飞状态（正在下载 + 待启用）。
+    ///
+    /// 2026-08-22 实测 585pt。两行状态卡本身要 74pt（下载那行 41、
+    /// 待启用那行 56——模型名 39 个字符会折到第三行；名字换成 5 个字符时
+    /// 是 41）。这一格是本批新加的，且**叠在任何展开行之上**。
+    @Test("最坏的可构造高度留得下量不到的那几样")
+    func worstConstructibleDepthFitsWithMarginForTheUnmeasurable() {
+        let model = AppModel()
+        model.reportModelDownload(progress: 0.42)
+        _ = model.modelAdoption.request(
+            folder: "/Users/x/Library/Application Support/vInput/\(ModelDownloader.variant)",
+            canSwitchNow: false)
+        model.syncPendingModelMirror()
+
+        let worst = height(MenuPanelView(model: model, initiallyOpen: .advanced))
+        #expect(
+            worst <= Self.budget,
+            """
+            最坏的可构造高度 \(worst)pt 超了预算 \(Self.budget)pt。
+            预算不是屏幕高度（约 \(Self.available)pt）——差额留给测试进程里
+            摆不出来的四样：设备卡、上次转写、模型列表条目、云端嵌套。
+            超了就意味着真机上那几样叠上来会够不到面板底部，而面板不滚动。
+            """
+        )
+    }
+
+    /// 两行在飞状态的代价单独钉一条。
+    ///
+    /// 它们的文案随时可能被改长（`MenuPanelModel.downloadLine` /
+    /// `pendingModelLine`），而 `infoLine` 是**不截断、只长高**的
+    /// （`.fixedSize(horizontal: false, vertical: true)`）——多写一句话就是
+    /// 多两行高度，且没有任何东西会提醒你。实测 74pt。
+    @Test("在飞状态那一格的高度代价不超过 90pt")
+    func downloadStatusCardStaysCheap() {
+        let model = AppModel()
+        let without = height(MenuPanelView(model: model))
+        model.reportModelDownload(progress: 0.42)
+        _ = model.modelAdoption.request(
+            folder: "/Users/x/Library/Application Support/vInput/\(ModelDownloader.variant)",
+            canSwitchNow: false)
+        model.syncPendingModelMirror()
+        let with = height(MenuPanelView(model: model))
+
+        let cost = with - without
+        #expect(
+            cost <= 90,
+            """
+            在飞状态那一格要 \(cost)pt（实测基线 74）。文案改长了？
+            infoLine 不截断、只长高，这一格又叠在任何展开行之上——
+            它涨多少，最坏情况就跟着涨多少。
+            """
+        )
+        // 反向：它必须真的占了地方，否则这条测试是空的。
+        #expect(cost > 0, "两行状态一点高度都没占——多半是根本没渲染出来。")
     }
 }

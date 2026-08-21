@@ -154,9 +154,38 @@ enum MenuPanelModel {
     /// 根目录为空（bootstrap 还没跑完）时说「尚未确定」，不显示一个空行——
     /// 空行会让人以为「什么都没存」，而这一格存在的理由恰恰是让用户看见
     /// 那几个 GB 在哪。
-    nonisolated static func storageLocationLine(root: String) -> String {
+    ///
+    /// **目录还不存在时要明说。** 首次下载之前 `ModelCatalog.resolveRoot`
+    /// 照样返回应用支持目录里那个路径（它不判断存不存在），于是用户点
+    /// 「在访达中显示」会得到一个上级目录、或者干脆什么都不发生——
+    /// 而他刚刚才在上一行读到「位置：~/Library/…」。把「还没建」写出来，
+    /// 那一下就不再像是坏了。
+    nonisolated static func storageLocationLine(root: String, exists: (String) -> Bool) -> String {
         guard !root.isEmpty else { return "位置：尚未确定" }
-        return "位置：\((root as NSString).abbreviatingWithTildeInPath)"
+        let shown = (root as NSString).abbreviatingWithTildeInPath
+        return exists(root) ? "位置：\(shown)" : "位置：\(shown)（还没建，下载模型后出现）"
+    }
+
+    /// 「在访达中显示」该真正打开哪个路径。
+    ///
+    /// 目标目录不存在时逐级往上找**最近一个存在的祖先**：Finder 拿到一个不
+    /// 存在的路径是静默无反应的，而静默无反应与「这个按钮坏了」分不开。
+    /// 退到上级至少回答了「它将来会出现在哪」。
+    ///
+    /// 不选「按需创建」：一个叫「显示」的按钮不该在磁盘上留下东西。
+    /// 也不选「置灰」：置灰之后用户既看不到位置、也不知道为什么点不动。
+    ///
+    /// `exists` 注入进来是为了能测——真机上根目录几乎总是存在，
+    /// 而要守的恰恰是它不存在的那条路。`/` 一定存在，所以循环必然收敛。
+    nonisolated static func revealTarget(root: String, exists: (String) -> Bool) -> String? {
+        guard !root.isEmpty else { return nil }
+        var candidate = root
+        while !exists(candidate) {
+            let parent = (candidate as NSString).deletingLastPathComponent
+            guard !parent.isEmpty, parent != candidate else { return nil }
+            candidate = parent
+        }
+        return candidate
     }
 
     /// 三选一里的每一项。

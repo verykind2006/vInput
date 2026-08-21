@@ -106,7 +106,15 @@ final class AppModel {
 
     /// 下载好了但还没换上去的模型目录（会话进行中被推迟的那一个）。
     /// 面板据此显示「结束后自动启用」。判断与记账都在 `ModelAdoptionQueue`。
-    var pendingModelFolder: String? { modelAdoption.pendingFolder }
+    ///
+    /// **必须是本类的存储属性，不能写成 `{ modelAdoption.pendingFolder }`。**
+    /// `@Observable` 只跟踪自己的可变存储属性——`ModelAdoptionQueue` 是个普通
+    /// 类，改它的字段不通知任何人，那样写的话这一行「能显示」纯属巧合：
+    /// `adoptDownloadedModel` 恰好先调了 `refreshAvailableModels()`、紧接着
+    /// 进度回调又动了 `downloadingModelProgress`，是这两个**被观察的**属性
+    /// 顺手让面板失效的。任何一处顺序调整都会静默干掉这一行。
+    /// 这与 `canRetry` / `correctionEnabled` 是同一条规矩（见它们的注释）。
+    private(set) var pendingModelFolder: String?
 
     private let permissions = Permissions()
     /// 下载源偏好。key 只在 `DownloadSourcePreference` 里写一次，
@@ -116,7 +124,11 @@ final class AppModel {
     /// 「下载好的模型什么时候真的换上去」。理由见该类型的注释：
     /// 正录着的时候下载完，`selectModel` 会打一行日志就返回，
     /// 而此后**再也没有人重试**。
-    private let modelAdoption = ModelAdoptionQueue()
+    ///
+    /// internal 而不是 private：量面板高度的那条用例要摆出「有一个待启用的
+    /// 模型」这个最坏状态，而真机上进到这个状态要靠「下载恰好在录音途中
+    /// 完成」，测试进程里造不出来（`session` 起不来，`canSwitchModel` 恒真）。
+    let modelAdoption = ModelAdoptionQueue()
     /// 校正偏好。开关状态与模型目录都要跨启动保留。
     private let correctionPreference = CorrectionPreference()
     /// 翻译偏好。输出语言、云端开关、模型目录都要跨启动保留。
@@ -1634,17 +1646,43 @@ final class AppModel {
     /// 新模型也已经出现在面板的模型列表里，用户可以自己点。
     func adoptDownloadedModel(_ folder: String) {
         refreshAvailableModels()
-        guard let now = modelAdoption.request(folder: folder, canSwitchNow: canSwitchModel) else {
-            return
-        }
+        let now = modelAdoption.request(folder: folder, canSwitchNow: canSwitchModel)
+        syncPendingModelMirror()
+        guard let now else { return }
         selectModelFromFolder(now)
     }
 
     /// 会话回到 idle 时补做被推迟的那次换用。调用点在 `onStateChange` 的
     /// `.idle` 分支，与校正/翻译两条补挂并排。
+    ///
+    /// **这条路上不许 surface 成 `phase = .error`。** 目录可能已经不在了
+    /// （用户手动删了、卸载过、或者换了盘），而这一步发生在「用户刚说完一句
+    /// 话」的那一刻——弹一个「这不是模型目录，缺少：…」的红字，对他来说是
+    /// 毫无上下文的报错：他没点任何东西。所以只记日志、清账，界面照旧。
+    /// 走 `ModelCatalog.validate` 而不是 `selectModelFromFolder`，差别就在这里。
     private func applyPendingModelAdoption() {
-        guard let folder = modelAdoption.resume(canSwitchNow: canSwitchModel) else { return }
-        selectModelFromFolder(folder)
+        let folder = modelAdoption.resume(canSwitchNow: canSwitchModel)
+        syncPendingModelMirror()
+        guard let folder else { return }
+        switch ModelCatalog.validate(folder: folder) {
+        case .success(let model):
+            selectModel(model)
+        case .failure(.notAModelFolder(let missing)):
+            AppLogger.shared.log(
+                "待启用的模型目录已经不在了，放弃这次补做（缺少：\(missing.joined(separator: "、"))）：\(folder)")
+        }
+    }
+
+    /// 把队列里的欠账同步到可观察镜像上。
+    ///
+    /// 每个动队列的入口都必须调它，否则面板上那行「结束后自动启用」不会跟着
+    /// 出现或消失——`@Observable` 看不见 `ModelAdoptionQueue` 里的字段
+    /// （与 `syncCorrectionMirrors` 是同一件事）。
+    ///
+    /// internal 而不是 private：理由同 `modelAdoption`，量高度那条用例要用它
+    /// 把面板推到最坏状态。
+    func syncPendingModelMirror() {
+        pendingModelFolder = modelAdoption.pendingFolder
     }
 
     /// 下载进度报进来。nil = 没有下载在跑。

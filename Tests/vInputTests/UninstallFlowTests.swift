@@ -54,6 +54,68 @@ struct UninstallFlowTests {
         #expect(shown.first == UninstallPlan.humanSize(1_610_616_832))
     }
 
+    /// **整棵树只走一遍。**
+    ///
+    /// 扫盘是这条路上唯一耗时的一步（几个 GB、上万个文件），而它同步跑在
+    /// 主 actor 上——点完按钮到弹出确认框之间界面是僵的。原先记日志一遍、
+    /// 求合计又一遍，等于把那段僵住的时间翻倍，而没有任何东西会发现。
+    @Test func scansEachPathOnlyOnce() async {
+        var calls: [String] = []
+        await runUninstallFlow(
+            home: "/Users/x",
+            sizeOf: { path in
+                calls.append(path)
+                return 1_000
+            },
+            confirm: { _ in false },
+            uninstaller: FlowRecorder())
+        let items = UninstallPlan.items(home: "/Users/x")
+        #expect(
+            calls.count == items.count,
+            "每条路径该只扫一次，实际扫了 \(calls.count) 次：\(calls)")
+        #expect(Set(calls) == Set(items.map(\.path)))
+    }
+
+    /// **有东西没删掉必须被 surface，而且不许退出。**
+    ///
+    /// 日志帮不上忙：日志目录本身就在待删清单里，`AppLogger` 只在 init 时
+    /// 建目录，删掉之后每一行都静默丢失。用户看到的只会是「应用干净地退出
+    /// 了」——他以为删完了，而 GB 级的模型还在盘上。
+    @Test func failureIsSurfacedToTheUser() async {
+        let recorder = FlowRecorder()
+        let stuck = UninstallPlan.items(home: "/Users/x")[0]
+        recorder.failing = [stuck.path]
+        var reported: [UninstallPlan.Failure] = []
+
+        await runUninstallFlow(
+            home: "/Users/x",
+            sizeOf: { _ in 1_000 },
+            confirm: { _ in true },
+            uninstaller: recorder,
+            report: { reported.append($0) })
+
+        #expect(reported.count == 1, "删不掉东西却没有告诉用户。")
+        let namesTheItem = reported.first?.message.contains(stuck.label) == true
+        #expect(namesTheItem, "提示里没说是哪一样：\(reported.first?.message ?? "（没弹）")")
+        let namesThePath = reported.first?.message.contains(stuck.path) == true
+        #expect(namesThePath, "提示里没给路径，用户没法自己去删。")
+        #expect(!recorder.log.contains("quit"), "有东西没删掉却还是退出了。")
+    }
+
+    /// 全部删干净时**不许**弹那个提示——每次卸载都跳个警告等于狼来了。
+    @Test func cleanRunSaysNothingExtra() async {
+        var reported: [UninstallPlan.Failure] = []
+        let recorder = FlowRecorder()
+        await runUninstallFlow(
+            home: "/Users/x",
+            sizeOf: { _ in 1_000 },
+            confirm: { _ in true },
+            uninstaller: recorder,
+            report: { reported.append($0) })
+        #expect(reported.isEmpty)
+        #expect(recorder.log.last == "quit")
+    }
+
     /// 确认框的每一个字都来自 `UninstallPlan.confirmation(sizeText:)`。
     ///
     /// 这一条与 `presentUninstallConfirmation` 里那段扫源码的断言是一对：
@@ -119,7 +181,12 @@ struct UninstallFlowTests {
 @MainActor
 private final class FlowRecorder: Uninstalling {
     var log: [String] = []
-    func removeItem(at path: String) { log.append("remove:\(path)") }
+    /// 这些路径删不掉（模拟权限不足 / 正被占用）。
+    var failing: Set<String> = []
+    func removeItem(at path: String) -> Bool {
+        log.append("remove:\(path)")
+        return !failing.contains(path)
+    }
     func clearDefaults() { log.append("defaults") }
     func clearKeychain() { log.append("keychain") }
     func quit() { log.append("quit") }

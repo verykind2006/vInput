@@ -1,9 +1,14 @@
 import Foundation
 
 /// 真正动手删东西的能力。抽协议是为了能测——测试里绝不真的删家目录。
+///
+/// `removeItem` **必须回报成败**：删不掉的那一项此前只写一行日志，而日志写在
+/// `~/Library/Logs/vInput`——正是这次要删的第二样东西。也就是说部分失败对
+/// 用户和对我们都不可见：他看到应用干净退出，以为删完了。
 @MainActor
 protocol Uninstalling {
-    func removeItem(at path: String)
+    /// 返回是否真的删掉了（路径本来就不存在也算成功——目标是「它不在了」）。
+    func removeItem(at path: String) -> Bool
     func clearDefaults()
     func clearKeychain()
     func quit()
@@ -83,13 +88,44 @@ enum UninstallPlan {
             cancelButton: "取消")
     }
 
+    /// 删不掉的那些东西要跟用户说的话。全删干净时返回 nil。
+    ///
+    /// **必须点名是哪一样、在哪**：用户此刻唯一能做的事就是自己去 Finder 里
+    /// 把它删掉，而「有一样没删掉」这种话帮不了他。路径也给全，
+    /// 因为这两个目录都在 `~/Library` 下——Finder 默认不显示。
+    nonisolated static func failureNotice(failed: [Item]) -> Failure? {
+        guard !failed.isEmpty else { return nil }
+        let list = failed.map { "\($0.label)：\($0.path)" }.joined(separator: "\n")
+        return Failure(
+            title: "有东西没能删掉",
+            message: """
+                下面这些没能删除，vInput 因此没有退出（其余部分已经删了）：
+
+                \(list)
+
+                可以在「访达」里按 ⇧⌘G 输入上面的路径手动删除，然后再退出 vInput。
+                """)
+    }
+
+    struct Failure: Equatable {
+        let title: String
+        let message: String
+    }
+
     /// 顺序是契约：**先删文件、再清偏好、最后退出**。
     /// 把退出放前面的话，后面几步根本不会发生。
+    ///
+    /// 返回**没能删掉的那些项**。有失败就**不退出**：这是用户唯一还能看见
+    /// 这件事的时机（日志目录本身就在待删清单里，删掉之后
+    /// `AppLogger` 连目录都不会重建，后面几步的日志全部落空）。
+    /// 退出之后再说什么都晚了——他看到的只是应用干净地关掉了。
     @MainActor
-    static func execute(items: [Item], using uninstaller: Uninstalling) async {
-        for item in items { uninstaller.removeItem(at: item.path) }
+    static func execute(items: [Item], using uninstaller: Uninstalling) async -> [Item] {
+        let failed = items.filter { !uninstaller.removeItem(at: $0.path) }
         uninstaller.clearDefaults()
         uninstaller.clearKeychain()
+        guard failed.isEmpty else { return failed }
         uninstaller.quit()
+        return []
     }
 }

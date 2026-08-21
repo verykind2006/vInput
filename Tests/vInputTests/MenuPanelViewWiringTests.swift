@@ -594,6 +594,63 @@ struct MenuPanelViewWiringTests {
             只更新可观察镜像的话，重启之后这个设置就没了，而用户以为它一直在。
             """
         )
+        // **对称的另一半：启动时要把它读回来。**
+        //
+        // 少了这一行不会有任何东西报错，坏结果却正是这套设计要防的那个的
+        // 镜像版本：重启之后面板上「自动」勾着，而向导直接读
+        // `DownloadSourcePreference().forced`、仍然在强制镜像——**面板说的和
+        // 实际做的不一致**，且两边都「自洽」。写与读必须一起钉。
+        let restoresAtLaunch = appModel.contains(
+            "forcedDownloadSource = downloadSourcePreference.forced")
+        #expect(
+            restoresAtLaunch,
+            """
+            bootstrap 里没有把下载源偏好读回可观察镜像。
+            重启后面板会显示「自动」，而向导仍然按上次强制的那个源下载——
+            面板说的和实际做的不一致，且没有任何东西会红。
+            """
+        )
+    }
+
+    /// 「新模型已下载好…」那一行必须挂在**可观察的存储属性**上。
+    ///
+    /// `@Observable` 只跟踪自己的可变存储属性。`pendingModelFolder` 一旦写成
+    /// `{ modelAdoption.pendingFolder }`（`ModelAdoptionQueue` 是普通类），
+    /// 改队列里的字段不通知任何人——那一行「能显示」纯属巧合：
+    /// `adoptDownloadedModel` 恰好先调了 `refreshAvailableModels()`、紧接着
+    /// 进度回调又动了 `downloadingModelProgress`，是这两个被观察的属性顺手
+    /// 让面板失效的。任何一处顺序调整都会静默干掉这一行。
+    ///
+    /// 本仓库为这条规矩付过两次学费（`canRetry`、`correctionEnabled`，
+    /// 它们的注释里都写着同一句）。
+    @Test("待启用的模型挂在可观察的存储属性上，不是队列的转发")
+    func pendingModelFolderIsAnObservableStoredProperty() throws {
+        let source = Self.codeOnly(try Self.source("Sources/vInput/App/AppModel.swift"))
+        let isStored = source.contains("private(set) var pendingModelFolder: String?")
+        #expect(
+            isStored,
+            """
+            AppModel.pendingModelFolder 不再是存储属性。
+            @Observable 看不见 ModelAdoptionQueue 里的字段，面板那行
+            「结束后自动启用」会变成时有时无。
+            """
+        )
+        let forwards = source.contains("pendingModelFolder: String? { modelAdoption")
+        #expect(!forwards, "pendingModelFolder 又写回了对队列的转发——那样它不被观察。")
+
+        // 两个动队列的入口都必须同步镜像，否则那一行只会出现、不会消失
+        // （或者反过来）。
+        for member in ["func adoptDownloadedModel(", "func applyPendingModelAdoption("] {
+            guard let body = Self.functionBody(source, signature: member) else {
+                Issue.record("AppModel 里找不到 \(member) 的函数体。")
+                continue
+            }
+            let syncs = body.contains("syncPendingModelMirror()")
+            #expect(
+                syncs,
+                "\(member) 没有同步 pendingModelFolder 镜像——面板上那行会与实际状态对不上。"
+            )
+        }
     }
 
     /// 「储存位置」那一格：既要说在哪，也要能直接打开。
@@ -608,8 +665,12 @@ struct MenuPanelViewWiringTests {
             return
         }
         for call in [
-            "MenuPanelModel.storageLocationLine(root: model.modelRootPath)",
-            "NSWorkspace.shared.selectFile(",
+            "MenuPanelModel.storageLocationLine(",
+            // 「显示位置」与「在访达中显示」必须用同一个判据，否则会出现
+            // 「说还没建、却又能打开」。目录不存在时退到最近的祖先，
+            // 因为 Finder 拿到不存在的路径是静默无反应的。
+            "MenuPanelModel.revealTarget(",
+            "NSWorkspace.shared.selectFile(target, inFileViewerRootedAtPath: \"\")",
             "presentCorrectionModelFolderPanel()",
         ] {
             let present = advanced.contains(call)

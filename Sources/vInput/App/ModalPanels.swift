@@ -272,6 +272,24 @@ func presentUninstallConfirmation(sizeText: String) -> Bool {
     return alert.runModal() == .alertSecondButtonReturn
 }
 
+/// 「有东西没能删掉」的提示。**文案同样全部来自 `UninstallPlan`**。
+///
+/// 这个弹窗存在的理由：删不掉的那一项此前只留一行日志，而日志写在
+/// `~/Library/Logs/vInput`——正是刚刚被删掉的第二样东西。也就是说部分失败
+/// 对用户完全不可见，他看到的是应用干净地退出，以为删完了。
+/// 现在有失败就不退出，并把「是哪一样、在哪」摆到他面前。
+@MainActor
+func presentUninstallFailure(_ failure: UninstallPlan.Failure) {
+    NSApplication.shared.activate(ignoringOtherApps: true)
+
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = failure.title
+    alert.informativeText = failure.message
+    alert.addButton(withTitle: "好")
+    alert.runModal()
+}
+
 /// 输入云端 API key。
 ///
 /// **用 `NSSecureTextField`**：key 会出现在屏幕上，而用户很可能在会议里

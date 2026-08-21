@@ -50,14 +50,26 @@ enum DiskUsage {
 /// 家目录下的真实目录，跑错一次就是把开发机上的模型和日志清了。
 @MainActor
 struct SystemUninstaller: Uninstalling {
-    func removeItem(at path: String) {
+    /// 删一样东西。**回报成败**，别只写日志：日志写在
+    /// `~/Library/Logs/vInput`，而它正是这次要删的第二样东西——写进去的
+    /// 「删除失败」多半没人看得到（`AppLogger` 只在 init 时建目录，
+    /// 目录没了之后每一行都静默丢失）。
+    func removeItem(at path: String) -> Bool {
+        // 本来就不存在算成功：目标是「它不在了」，而模型还没下载时那个目录
+        // 根本不存在——把它算成失败的话，最干净的一次卸载反而会弹警告。
+        guard FileManager.default.fileExists(atPath: path) else {
+            AppLogger.shared.log("卸载：\(path) 本来就不存在")
+            return true
+        }
         do {
             try FileManager.default.removeItem(atPath: path)
             AppLogger.shared.log("卸载：已删除 \(path)")
+            return true
         } catch {
             // 不中断：某一项删不掉（权限、正被占用）时，剩下的仍然该删干净。
             // 用户看到的结果最差是「少删了一样」，而不是「删了一半就退出了」。
             AppLogger.shared.log("卸载：删除失败 \(path)：\(error)")
+            return false
         }
     }
 
@@ -93,33 +105,50 @@ struct SystemUninstaller: Uninstalling {
 /// 文案一个字都不在这里拼：标题、正文、两个按钮全部来自
 /// `UninstallPlan.confirmation(sizeText:)`，由 `UninstallPlanTests` 钉着
 /// 「必须说清两件我们做不到的事」。
-/// 三个替身参数都是 `nil` 默认值、在函数体里才取生产实现：默认参数表达式
-/// 在 **nonisolated 上下文**里求值，而 `SystemUninstaller` 与那个确认框都是
+/// 四个替身参数都是 `nil` 默认值、在函数体里才取生产实现：默认参数表达式
+/// 在 **nonisolated 上下文**里求值，而 `SystemUninstaller` 与那两个弹窗都是
 /// `@MainActor` 的（`Wiring.makeBackend` 同一个坑，那边的解法是包一层闭包）。
 @MainActor
 func runUninstallFlow(
     home: String = NSHomeDirectory(),
     sizeOf: ((String) -> Int64)? = nil,
     confirm: ((String) -> Bool)? = nil,
-    uninstaller: (any Uninstalling)? = nil
+    uninstaller: (any Uninstalling)? = nil,
+    report: ((UninstallPlan.Failure) -> Void)? = nil
 ) async {
     let sizeOf = sizeOf ?? { DiskUsage.bytes(at: $0) }
     let confirm = confirm ?? { presentUninstallConfirmation(sizeText: $0) }
     let uninstaller = uninstaller ?? SystemUninstaller()
+    let report = report ?? { presentUninstallFailure($0) }
 
     let items = UninstallPlan.items(home: home)
-    // 逐项记一行。**`Item.label` 的用处就在这里**：出问题时「哪一样没删掉」
-    // 得能从日志里读出来，而一串路径读起来要慢一拍。
+    // **整棵树只走一遍。** 扫盘是这条路上唯一耗时的一步（几个 GB、上万个
+    // 文件），而它同步跑在主 actor 上——点完按钮到弹出确认框之间界面是僵的。
+    // 原先记日志一遍、求合计又一遍，等于把那段僵住的时间翻倍。
+    var measured: [String: Int64] = [:]
     for item in items {
+        let bytes = sizeOf(item.path)
+        measured[item.path] = bytes
+        // 逐项记一行。**`Item.label` 的用处就在这里**：出问题时「哪一样没删掉」
+        // 得能从日志里读出来，而一串路径读起来要慢一拍。
         AppLogger.shared.log(
-            "卸载扫描：\(item.label) \(UninstallPlan.humanSize(sizeOf(item.path))) \(item.path)")
+            "卸载扫描：\(item.label) \(UninstallPlan.humanSize(bytes)) \(item.path)")
     }
 
-    let total = UninstallPlan.totalBytes(items: items, sizeOf: sizeOf)
+    // 合计仍然走那个被测着的纯函数，只是喂给它一份已经量好的账
+    // ——自己 `reduce` 一遍的话，「合计怎么算」就有了第二份实现。
+    let total = UninstallPlan.totalBytes(items: items, sizeOf: { measured[$0] ?? 0 })
     guard confirm(UninstallPlan.humanSize(total)) else {
         AppLogger.shared.log("卸载：用户取消")
         return
     }
     AppLogger.shared.log("卸载：用户确认，开始删除")
-    await UninstallPlan.execute(items: items, using: uninstaller)
+
+    let failed = await UninstallPlan.execute(items: items, using: uninstaller)
+    // 有失败就**说出来**。这里是唯一还说得出话的时机：日志目录本身在待删
+    // 清单里，`execute` 走完之后 `AppLogger` 多半已经写不进任何东西了，
+    // 而全删干净的那条路已经在 `execute` 里退出了应用。
+    if let notice = UninstallPlan.failureNotice(failed: failed) {
+        report(notice)
+    }
 }

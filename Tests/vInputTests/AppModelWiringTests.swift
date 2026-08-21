@@ -175,6 +175,29 @@ struct AppModelWiringTests {
             adoptDownloadedModel（它会记账、会话结束时补做）。
             """
         )
+
+        // **补做这条路上不许弹红字。** 目录可能已经不在了（手动删了、卸载过、
+        // 换了盘），而这一步发生在「用户刚说完一句话」的那一刻——
+        // `selectModelFromFolder` 会把 `phase` 打成
+        // 「这不是模型目录，缺少：…」，对他来说是个没有任何上下文的报错：
+        // 他没点过任何东西。所以走 `ModelCatalog.validate` 自己判，失败只记日志。
+        let body = try #require(
+            MenuPanelViewWiringTests.functionBody(
+                MenuPanelViewWiringTests.codeOnly(source),
+                signature: "func applyPendingModelAdoption("),
+            "AppModel 里找不到 applyPendingModelAdoption 的函数体")
+        #expect(
+            !body.contains("selectModelFromFolder("),
+            """
+            补做那条路又走回 selectModelFromFolder 了。
+            目录已经不在时它会把 phase 打成红字，而用户刚说完一句话、
+            什么都没点——那是个毫无上下文的报错。
+            """
+        )
+        #expect(
+            body.contains("ModelCatalog.validate(folder:"),
+            "补做前没有自己校验目录，没法在目录消失时安静地放弃。"
+        )
     }
 
     /// **`AppModel` 里不许再出现第二条挂翻译的路径。**

@@ -31,6 +31,23 @@ import SwiftUI
 struct MenuPanelView: View {
     let model: AppModel
 
+    /// 磁盘上存不存在。抽成一处是为了「显示位置」与「在访达中显示」用的是
+    /// 同一个判据——两处各写一遍的话，会出现「说还没建、却又能打开」。
+    static let pathExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+
+    /// 初始展开哪一行。**只为量高度而存在。**
+    ///
+    /// 面板高度是这一批唯一会真正伤到人的排版指标（`.window` 面板不滚动，
+    /// 13 寸屏够不到底部），而「哪一行展开」是 `@State`，测试进程里点不动。
+    /// 有了这个参数，`MenuPanelLayoutTests` 才能把每一档都摆出来真量一遍，
+    /// 而不是在注释里写一个估算值——R-3 那次就是靠实测才发现旧估算偏了 50pt。
+    ///
+    /// 生产调用方（`vInputApp`）不传它，行为与原来一字不差。
+    init(model: AppModel, initiallyOpen: SettingRow? = nil) {
+        self.model = model
+        _openRow = State(initialValue: initiallyOpen)
+    }
+
     /// 手风琴：一次只展开一行。
     ///
     /// **`.window` 面板不滚动**，超出屏幕的部分够不到，而四行同时展开
@@ -46,7 +63,10 @@ struct MenuPanelView: View {
 
     /// 可展开的行。用枚举而不是四个 Bool：四个 Bool 表示得出「同时开三行」
     /// 这种非法状态，而这里要的恰恰是「至多一行」。
-    private enum SettingRow: Hashable {
+    ///
+    /// internal 而不是 private：`init(model:initiallyOpen:)` 要拿它当参数
+    /// （量高度用，见那边的注释）。
+    enum SettingRow: Hashable {
         case model, correction, outputLanguage, backend, advanced, devTools
     }
 
@@ -332,9 +352,23 @@ struct MenuPanelView: View {
             rowSeparator
             settingRow(.backend, title: "翻译后端", value: backendValueLabel) { backendSection }
             rowSeparator
-            // 第五行。手风琴一次只开一行，所以多这一行只多一个行高
-            // （约 35pt），不会把「最深一档」推高——最深的那一档仍然是
-            // 云端后端展开 + 嵌套的「选择模型」。真机高度请在 Task 9 目检。
+            // 第五行。**高度是量出来的，不是估的**（`MenuPanelHeightTests`，
+            // 2026-08-22 离屏 `fittingSize` 实测）：
+            //
+            //     收起 310 / 模型 363 / 校正 339 / 输出语言 459
+            //     翻译后端（本机）476 / **高级 511**
+            //
+            // 也就是说本批把「最深一档」从 476 抬到了 511——多的不只是一个
+            // 行高：高级展开有 11 行（3 条说明 + 6 个按钮 + 3 条分隔线）。
+            // 再叠上本批新增的两行在飞状态（+74pt）是 585pt，那是测试进程里
+            // 能摆出来的最坏情形。
+            //
+            // 摆不出来、只能在真机上叠加的还有四样（设备卡、上次转写、
+            // 模型列表条目、云端后端展开+嵌套「选择模型」）。按 R-3 实测的
+            // 719pt（那一档含云端嵌套+设备卡+上次转写）推算，最坏组合约
+            // 719 + 35（多这一行收起态）+ 74（两行在飞状态）≈ 828pt，
+            // 而 13 寸可用约 850pt——**只剩约 22pt**。Task 9 真机目检要核的
+            // 就是这个数字；再往面板里加东西之前先重量一次。
             settingRow(.advanced, title: "高级", value: "") { advancedSection }
         }
         .background(VITheme.contentBackground, in: RoundedRectangle(cornerRadius: 9))
@@ -433,10 +467,17 @@ struct MenuPanelView: View {
         // ① 储存位置。**这是好奇的用户唯一能看见「那几个 GB 在哪」的地方**，
         // 也是卸载入口存在的同一条产品义务的另一半：我们把几个 GB 塞进了
         // 用户不感知的目录，就有义务让他看得见、也删得掉。
-        infoLine(MenuPanelModel.storageLocationLine(root: model.modelRootPath))
+        infoLine(
+            MenuPanelModel.storageLocationLine(
+                root: model.modelRootPath, exists: Self.pathExists))
         expandedButton("在访达中显示") {
-            NSWorkspace.shared.selectFile(
-                model.modelRootPath, inFileViewerRootedAtPath: "")
+            // 目录还不存在时退到最近一个存在的祖先：Finder 拿到不存在的路径
+            // 是**静默无反应**的，而首次下载之前这就是常态。
+            guard
+                let target = MenuPanelModel.revealTarget(
+                    root: model.modelRootPath, exists: Self.pathExists)
+            else { return }
+            NSWorkspace.shared.selectFile(target, inFileViewerRootedAtPath: "")
         }
 
         Divider()
