@@ -1444,6 +1444,16 @@ QA 任务书要点：不复述测试结果；查**跨任务接缝**——① 图
 >    开面板 → 点开始听写 → 说一句 → 查 `~/Library/Logs/vInput/vInput.log`，
 >    看目标应用守卫记的 bundle id 是不是 vInput 自己、有没有
 >    `targetApplicationChanged`。
+> 1b. **同一次操作里顺带看 HUD 出没出来。** 复核推出的新风险：修 C1 用的是
+>    `NSApp.hide(nil)`，它把应用置为 hidden，而 HUD 面板整套设计
+>    （`.nonactivatingPanel` + `hidesOnDeactivate = false` +
+>    `orderFrontRegardless()`，`HUDPanel.swift:98-114`）建立在「应用从不被
+>    隐藏」这个前提上。**从面板启动听写时 HUD 可能根本不出现**，而 ⌥D 那条
+>    路一切正常——最容易漏测的形状。日志里现在有「目标应用已记录：…」，
+>    三种读法：记的是 vInput 自己 → 一个 runloop turn 不够，让位没完成；
+>    记的是编辑器但 HUD 没出现 → 就是这条风险，得换机制（`NSApp.deactivate()`
+>    或事件驱动等 `didActivateApplicationNotification`）；记的是编辑器且
+>    HUD 正常 → 两条都过。
 > 2. **开三次面板数三行「重扫模型目录」日志**：一次回答两个问题——刷新是否
 >    每次都跑、DisclosureGroup 状态是否每次重置（这两件事是同一个事实：
 >    视图重建则两者都成立）。

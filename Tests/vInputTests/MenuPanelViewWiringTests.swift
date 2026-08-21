@@ -152,6 +152,40 @@ struct MenuPanelViewWiringTests {
         )
     }
 
+    /// 设置各行必须是手风琴（一次只开一行）。
+    ///
+    /// 理由与上一条同源，都是「开发机上看不见的缺陷」：`.window` 面板不滚动，
+    /// 超出屏幕的部分够不到。四行各自独立展开时，最坏情况（云端档 + 嵌套的
+    /// 「选择模型」+ 设备卡 + 上次转写卡）约 900–1000pt，13 寸屏到顶约 850pt
+    /// ——而作者的屏幕大，怎么点都不会撞到。旧的原生菜单天然一次只开一个
+    /// 子菜单，这是在把那个行为补回来。
+    ///
+    /// 钉两处：单值状态（`SettingRow?` 让「同时开三行」在类型上就表示不出来）
+    /// 与显式绑定（改回各自独立的 `DisclosureGroup` 会让这条红）。
+    @Test("设置各行是手风琴，一次只开一行")
+    func settingsRowsAreAccordion() throws {
+        let source = try Self.panelSource()
+
+        let hasSingleOpenState = source.contains("@State private var openRow: SettingRow?")
+        #expect(
+            hasSingleOpenState,
+            """
+            MenuPanelView 里找不到 `@State private var openRow: SettingRow?`。
+            四行设置若各自独立展开，最坏情况约 900–1000pt，13 寸屏够不到底部
+            （面板不滚动）。单值状态让「同时开多行」在类型上就表示不出来。
+            """
+        )
+
+        let hasExplicitBinding = source.contains("isExpanded: Binding(")
+        #expect(
+            hasExplicitBinding,
+            """
+            设置行不再用显式 isExpanded 绑定——多半是改回了各自持有状态的
+            DisclosureGroup，手风琴行为会一起丢掉。
+            """
+        )
+    }
+
     // MARK: - 文案一律来自 model 层
 
     /// 面板里不许出现任何就地拼的面向用户的警示文案。

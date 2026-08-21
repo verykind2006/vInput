@@ -26,9 +26,20 @@ import AppKit
 /// 只关窗口的话焦点不一定回到原应用。**调用方必须把真正的动作推到下一个
 /// runloop turn**（见 `MenuPanelView.primaryButton`）——焦点交还是异步的，
 /// 同一轮里紧接着 `capture()` 拿到的还是旧值。
+/// **不认「谁是 key 就关谁」。** 面板若压根没成为 key window，
+/// `NSApp.keyWindow` 就是当时碰巧是 key 的那个，而 `VINPUT_BENCH=1` 下那
+/// 可能是基准集录制窗口（`BenchRecordingWindow.swift:83`，`.titled`）。
+/// 关掉它会走 `windowWillClose` → `onClose?()`，**把正在进行的录制一起
+/// 结束掉**——开发期工具被静默中断是很难查的那种事故。
+///
+/// 判据用 `.titled`：本应用自己拉起的有标题栏的窗口只有基准集录制窗，
+/// 而 MenuBarExtra 的宿主窗口没有标题栏。宁可少关一个（`hide` 兜底），
+/// 不可错关一个。
 @MainActor
 func dismissMenuPanel() {
-    NSApp.keyWindow?.close()
+    if let key = NSApp.keyWindow, !key.styleMask.contains(.titled) {
+        key.close()
+    }
     NSApp.hide(nil)
 }
 
