@@ -62,15 +62,42 @@ enum ModelCatalog {
         }
     }
 
-    /// 仓库根目录下的默认模型位置。
+    /// **开发期**位置：仓库根目录下的模型目录。
     ///
-    /// `.app` 位于 `<仓库>/dist/` 下，因此上溯两级。正式分发时
-    /// 应改为应用支持目录（M6 范围）。
+    /// `.app` 位于 `<仓库>/dist/` 下，因此上溯两级。这条路径只在开发机上
+    /// 存在——分发装进 `/Applications` 后，谁在用这个位置都找不到模型，
+    /// 实际去处见 `resolveRoot(appSupport:developmentRoot:exists:)`。
     static func defaultRoot(appBundleURL: URL) -> String {
         appBundleURL
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("vendor/models")
             .path
+    }
+
+    /// 应用支持目录下的模型位置。
+    ///
+    /// **与 `WhisperKitTranscriber.defaultDownloadBase()` 必须是同一个地方**
+    /// ——那边是「下载到哪」，这边是「去哪找」，对不上就会下完还说找不到。
+    nonisolated static func applicationSupportRoot(home: String) -> String {
+        (home as NSString)
+            .appendingPathComponent("Library/Application Support/vInput/huggingface")
+    }
+
+    /// 模型根目录的查找顺序：**开发目录优先，其次应用支持目录**。
+    ///
+    /// 判据就是「那个目录在不在」，不需要环境变量或构建配置来区分开发与分发：
+    /// - 分发版那台机器上 `vendor/models` 不存在 → 走应用支持目录；
+    /// - 开发机上它存在（4.5GB，重下不现实）→ 继续用它。
+    ///
+    /// 两个都不在时返回应用支持目录：那是**将要下载到**的地方，返回 nil 会让
+    /// 调用方误判成「没救了」，而实际只是还没下载。
+    nonisolated static func resolveRoot(
+        appSupport: String,
+        developmentRoot: String,
+        exists: (String) -> Bool
+    ) -> String {
+        if exists(developmentRoot) { return developmentRoot }
+        return appSupport
     }
 }

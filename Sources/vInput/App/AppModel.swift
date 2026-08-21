@@ -446,7 +446,12 @@ final class AppModel {
         }
         syncCorrectionMirrors()
 
-        modelRoot = ModelCatalog.defaultRoot(appBundleURL: Bundle.main.bundleURL)
+        modelRoot = ModelCatalog.resolveRoot(
+            appSupport: ModelCatalog.applicationSupportRoot(
+                home: NSHomeDirectory()),
+            developmentRoot: ModelCatalog.defaultRoot(appBundleURL: Bundle.main.bundleURL),
+            exists: { FileManager.default.fileExists(atPath: $0) }
+        )
         availableModels = ModelCatalog.discover(in: modelRoot)
 
         // 本地一个模型都没有时，退化成让 WhisperKit 自行下载

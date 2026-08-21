@@ -285,6 +285,30 @@ struct AppModelWiringTests {
         )
     }
 
+    // MARK: - 模型根目录解析走 resolveRoot，不直接用 defaultRoot
+
+    /// `bootstrap()` 必须经 `ModelCatalog.resolveRoot(...)` 取模型根目录，
+    /// 不能退回直接调 `ModelCatalog.defaultRoot(appBundleURL:)`。
+    ///
+    /// 这是接线变异，不是逻辑变异：`ModelRootResolutionTests` 那五条测的是
+    /// `resolveRoot` 自身对不对，证明不了 `AppModel` 真的在调它——把这一句
+    /// 换回 `defaultRoot(appBundleURL:)` 之后那五条照样全绿（`resolveRoot`
+    /// 本身没动），装进 `/Applications` 又会回到本批要修的那个核心缺口。
+    @Test("bootstrap 用 resolveRoot 取模型根目录")
+    func bootstrapUsesResolveRootForModelRoot() throws {
+        let body = try Self.memberBody(
+            try Self.appModelSource(), startingAt: "func bootstrap() {")
+        #expect(
+            body.contains("ModelCatalog.resolveRoot("),
+            """
+            bootstrap() 里没有 ModelCatalog.resolveRoot(...)。
+            少了这一步，modelRoot 会退回 defaultRoot(appBundleURL:)——
+            那条路径假定 .app 躺在 <仓库>/dist/ 下，装进 /Applications
+            必然找不到模型。
+            """
+        )
+    }
+
     // MARK: - 遥控器「·」键 → 空格
 
     /// 取 `hidListener.onGravePressed` 那个闭包的源码窗口。
