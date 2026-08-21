@@ -969,6 +969,21 @@ mv vendor/models.bak vendor/models     # 验收后立刻改回
 7. 面板「高级」区：储存位置显示是否正确、「在访达中显示」是否打开对的目录。
 8. **卸载**（放最后，会清掉一切）：体积数字是否合理、确认框的默认按钮是不是「取消」、删完是否退出；重启后是否回到全新状态（向导重新弹）。
 
+- [ ] **Step 3b: 顺带修一条既有的 flaky 测试**（Task 1 发现，与本批无关）
+
+`Tests/vInputTests/CorrectionPipelineTests.swift` 的
+`timeoutReturnsEvenIfWorkIgnoresCancellation`：它用真实墙钟量一次异步调用，
+断言 `elapsed < .milliseconds(800)`，而被测超时是 200ms。配套的假 corrector
+故意忙等 2 秒（`while Date() < deadline {}`，不检查取消，模拟不可取消的 MLX
+同步推理）——**那个忙等会和计时任务抢协作线程池的调度槽**，系统一忙就可能
+让计时任务饿过 800ms，虽然逻辑上超时在 200ms 就正确触发了。实测过一次
+1.2s 失败，单独重跑即绿。
+
+修法三选一（实施时判断哪个最小）：把预算改成相对于 `timeout` 而不是写死的
+常数；把它与同文件里其他忙等测试隔开串行跑；或者把墙钟断言换成顺序/信号
+断言。**不要简单地把 800ms 调大**——那只是把抖动的阈值挪远，没解决忙等
+抢调度这个成因。
+
 - [ ] **Step 4: 更新 Roadmap + 收尾提交**
 
 `docs/Roadmap.md` 的 M9 ② 改为已完成并写验收记录（含未验证项，如实标注）。
