@@ -141,13 +141,23 @@ struct AppModelWiringTests {
     /// 记账与判断在 `ModelAdoptionQueue`（那边有真跑的用例），
     /// 这里钉的是「`AppModel` 真的问了它」——这一行是本文件里
     /// 唯一能守住那条接线的东西。
+    ///
+    /// **断言的是「调用在 onStateChange 里」，不是「这个名字在文件里」。**
+    /// 后者是空守卫：`private func applyPendingModelAdoption()` 那行声明本身
+    /// 就含有这个子串，删掉调用点照样绿——2026-08-22 实测过一次，
+    /// 变异（删掉 `.idle` 分支里那一行）当场全绿。
     @Test("会话回到 idle 时补上被推迟的换模型")
     func idleResumesPendingModelAdoption() throws {
         let source = try Self.appModelSource()
+        let start = try #require(
+            source.range(of: "session.onStateChange"), "找不到 onStateChange，锚点失效了")
+        let end = try #require(
+            source.range(of: "session.onError"), "找不到 onError，锚点失效了")
+        let stateChangeBody = String(source[start.upperBound..<end.lowerBound])
         #expect(
-            source.contains("applyPendingModelAdoption()"),
+            stateChangeBody.contains("self.applyPendingModelAdoption()"),
             """
-            onStateChange 的 .idle 分支里没有 applyPendingModelAdoption()。
+            onStateChange 里没有 self.applyPendingModelAdoption()。
             录音途中下完的模型会被永久搁置——菜单里还是老模型，
             而用户刚等了十几分钟。
             """
