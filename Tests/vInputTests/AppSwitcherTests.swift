@@ -106,28 +106,28 @@ struct AppSwitcherStateTests {
 
     // MARK: - 5. 封顶
 
-    @Test("按住满 5 秒无条件释放，哪怕刚按过")
+    @Test("按住满封顶时长无条件释放，哪怕刚按过")
     func capReleasesEvenWhileStillPressing() {
         // 会话开始于 0，最后一次按键就在此刻——停手那条完全没到期
-        let state = Self.holding(since: 0, lastPress: 5.0, tabs: 20)
+        let state = Self.holding(since: 0, lastPress: 12.0, tabs: 20)
         #expect(AppSwitcher.dueRelease(
-            now: Self.base.addingTimeInterval(5.0), state: state) == .cap,
+            now: Self.base.addingTimeInterval(12.0), state: state) == .cap,
                 "封顶没生效——用户一直连按就能让 Command 无限期按着")
     }
 
     @Test("封顶前一刻不释放")
     func doesNotCapEarly() {
-        let state = Self.holding(since: 0, lastPress: 4.999)
+        let state = Self.holding(since: 0, lastPress: 11.999)
         #expect(AppSwitcher.dueRelease(
-            now: Self.base.addingTimeInterval(4.999), state: state) == nil)
+            now: Self.base.addingTimeInterval(11.999), state: state) == nil)
     }
 
-    /// 两条同时到期时报封顶：「按了 5 秒」比「停手 0.7 秒」更能说明当时发生了什么。
+    /// 两条同时到期时报封顶：「按满了封顶」比「停手 0.7 秒」更能说明当时发生了什么。
     @Test("封顶与停手同时到期时报封顶")
     func capWinsOverIdle() {
         let state = Self.holding(since: 0, lastPress: 1.0)
         #expect(AppSwitcher.dueRelease(
-            now: Self.base.addingTimeInterval(6.0), state: state) == .cap)
+            now: Self.base.addingTimeInterval(13.0), state: state) == .cap)
     }
 
     /// 时钟被 NTP 往回拨时 elapsed 为负。**这里必须往「立刻释放」那边倒**
@@ -151,11 +151,11 @@ struct AppSwitcherStateTests {
     @Test("超过封顶后再按：先抬起再开新会话")
     func pressAfterCapClosesTheOldSession() {
         let state = Self.holding(since: 0, lastPress: 0, tabs: 3)
-        let result = AppSwitcher.press(now: Self.base.addingTimeInterval(6), state: state)
+        let result = AppSwitcher.press(now: Self.base.addingTimeInterval(13), state: state)
         #expect(result.steps == [.commandUp, .commandDown, .tab],
                 "计时器漏拍时又把超时会话往下拖了：\(result.steps)")
         #expect(result.state.holding?.tabCount == 1, "新会话的计数没有重置")
-        #expect(result.state.holding?.since == Self.base.addingTimeInterval(6))
+        #expect(result.state.holding?.since == Self.base.addingTimeInterval(13))
     }
 
     // MARK: - 7. 幂等释放
@@ -174,7 +174,11 @@ struct AppSwitcherStateTests {
     @Test("两个时间常量钉住")
     func constantsArePinned() {
         #expect(AppSwitcher.idleCommitDelay == 0.700)
-        #expect(AppSwitcher.maxHold == 5.0)
+        // 12 秒是 2026-08-22 真机实测后从 5 秒放宽的：那次用户六次会话有三次
+        // 连按到 16 下、一次 20 下（约 190 毫秒一下），其中一次撞上 5 秒被强制
+        // 提交——「一口气按十几下」对这位用户是常态。写死字面量而不是引用
+        // 常量：引用的话改常量测试会跟着自适应，等于没钉。
+        #expect(AppSwitcher.maxHold == 12.0)
         #expect(AppSwitcher.tickInterval == 0.050)
         #expect(AppSwitcher.tickInterval < AppSwitcher.idleCommitDelay,
                 "查得比提交期限还稀，提交会被拖到下一拍之后")
@@ -290,8 +294,8 @@ struct AppSwitcherInstanceTests {
             switcher.press(now: Self.base.addingTimeInterval(Double(index) * 0.5))
         }
         #expect(switcher.isHolding)
-        switcher.tick(now: Self.base.addingTimeInterval(5.0))
-        #expect(!switcher.isHolding, "连按到 5 秒还没释放——Command 可以被无限期按着")
+        switcher.tick(now: Self.base.addingTimeInterval(12.0))
+        #expect(!switcher.isHolding, "连按到封顶时长还没释放——Command 可以被无限期按着")
         #expect(poster.appSwitchSteps.last == .commandUp)
         #expect(poster.appSwitchSteps.filter { $0 == .commandUp }.count == 1)
     }
