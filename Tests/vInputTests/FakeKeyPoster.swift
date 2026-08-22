@@ -17,6 +17,7 @@ final class FakeKeyPoster: KeyPoster, @unchecked Sendable {
     private var count = 0
     private var backspaces = 0
     private var spaces = 0
+    private var appSwitches = 0
 
     var returnCount: Int {
         lock.lock()
@@ -51,6 +52,18 @@ final class FakeKeyPoster: KeyPoster, @unchecked Sendable {
     func postSpace() {
         lock.lock()
         spaces += 1
+        lock.unlock()
+    }
+
+    var appSwitchCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return appSwitches
+    }
+
+    func postAppSwitch() {
+        lock.lock()
+        appSwitches += 1
         lock.unlock()
     }
 }

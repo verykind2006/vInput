@@ -226,10 +226,11 @@ final class AppModel {
     private let mouseSource = MouseAudioSource()
     private let hidListener = RemoteHIDListener()
     private let keySuppressor = RemoteKeySuppressor()
-    /// 「·」键那一路的吞键器。**刻意与 `keySuppressor` 分开**：那个是会话
-    /// 作用域的、坐在听写主路径上、有过 tap 生命周期崩溃史（`6a24f18`），
-    /// 这个是常开的。分开之后这里出问题最多是「·」不被吞，听写照常。
-    private let graveSwallower = GraveKeySwallower()
+    /// 「·」键与菜单键那两路的回声吞键器。**刻意与 `keySuppressor` 分开**：
+    /// 那个是会话作用域的、坐在听写主路径上、有过 tap 生命周期崩溃史
+    /// （`6a24f18`），这个是常开的。分开之后这里出问题最多是原始按键不被吞，
+    /// 听写照常。两个键共用一个实例的理由见 `RemoteEchoSwallower` 的注释。
+    private let echoSwallower = RemoteEchoSwallower()
     private let keepalive = VoiceSessionKeepalive()
     private var remoteCoordinator: RemoteCoordinator?
     private var bluetoothBridge: XiaomiBluetoothBridge?
@@ -393,8 +394,23 @@ final class AppModel {
     /// **注意它只管「注不注空格」，不管「吞不吞原始按键」。**
     /// 那个「·」在任何情况下都不该落到应用里——录音中按了它，正确的结果是
     /// **什么都没发生**，而不是「插了个「·」但没插空格」。所以接线处是先
-    /// 无条件 `graveSwallower.arm()`，再拿本函数决定注不注空格。
+    /// 无条件 `echoSwallower.arm(.grave)`，再拿本函数决定注不注空格。
     nonisolated static func graveKeyPostsSpace(dictationIdle: Bool) -> Bool {
+        dictationIdle
+    }
+
+    /// 遥控器菜单键按下时要不要发 Command+Tab（切到上一个应用）。
+    /// 理由同上两条：**听写进行中忽略**。
+    ///
+    /// 这个键的「错动作」比另外两个更重：说到一半突然切走应用，注入的目标
+    /// 就变了——转写结果会落到刚切过去的那个窗口里，而不是用户看着的那个。
+    /// 与「会话期间按键抑制」同一条哲学：宁可少动作，不要错动作。
+    ///
+    /// **它同样只管「发不发 Command+Tab」，不管「吞不吞原始按键」。**
+    /// 那次原始按键在任何情况下都不该落到应用里——听写中按了它，正确的结果
+    /// 是**什么都没发生**，而不是「没切应用但弹出了右键菜单」。所以接线处
+    /// 是先无条件 `echoSwallower.arm(.contextualMenu)`，再拿本函数决定。
+    nonisolated static func contextMenuKeyPostsAppSwitch(dictationIdle: Bool) -> Bool {
         dictationIdle
     }
 
@@ -2007,7 +2023,7 @@ final class AppModel {
             // 落到应用里——录音中按了它，正确的结果是什么都没发生。
             // 放在最前面还有一层理由：系统投递出的按键只落后 HID 报文
             // 约 2 毫秒，这之前每多做一件事都是风险。
-            self.graveSwallower.arm()
+            self.echoSwallower.arm(.grave)
             guard Self.graveKeyPostsSpace(
                 dictationIdle: (self.session?.state ?? .idle) == .idle)
             else {
@@ -2017,9 +2033,31 @@ final class AppModel {
             AppLogger.shared.log("「·」键按下，注入空格")
             self.remoteKeyPoster.postSpace()
         }
+        // 菜单键 → Command+Tab，切到上一个应用（2026-08-21 用户提的，
+        // 2026-08-22 认出是 usage 0x65）。依据见
+        // HIDReportParser.contextMenuButtonUsage。
+        //
+        // **与「·」键同型，也是两件事**：系统会真的投递这个键（那就是用户
+        // 说的「唤醒菜单」），所以既要发 Command+Tab，也要吞掉原始按键。
+        hidListener.onContextMenuPressed = { [weak self] in
+            guard let self else { return }
+            // **先武装吞键器，且无条件武装。** 那次右键菜单在任何情况下都不该
+            // 弹出来——听写中按了它，正确的结果是什么都没发生。
+            // 放在最前面还有一层理由：系统投递出的按键只落后 HID 报文
+            // 约 2 毫秒，这之前每多做一件事都是风险。
+            self.echoSwallower.arm(.contextualMenu)
+            guard Self.contextMenuKeyPostsAppSwitch(
+                dictationIdle: (self.session?.state ?? .idle) == .idle)
+            else {
+                AppLogger.shared.log("菜单键按下，但正在听写，忽略")
+                return
+            }
+            AppLogger.shared.log("菜单键按下，注入 Command+Tab")
+            self.remoteKeyPoster.postAppSwitch()
+        }
         hidListener.start()
         keySuppressor.start()
-        graveSwallower.start()
+        echoSwallower.start()
 
         // 把鼠标桥当前占着的那台排除掉。遥控器桥的连接判据是「服务 UUID
         // 匹配**或**名字匹配」，若某设备广播了 ATVV 服务 UUID 它就会去连
@@ -2041,7 +2079,7 @@ final class AppModel {
         keySuppressor.stop()
         // 没有 HID 监听就没人来武装它，常开的 tap 也该一起收——
         // 「tap 不能活得比它的用途久」同 `RemoteKeySuppressor` 那条教训。
-        graveSwallower.stop()
+        echoSwallower.stop()
         bluetoothBridge?.stop()
         bluetoothBridge = nil
         remoteCoordinator = nil

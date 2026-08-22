@@ -527,18 +527,43 @@ struct AppModelWiringTests {
             "discoverModels 没有并进导入的目录，那份偏好等于白存。")
     }
 
-    // MARK: - 遥控器「·」键 → 空格
+    // MARK: - 遥控器「·」键 → 空格 / 菜单键 → Command+Tab
 
-    /// 取 `hidListener.onGravePressed` 那个闭包的源码窗口。
-    static func gravePressedBody(_ source: String) throws -> String {
+    /// 取某个 `hidListener.onXxx = { … }` 闭包的源码窗口。
+    ///
+    /// **结束锚点是「下一个 `hidListener.`」，不是写死的 `hidListener.start()`。**
+    /// 2026-08-22 加菜单键那一路时，新闭包插在了「·」键与 `start()` 之间——
+    /// 写死 `start()` 的话，`gravePressedBody` 会把两个闭包一起吃进来，
+    /// 「·」键那几条断言就再也分不清自己看的是哪一段了。
+    static func hidCallbackBody(_ source: String, _ callback: String) throws -> String {
+        let anchor = "hidListener.\(callback) = {"
         let start = try #require(
-            source.range(of: "hidListener.onGravePressed = {"),
-            "找不到 onGravePressed 的接线，这个测试的锚点失效了"
+            source.range(of: anchor),
+            "找不到 \(callback) 的接线，这个测试的锚点失效了"
         )
-        // 闭包本体十几行；到下一个 `hidListener.` 或 `graveSwallower.start()` 为止。
         let rest = source[start.upperBound...]
-        let end = rest.range(of: "\n        hidListener.start()")?.lowerBound ?? rest.endIndex
+        let end = rest.range(of: "\n        hidListener.")?.lowerBound ?? rest.endIndex
         return String(rest[..<end])
+    }
+
+    static func gravePressedBody(_ source: String) throws -> String {
+        try hidCallbackBody(source, "onGravePressed")
+    }
+
+    static func contextMenuPressedBody(_ source: String) throws -> String {
+        try hidCallbackBody(source, "onContextMenuPressed")
+    }
+
+    /// 守上面那个结束锚点：两个闭包的窗口不许互相吃进对方。
+    @Test("两个回声键的接线窗口互不重叠")
+    func callbackBodiesDoNotOverlap() throws {
+        let source = try Self.appModelSource()
+        let grave = try Self.gravePressedBody(source)
+        let menu = try Self.contextMenuPressedBody(source)
+        #expect(!grave.contains("postAppSwitch()"),
+                "「·」键的窗口把菜单键那段一起吃进来了，那几条断言从此分不清看的是哪一段")
+        #expect(!menu.contains("postSpace()"),
+                "菜单键的窗口把「·」键那段一起吃进来了")
     }
 
     /// 这个键要做的是**两件事**，只做一件都不合格：
@@ -547,9 +572,9 @@ struct AppModelWiringTests {
     func graveKeyPostsSpaceAndSwallows() throws {
         let body = try Self.gravePressedBody(try Self.appModelSource())
         #expect(
-            body.contains("graveSwallower.arm()"),
+            body.contains("echoSwallower.arm(.grave)"),
             """
-            onGravePressed 里没有 graveSwallower.arm()。
+            onGravePressed 里没有 echoSwallower.arm(.grave)。
             系统会照常投递这个键（那就是用户看到的「·」），不吞掉的话
             按一下会同时得到「·」和一个空格。
             """
@@ -571,14 +596,14 @@ struct AppModelWiringTests {
     @Test("吞键的武装排在「录音中忽略」守卫之前")
     func graveArmComesBeforeIdleGuard() throws {
         let body = try Self.gravePressedBody(try Self.appModelSource())
-        let arm = body.range(of: "graveSwallower.arm()")
+        let arm = body.range(of: "echoSwallower.arm(.grave)")
         let guardCall = body.range(of: "graveKeyPostsSpace")
         #expect(arm != nil && guardCall != nil)
         if let arm, let guardCall {
             #expect(
                 arm.lowerBound < guardCall.lowerBound,
                 """
-                graveSwallower.arm() 排到了 graveKeyPostsSpace 守卫之后。
+                echoSwallower.arm(.grave) 排到了 graveKeyPostsSpace 守卫之后。
                 录音中误碰这个键会变成「空格不注、「·」照进目标应用」，
                 比什么都不做更糟。
                 """
@@ -590,9 +615,65 @@ struct AppModelWiringTests {
     /// 不收的表现是「tap 活得比它的用途久」——`RemoteKeySuppressor` 为这件事
     /// 崩过四次。
     @Test("吞键器跟着遥控器一起启停")
-    func graveSwallowerStartsAndStops() throws {
+    func echoSwallowerStartsAndStops() throws {
         let source = try Self.appModelSource()
-        #expect(source.contains("graveSwallower.start()"), "startRemote 里没有 graveSwallower.start()。")
-        #expect(source.contains("graveSwallower.stop()"), "stopRemote 里没有 graveSwallower.stop()。")
+        #expect(source.contains("echoSwallower.start()"), "startRemote 里没有 echoSwallower.start()。")
+        #expect(source.contains("echoSwallower.stop()"), "stopRemote 里没有 echoSwallower.stop()。")
+    }
+
+    // MARK: - 遥控器菜单键 → Command+Tab
+
+    /// 与「·」键同型：**两件事都要做**。只发 Command+Tab → 用户同时得到
+    /// 「切了应用」和「弹出右键菜单」；只吞键 → 什么都没发生。
+    @Test("菜单键既发 Command+Tab，也吞掉原始按键")
+    func contextMenuKeyPostsAppSwitchAndSwallows() throws {
+        let body = try Self.contextMenuPressedBody(try Self.appModelSource())
+        #expect(
+            body.contains("echoSwallower.arm(.contextualMenu)"),
+            """
+            onContextMenuPressed 里没有 echoSwallower.arm(.contextualMenu)。
+            系统会照常投递这个键（那就是用户说的「唤醒菜单」），不吞掉的话
+            按一下会同时切换应用并弹出右键菜单。
+            """
+        )
+        #expect(
+            body.contains("remoteKeyPoster.postAppSwitch()"),
+            """
+            onContextMenuPressed 里没有 postAppSwitch()。
+            用户要的是「按一下切到上一个应用」。
+            """
+        )
+    }
+
+    /// **武装必须是无条件的，且排在听写守卫之前。**
+    ///
+    /// 排在守卫之后的后果：听写中误碰这个键，应用不切、右键菜单照弹——
+    /// 正好是最坏的一档。正确的结果是什么都没发生。
+    @Test("菜单键的武装排在「听写中忽略」守卫之前")
+    func contextMenuArmComesBeforeIdleGuard() throws {
+        let body = try Self.contextMenuPressedBody(try Self.appModelSource())
+        let arm = body.range(of: "echoSwallower.arm(.contextualMenu)")
+        let guardCall = body.range(of: "contextMenuKeyPostsAppSwitch")
+        #expect(arm != nil && guardCall != nil)
+        if let arm, let guardCall {
+            #expect(
+                arm.lowerBound < guardCall.lowerBound,
+                """
+                echoSwallower.arm(.contextualMenu) 排到了守卫之后。
+                听写中误碰会变成「应用不切、右键菜单照弹」，比什么都不做更糟。
+                """
+            )
+        }
+    }
+
+    /// 日志是这一路唯一的真机判据（PM 不逐项跑清单，验收要能从日志读出来）。
+    /// 三条：触发、听写中忽略、以及吞键那一行（在 `RemoteEchoSwallower` 里）。
+    @Test("菜单键的两条日志都在")
+    func contextMenuLogsBothOutcomes() throws {
+        let body = try Self.contextMenuPressedBody(try Self.appModelSource())
+        #expect(body.contains("菜单键按下，注入 Command+Tab"),
+                "没有触发日志，真机上「按了没反应」就分不清是没识别还是注入无效")
+        #expect(body.contains("菜单键按下，但正在听写，忽略"),
+                "听写中被忽略这件事没有日志，用户会以为功能坏了")
     }
 }

@@ -18,6 +18,9 @@ final class RemoteHIDListener {
     /// 「·」键被按下时触发（映射成空格，见 `HIDReportParser.graveButtonUsage`）。
     /// 同样只认 usage：注入空格、吞掉原始「·」、录音中怎么办，全在 `AppModel`。
     var onGravePressed: (() -> Void)?
+    /// 菜单键被按下时触发（映射成 Command+Tab，见
+    /// `HIDReportParser.contextMenuButtonUsage`）。同样只认 usage。
+    var onContextMenuPressed: (() -> Void)?
 
     private var manager: IOHIDManager?
     private var pressedUsages: Set<UInt16> = []
@@ -111,13 +114,18 @@ final class RemoteHIDListener {
         if Self.didPress(usage: HIDReportParser.powerButtonUsage, previous: previous, current: current) {
             onPowerPressed?()
         }
-        // 这一路**必须尽早**：回调链的下游要武装 `GraveKeySwallower`，
-        // 而系统投递出来的那个「·」按键只落后本报文约 2 毫秒
+        // 下面两路**必须尽早**：回调链的下游要武装 `RemoteEchoSwallower`，
+        // 而系统投递出来的那次原始按键只落后本报文约 2 毫秒
         // （实测：2026-08-21 16:42:28.286 收到 usage=0x3E，16:42:28.288
         // 事件 tap 才看到 keyCode=96）。这里多做一件耗时的事，就多一分
         // 让原始按键抢在武装之前穿过去的风险。
         if Self.didPress(usage: HIDReportParser.graveButtonUsage, previous: previous, current: current) {
             onGravePressed?()
+        }
+        if Self.didPress(
+            usage: HIDReportParser.contextMenuButtonUsage, previous: previous, current: current
+        ) {
+            onContextMenuPressed?()
         }
     }
 

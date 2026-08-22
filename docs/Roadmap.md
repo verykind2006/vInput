@@ -1503,7 +1503,7 @@ Windows 上跑本地大模型的可行性差异极大——带独显的往往比
 HID 先于键盘事件 2 毫秒到达（实测），据此开 50 毫秒相关性窗口，**只吞窗口
 内那一次**，用户自己键盘的 `` ` `` 与 `~` 一律放行。用户实测通过。
 
-## 待办：遥控器再映射一个键 → Command+Tab（2026-08-21 用户提出）
+## 遥控器菜单键 → Command+Tab（2026-08-21 用户提出，2026-08-22 代码完成，待真机验收）
 
 用户原话：「小米遥控器上还有多余的按键，其中有一个键，我想让它按下去之后，
 起到 Command + Tab 的效果。」
@@ -1532,15 +1532,56 @@ macOS 侧的虚拟键码需要实现时用诊断日志实测，不要猜。
    **这条只有真机能判**：先按现有路子发，不行再换层，别一上来就改公共代码。
 2. **仍要先查系统投不投递这个键。** 空格那次的经验：`0x35` 系统本来就当
    `` ` `` 投递，所以必须用相关性窗口吞掉原始按键，否则「切换应用 + 输入框
-   多个字符」同时发生。新键若同样有投递，直接复用 `GraveKeySwallower` 那套
+   多个字符」同时发生。新键若同样有投递，直接复用当时那套吞回声的机制
+   （即后来改名的 `RemoteEchoSwallower`）
    （HID 先到、50 毫秒窗口、只吞窗口内那一次）；若像关机键那样零投递，
    识别到就发即可，不需要吞。
 
 **语义确认过**：按一下 = 切到上一个应用（不是按住 Cmd 循环选择）——
 用户说的是「按下去起到 Command+Tab 的效果」，单次切换。
 
-排期：M9 第二批（向导 + 卸载）做完之后，与那批的收尾一起做，
-省一轮真机往返（认键、验注入、验 Quick Look 可以同一次做完）。
+### 已实现（2026-08-22）：怎么做的
+
+- **HID 那一段**：`HIDReportParser.contextMenuButtonUsage = 0x65`，
+  `RemoteHIDListener.onContextMenuPressed`，接线在 `AppModel.startRemote`。
+- **吞回声那一段**：原来的 `GraveKeySwallower` 改名成 **`RemoteEchoSwallower`**，
+  从「只认键码 50」改成「认**当前武装的是哪个键**」，两个键共用同一个常开
+  tap。理由：每多装一个 tap，用户的每一次击键就多绕一跳 IPC，而两个键的
+  生命周期与状态机完全相同。
+- **听写中忽略**：`AppModel.contextMenuKeyPostsAppSwitch(dictationIdle:)`，
+  纯函数。**武装是无条件的、排在守卫之前**——听写中误碰的正确结果是
+  「什么都没发生」，不是「应用不切但右键菜单照弹」。
+- **注入那一段**：`KeyPoster.postAppSwitch()`。它**没有复用**
+  `post(key:name:)`：那条路径显式清零修饰键（对回车 / 退格 / 空格是关键
+  行为），而这里恰恰要 Command 是按下的。发四个事件（Command 按下的
+  `flagsChanged` → Tab 按下 → Tab 松开 → Command 松开的 `flagsChanged`），
+  最后那一步立刻发出去，正是「按一下就落定、不停在选择界面」的来源。
+
+### 两条只有真机能判的（验收时按这个看日志）
+
+日志文件：`~/Library/Logs/vInput/vInput.log`。
+
+1. **虚拟键码 110 是推断，不是实测。** 推理链：usage `0x65` = Keyboard
+   Application = PC 键盘的菜单键 → 用户按下时弹出右键菜单 → macOS 把这件事
+   绑在 Carbon 的 `kVK_ContextualMenu`（`0x6E` == 110）上。日志里没有能直接
+   证明它的行：那十下都不在听写会话里，而按键抑制器只在会话期间记键码。
+   - **推断对了**看到：`遥控器菜单键：已吞掉原始按键`，且右键菜单不再弹出。
+   - **推断错了**看到：`遥控器菜单键的武装窗口内出现 keyCode=X，不是 110，
+     未吞`——`X` 就是真实键码（**除了 `keyCode=48`**，那是我们自己注入的
+     Tab 穿过这个 tap，属于预期噪声，同时也证明注入走到了事件层）。
+     改 `RemoteEchoSwallower.Key.contextualMenu.keyCode` 一行即可。
+2. **`.cghidEventTap` 这一层没验证过。** Cmd+Tab 由 WindowServer 在比前台
+   应用更高的层次上截获，普通按键走的 `.cgSessionEventTap` 可能到不了它。
+   - 若日志有 `菜单键按下，注入 Command+Tab` 而应用**没切**，就是这一层的
+     问题：把 `SystemKeyPoster.appSwitchTap` 改成 `.cgSessionEventTap`
+     （`AppSwitchKeyTests` 里「Command+Tab 走 HID 层」那条断言一起改）。
+   - 进程内证不了它：注入 CGEvent 要辅助功能授权（TCC 绑 app bundle），
+     且「应用切没切」只有真机能看。
+
+**顺带留档：`0x4A`（Home）是下一个可用的空键。** 2026-08-22 同一轮里按到了
+（18:26:41 三行 `usage=0x4A`），目前没有映射，已记进 `HIDReportParser` 的
+按键表和一条测试（「Home 键 0x4A 目前不触发任何映射」）。下次再加键不必
+再让用户按一轮。
 
 ## M9 第二批：首次启动向导与可卸载性（2026-08-22 代码完成，待真机验收）
 

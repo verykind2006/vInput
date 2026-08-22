@@ -41,15 +41,15 @@ struct GraveKeyMappingTests {
     /// 键码 50 == `kVK_ANSI_Grave`。它同时是用户自己的 `` ` `` / `~` 键。
     @Test("吞的是键码 50，也就是反引号那个键")
     func graveKeyCodeIsPinned() {
-        #expect(GraveKeySwallower.graveKeyCode == 50)
-        #expect(GraveKeySwallower.graveKeyCode == Int64(kVK_ANSI_Grave))
+        #expect(RemoteEchoSwallower.Key.grave.keyCode == 50)
+        #expect(RemoteEchoSwallower.Key.grave.keyCode == Int64(kVK_ANSI_Grave))
     }
 
     /// 50 毫秒 = 实测 2 毫秒的 25 倍。数从哪来见
-    /// `GraveKeySwallower.correlationWindow` 的注释。
+    /// `RemoteEchoSwallower.correlationWindow` 的注释。
     @Test("相关窗口是 50 毫秒")
     func windowIsPinned() {
-        #expect(GraveKeySwallower.correlationWindow == 0.050)
+        #expect(RemoteEchoSwallower.correlationWindow == 0.050)
     }
 
     /// 注入的是**空格键**，不是别的键。
@@ -67,9 +67,14 @@ struct GraveKeyMappingTests {
 }
 
 /// 吞键状态机本身。纯函数，逐条钉。
-@Suite("「·」键吞键状态机")
-struct GraveKeySwallowerStateTests {
-    static let grave = GraveKeySwallower.graveKeyCode
+///
+/// 2026-08-22 起状态机是**两个键共用**的（「·」与菜单键），所以状态里记的
+/// 不再是「有没有武装」而是「为哪个键武装的」。本套仍以「·」为主角——
+/// 它是危险的那个（键码 50 是用户自己天天在按的键）；两个键之间不能串的
+/// 那几条在 `AppSwitchKeyTests` 里。
+@Suite("遥控器回声吞键状态机")
+struct RemoteEchoSwallowerStateTests {
+    static let grave = RemoteEchoSwallower.Key.grave.keyCode
 
     /// **基准时刻必须取 `timeIntervalSinceReferenceDate: 0`。**
     ///
@@ -83,17 +88,20 @@ struct GraveKeySwallowerStateTests {
     /// ——一条空断言，2026-08-21 变异验证当场抓到（M10）。
     static let base = Date(timeIntervalSinceReferenceDate: 0)
 
-    static func armed(at offset: TimeInterval = 0) -> GraveKeySwallower.State {
-        GraveKeySwallower.State(armedAt: base.addingTimeInterval(offset), awaitingKeyUp: false)
+    static func armed(
+        _ key: RemoteEchoSwallower.Key = .grave, at offset: TimeInterval = 0
+    ) -> RemoteEchoSwallower.State {
+        RemoteEchoSwallower.State(
+            armed: key, armedAt: base.addingTimeInterval(offset), awaitingKeyUpFor: nil)
     }
 
     static func decide(
         keyCode: Int64 = grave,
         isKeyDown: Bool = true,
         at offset: TimeInterval,
-        state: GraveKeySwallower.State
-    ) -> GraveKeySwallower.Decision {
-        GraveKeySwallower.decide(
+        state: RemoteEchoSwallower.State
+    ) -> RemoteEchoSwallower.Decision {
+        RemoteEchoSwallower.decide(
             keyCode: keyCode,
             isKeyDown: isKeyDown,
             now: base.addingTimeInterval(offset),
@@ -105,16 +113,18 @@ struct GraveKeySwallowerStateTests {
     func swallowsInsideWindow() {
         let decision = Self.decide(at: 0.002, state: Self.armed())
         #expect(decision.swallow, "实测的 2 毫秒间隔都没吞掉，这个功能等于没有")
+        #expect(decision.swallowed == .grave, "吞掉的键没记对，日志会写成另一个键")
         #expect(decision.state.armedAt == nil, "武装没被用掉，窗口余下的时间还会继续吞键")
-        #expect(decision.state.awaitingKeyUp, "按下沿吞了，配对的松开沿却没记下来")
+        #expect(decision.state.armed == nil, "武装的键没被清掉")
+        #expect(decision.state.awaitingKeyUpFor == .grave, "按下沿吞了，配对的松开沿却没记下来")
     }
 
     /// **本套最重要的一条。** 没武装时的「·」就是用户自己按的反引号。
     @Test("没有武装时「·」照常放行")
     func passesWhenNotArmed() {
-        let decision = Self.decide(at: 0, state: GraveKeySwallower.State())
+        let decision = Self.decide(at: 0, state: RemoteEchoSwallower.State())
         #expect(!decision.swallow, "无差别吞掉了键码 50——用户的反引号键坏了")
-        #expect(!decision.state.awaitingKeyUp)
+        #expect(decision.state.awaitingKeyUpFor == nil)
     }
 
     /// 窗口过期之后同样是用户自己的键。
@@ -123,6 +133,7 @@ struct GraveKeySwallowerStateTests {
         let decision = Self.decide(at: 0.051, state: Self.armed())
         #expect(!decision.swallow, "窗口已过还在吞键，用户的反引号键会被随机吃掉")
         #expect(decision.state.armedAt == nil, "过期的武装没被清掉")
+        #expect(decision.state.awaitingKeyUpFor == nil, "没吞按下沿却记了要吞松开沿")
     }
 
     /// 边界取闭区间：恰好 50 毫秒算命中。
@@ -130,12 +141,12 @@ struct GraveKeySwallowerStateTests {
     @Test("恰好落在窗口边界上算命中")
     func windowBoundaryIsInclusive() {
         let armedAt = Self.base
-        let now = armedAt.addingTimeInterval(GraveKeySwallower.correlationWindow)
-        #expect(now.timeIntervalSince(armedAt) == GraveKeySwallower.correlationWindow,
+        let now = armedAt.addingTimeInterval(RemoteEchoSwallower.correlationWindow)
+        #expect(now.timeIntervalSince(armedAt) == RemoteEchoSwallower.correlationWindow,
                 "基准时刻选得不对，这条断言根本没落在边界上")
-        let decision = GraveKeySwallower.decide(
+        let decision = RemoteEchoSwallower.decide(
             keyCode: Self.grave, isKeyDown: true, now: now,
-            state: GraveKeySwallower.State(armedAt: armedAt, awaitingKeyUp: false))
+            state: RemoteEchoSwallower.State(armed: .grave, armedAt: armedAt, awaitingKeyUpFor: nil))
         #expect(decision.swallow)
     }
 
@@ -163,7 +174,7 @@ struct GraveKeySwallowerStateTests {
         let down = Self.decide(at: 0.002, state: Self.armed())
         let up = Self.decide(isKeyDown: false, at: 0.06, state: down.state)
         #expect(up.swallow, "只吞了一半，应用会收到一个没有配对按下的松开事件")
-        #expect(!up.state.awaitingKeyUp, "松开沿吞完没有复位，下一次松开会被误吞")
+        #expect(up.state.awaitingKeyUpFor == nil, "松开沿吞完没有复位，下一次松开会被误吞")
     }
 
     /// 松开沿**不看窗口，只看有没有吞过配对的按下沿**——所以没吞过按下沿时
@@ -177,6 +188,9 @@ struct GraveKeySwallowerStateTests {
     /// 我们自己注入的空格会**穿过我们自己这个 tap**（常开、head-insert、
     /// 而 `postSpace` 发到 `.cgSessionEventTap`）。它必须原样放行，
     /// 否则这个功能会把自己注入的空格吃掉，表现是「按键完全没反应」。
+    ///
+    /// 真机日志能看到这一条在跑：`遥控器「·」键的武装窗口内出现
+    /// keyCode=49，不是 50，未吞`（2026-08-22 18:26:36.439 等）。
     @Test("我们注入的空格不会被自己吞掉")
     func doesNotSwallowItsOwnSpace() {
         let decision = Self.decide(keyCode: Int64(kVK_Space), at: 0.001, state: Self.armed())
@@ -205,13 +219,13 @@ struct GraveKeySwallowerStateTests {
 
     // MARK: - 诊断观测口
 
-    /// 「遥控器那个键到事件层是 keyCode 50」是本功能唯一一条**推断**
-    /// （日志里从来没出现过一行 `keyCode=50`，理由见
-    /// `Decision.observedWhileArmed`）。这个观测口就是它错了时的兜底。
+    /// 「遥控器那个键到事件层是哪个键码」是本功能唯一一类**推断**
+    /// （日志里从没直接出现过，理由见 `Decision.observedWhileArmed`）。
+    /// 这个观测口就是它错了时的兜底。
     @Test("武装窗口内的非「·」按下沿会被观测到")
     func observesNonGraveKeyDownWhileArmed() {
         let decision = Self.decide(keyCode: 24, at: 0.002, state: Self.armed())
-        #expect(decision.observedWhileArmed, "推断错了的话，日志里连真实键码都没有")
+        #expect(decision.observedWhileArmed == .grave, "推断错了的话，日志里连真实键码都没有")
         #expect(!decision.swallow, "观测口不该顺手把键吞了")
     }
 
@@ -224,8 +238,8 @@ struct GraveKeySwallowerStateTests {
             for isDown in [true, false] {
                 let decision = Self.decide(
                     keyCode: code, isKeyDown: isDown, at: 0,
-                    state: GraveKeySwallower.State())
-                if decision.observedWhileArmed { observed.append(code) }
+                    state: RemoteEchoSwallower.State())
+                if decision.observedWhileArmed != nil { observed.append(code) }
             }
         }
         #expect(observed.isEmpty, "武装窗口外记了这些键码，成了键盘记录器：\(observed)")
@@ -233,21 +247,21 @@ struct GraveKeySwallowerStateTests {
 
     @Test("窗口过期后不再观测")
     func stopsObservingAfterWindow() {
-        #expect(!Self.decide(keyCode: 24, at: 0.051, state: Self.armed()).observedWhileArmed)
+        #expect(Self.decide(keyCode: 24, at: 0.051, state: Self.armed()).observedWhileArmed == nil)
     }
 
     /// 只记按下沿：松开沿一起记只是把同一件事写两遍。
     @Test("松开沿不观测")
     func doesNotObserveKeyUp() {
-        #expect(!Self.decide(
+        #expect(Self.decide(
             keyCode: 24, isKeyDown: false, at: 0.002, state: Self.armed()
-        ).observedWhileArmed)
+        ).observedWhileArmed == nil)
     }
 
     /// 「·」自己走的是吞键那条路，日志由 `handle` 那边记，不重复观测。
     @Test("「·」本身不走观测口")
     func graveItselfIsNotObserved() {
-        #expect(!Self.decide(at: 0.002, state: Self.armed()).observedWhileArmed)
+        #expect(Self.decide(at: 0.002, state: Self.armed()).observedWhileArmed == nil)
     }
 }
 
@@ -257,8 +271,8 @@ struct GraveKeySwallowerStateTests {
 /// （见那边 `TapInstaller` 的注释里的崩溃报告），本类是照它的形状写的，
 /// 同一个坑必须同样堵上。
 @MainActor
-@Suite("「·」键吞键器的 tap 生命周期")
-struct GraveKeySwallowerTapTests {
+@Suite("遥控器回声吞键器的 tap 生命周期")
+struct RemoteEchoSwallowerTapTests {
     @MainActor
     final class FakeTap: EventTapping {
         private(set) var invalidateCount = 0
@@ -282,8 +296,8 @@ struct GraveKeySwallowerTapTests {
 
     private func makeSwallower(
         tap: FakeTap? = nil, counter: InstallCounter? = nil
-    ) -> GraveKeySwallower {
-        GraveKeySwallower(installer: { _ in
+    ) -> RemoteEchoSwallower {
+        RemoteEchoSwallower(installer: { _ in
             counter?.count += 1
             return tap
         })
@@ -296,7 +310,7 @@ struct GraveKeySwallowerTapTests {
         let swallower = makeSwallower()
         swallower.start()
         #expect(!swallower.hasTap, "测试进程装了真的 CGEvent tap")
-        swallower.arm()
+        swallower.arm(.grave)
         #expect(!swallower.hasTap, "arm() 里的补装重试装了真 tap")
     }
 
@@ -307,7 +321,7 @@ struct GraveKeySwallowerTapTests {
         swallower.start()
         #expect(swallower.hasTap)
         swallower.start()
-        swallower.arm()
+        swallower.arm(.grave)
         #expect(counter.count == 1, "重复装了 tap，系统里会留下够不到的第二个")
     }
 
@@ -318,7 +332,7 @@ struct GraveKeySwallowerTapTests {
         let counter = InstallCounter()
         let swallower = makeSwallower(tap: FakeTap(), counter: counter)
         #expect(!swallower.hasTap)
-        swallower.arm()
+        swallower.arm(.grave)
         #expect(swallower.hasTap, "arm() 没有补装 tap，补授权之后要重启才生效")
         #expect(counter.count == 1)
     }
@@ -329,7 +343,7 @@ struct GraveKeySwallowerTapTests {
     func stopInvalidatesAndDisarms() {
         let tap = FakeTap()
         let swallower = makeSwallower(tap: tap)
-        swallower.arm()
+        swallower.arm(.grave)
         #expect(swallower.hasTap)
 
         swallower.stop()
@@ -338,7 +352,8 @@ struct GraveKeySwallowerTapTests {
 
         // 停掉之后残留的武装若还在，下次 start 会莫名其妙吞掉一个反引号。
         swallower.start()
-        #expect(!swallower.consume(keyCode: GraveKeySwallower.graveKeyCode, isKeyDown: true).swallow,
+        #expect(!swallower.consume(
+            keyCode: RemoteEchoSwallower.Key.grave.keyCode, isKeyDown: true).swallow,
                 "stop 之后武装还留着")
     }
 
@@ -360,16 +375,32 @@ struct GraveKeySwallowerTapTests {
     func consumeFollowsStateMachine() {
         let swallower = makeSwallower(tap: FakeTap())
         let now = Date()
-        swallower.arm(now: now)
+        swallower.arm(.grave, now: now)
         #expect(swallower.consume(
-            keyCode: GraveKeySwallower.graveKeyCode, isKeyDown: true,
+            keyCode: RemoteEchoSwallower.Key.grave.keyCode, isKeyDown: true,
             now: now.addingTimeInterval(0.002)).swallow)
         #expect(swallower.consume(
-            keyCode: GraveKeySwallower.graveKeyCode, isKeyDown: false,
+            keyCode: RemoteEchoSwallower.Key.grave.keyCode, isKeyDown: false,
             now: now.addingTimeInterval(0.06)).swallow)
         // 武装用掉之后，用户自己按的反引号必须原样放行
         #expect(!swallower.consume(
-            keyCode: GraveKeySwallower.graveKeyCode, isKeyDown: true,
+            keyCode: RemoteEchoSwallower.Key.grave.keyCode, isKeyDown: true,
             now: now.addingTimeInterval(1)).swallow)
+    }
+
+    /// 实例入口认得两个键：为菜单键武装时，吞的是菜单键那个键码。
+    @Test("实例入口按武装的那个键吞")
+    func consumeHonoursArmedKey() {
+        let swallower = makeSwallower(tap: FakeTap())
+        let now = Date()
+        swallower.arm(.contextualMenu, now: now)
+        #expect(!swallower.consume(
+            keyCode: RemoteEchoSwallower.Key.grave.keyCode, isKeyDown: true,
+            now: now.addingTimeInterval(0.002)).swallow,
+                "为菜单键武装，却把反引号吞了")
+        #expect(swallower.consume(
+            keyCode: RemoteEchoSwallower.Key.contextualMenu.keyCode, isKeyDown: true,
+            now: now.addingTimeInterval(0.003)).swallow,
+                "为菜单键武装，菜单键却没被吞")
     }
 }
