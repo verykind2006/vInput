@@ -560,7 +560,7 @@ struct AppModelWiringTests {
         let source = try Self.appModelSource()
         let grave = try Self.gravePressedBody(source)
         let menu = try Self.contextMenuPressedBody(source)
-        #expect(!grave.contains("postAppSwitch()"),
+        #expect(!grave.contains("appSwitcher.press()"),
                 "「·」键的窗口把菜单键那段一起吃进来了，那几条断言从此分不清看的是哪一段")
         #expect(!menu.contains("postSpace()"),
                 "菜单键的窗口把「·」键那段一起吃进来了")
@@ -637,10 +637,11 @@ struct AppModelWiringTests {
             """
         )
         #expect(
-            body.contains("remoteKeyPoster.postAppSwitch()"),
+            body.contains("appSwitcher.press()"),
             """
-            onContextMenuPressed 里没有 postAppSwitch()。
-            用户要的是「按一下切到上一个应用」。
+            onContextMenuPressed 里没有 appSwitcher.press()。
+            用户要的是「连按能在最近使用列表里一格一格往后翻」，
+            那需要 Command 按住跨越多次按键——不是发一次 Command+Tab。
             """
         )
     }
@@ -671,9 +672,56 @@ struct AppModelWiringTests {
     @Test("菜单键的两条日志都在")
     func contextMenuLogsBothOutcomes() throws {
         let body = try Self.contextMenuPressedBody(try Self.appModelSource())
-        #expect(body.contains("菜单键按下，注入 Command+Tab"),
+        #expect(body.contains("菜单键按下，推进应用切换器"),
                 "没有触发日志，真机上「按了没反应」就分不清是没识别还是注入无效")
         #expect(body.contains("菜单键按下，但正在听写，忽略"),
                 "听写中被忽略这件事没有日志，用户会以为功能坏了")
+    }
+
+    // MARK: - 应用切换器的兜底接线
+
+    /// **「听写中忽略这个键」那个守卫只挡新按键，挡不住一个已经按住的 Command。**
+    ///
+    /// 失效链：用户按了菜单键 → 在那 0.7 秒里又按语音键开始说话 →
+    /// Command 一直按到停手计时器到点为止，期间语音键那一路的按键全变成快捷键。
+    ///
+    /// 挂在 `onStateChange` 而不是三个 `session.start()` 调用点上：⌥D、遥控器、
+    /// 鼠标三条路都汇到这一个回调，逐个去接迟早漏一个（`keySuppressor` 的
+    /// Esc 出口就漏过一次）。
+    @Test("听写一开始就释放按住的 Command")
+    func dictationReleasesHeldCommand() throws {
+        let source = try Self.appModelSource()
+        // 精确切出 onStateChange 那个闭包：`memberBody` 的结束锚点是下一个
+        // 四格缩进的 `///`，在这里会一路吃到几十行之后，断言就形同虚设。
+        let start = try #require(
+            source.range(of: "session.onStateChange = { [weak self] state in"),
+            "找不到 onStateChange 的接线，这个测试的锚点失效了")
+        let rest = source[start.upperBound...]
+        let end = try #require(
+            rest.range(of: "\n        session.onError")?.lowerBound,
+            "找不到 onStateChange 的结束锚点")
+        let body = String(rest[..<end])
+        #expect(
+            body.contains("appSwitcher.release(reason: .dictation)"),
+            """
+            onStateChange 里没有 appSwitcher.release(reason: .dictation)。
+            听写开始时按住的 Command 不会被抬起，说话期间的按键全变成快捷键。
+            """
+        )
+        let release = try #require(body.range(of: "appSwitcher.release(reason: .dictation)"))
+        let phaseSwitch = try #require(body.range(of: "switch state {"))
+        #expect(release.lowerBound < phaseSwitch.lowerBound,
+                "释放排到了状态分发之后——中间任何一步 return 都会把这条兜底跳过去")
+    }
+
+    /// 兜底之三与之五的接线：失活观察者跟着遥控器一起挂、一起摘，
+    /// 摘的时候顺带无条件释放。
+    @Test("应用切换器跟着遥控器一起启停")
+    func appSwitcherStartsAndStops() throws {
+        let source = try Self.appModelSource()
+        #expect(source.contains("appSwitcher.start()"),
+                "startRemote 里没有 appSwitcher.start()——「应用失活就抬起 Command」那条兜底没挂上。")
+        #expect(source.contains("appSwitcher.stop()"),
+                "stopRemote 里没有 appSwitcher.stop()——遥控器都停了还可能留着一个按住的 Command。")
     }
 }

@@ -58,12 +58,10 @@ struct AppSwitchKeyTests {
         #expect(!AppModel.contextMenuKeyPostsAppSwitch(dictationIdle: false))
     }
 
-    /// **macOS 虚拟键码这一条是推断，不是实测**——但不是猜：
+    /// **原先是推断，2026-08-22 真机验收确认对了。**
     /// usage 0x65 = Keyboard Application = PC 键盘的菜单键，用户按下时看到的
     /// 现象是弹出右键菜单，而 macOS 把这件事绑在 `kVK_ContextualMenu` 上。
-    ///
-    /// 日志里没有能直接证明它的行：那十下都不在听写会话里，而按键抑制器只在
-    /// 会话期间记键码。真机兜底是 `Decision.observedWhileArmed` 那个诊断口。
+    /// 真机上按下菜单键既切了应用、右键菜单也不再弹出——说明吞的正是它。
     ///
     /// 这条断言守的仍然只是「有没有引错常量」——「110 这个数对不对」在
     /// 进程内证不了，同 `SystemKeyPoster.spaceKey` 那条的处境。
@@ -97,20 +95,17 @@ struct AppSwitchKeyTests {
         #expect(SystemKeyPoster.commandKey == CGKeyCode(kVK_Command))
     }
 
-    /// **这条是「真机说要换层时改哪一行」的书签。**
+    /// **2026-08-22 真机验收：这一层是对的。**
     ///
     /// Cmd+Tab 由 WindowServer 在比前台应用更高的层次上截获，普通按键走的
-    /// `.cgSessionEventTap` 可能到不了它，所以这一路默认走 `.cghidEventTap`。
-    /// **这个选择没有在真机上验证过**（注入要辅助功能授权，且「应用切没切」
-    /// 只有真机能看）。真机若不生效：改
-    /// `SystemKeyPoster.appSwitchTap` 为 `.cgSessionEventTap`，并把这条断言
-    /// 一起改过来。
+    /// `.cgSessionEventTap` 到不到得了它当时是个未知数，所以这一路走
+    /// `.cghidEventTap`。真机上短按确实切到了上一个应用——注入这条链通了。
     ///
-    /// 同时钉住另外三个键**没有**被顺手改层——它们那条路是真机验过的。
+    /// 同时钉住另外三个键**没有**被顺手改层——它们那条路也是真机验过的。
     @Test("Command+Tab 走 HID 层，其余三个键仍走会话层")
     func tapLayersArePinned() {
         #expect(SystemKeyPoster.appSwitchTap == .cghidEventTap,
-                "换层了就把这条一起改；改之前先确认真机日志里有「菜单键按下，注入 Command+Tab」")
+                "这一层 2026-08-22 真机验过是对的，别改")
         #expect(SystemKeyPoster.defaultTap == .cgSessionEventTap,
                 "回车 / 退格 / 空格三条是真机验过的，不该被 Command+Tab 那一路带着改层")
     }

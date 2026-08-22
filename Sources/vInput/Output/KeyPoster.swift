@@ -2,6 +2,24 @@ import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
 
+/// 应用切换器会话里的一步。
+///
+/// **切换器不是一次按键，是一段按住 Command 的会话**：Command 按下 →
+/// 一个或多个 Tab → Command 抬起，抬起那一刻切换才落地。攒会话的逻辑在
+/// `AppSwitcher`，这里只负责把某一步真的发出去。
+///
+/// 拆成三步而不是一个 `postAppSwitch()`，是 2026-08-22 真机验收之后改的：
+/// 原来那版一次按键就把 Command 松开，macOS 随即重排 MRU，用户只能在两个
+/// 应用之间来回，翻不到第三个。
+enum AppSwitchStep: String, Sendable, CaseIterable {
+    /// 按住 Command（`flagsChanged`）。浮层由它唤出。
+    case commandDown
+    /// 按一次 Tab，Command 保持按住。选中项前进一格。
+    case tab
+    /// 抬起 Command（`flagsChanged`）。**切换在这一刻才提交。**
+    case commandUp
+}
+
 /// 把一次按键送给前台应用。
 ///
 /// 抽成协议是为了能测：真发 `CGEvent` 需要辅助功能授权，而测试进程拿不到
@@ -19,13 +37,13 @@ protocol KeyPoster: Sendable {
     /// 那是系统对空格**键**的响应；往输入框塞一个 " " 不会弹出预览。
     /// 所以它走这条 CGEvent 注入的路，不走 `TextSink`。
     func postSpace()
-    /// Command+Tab：切到上一个应用。遥控器菜单键的映射目标
-    /// （2026-08-21 用户提的，见 `HIDReportParser.contextMenuButtonUsage`）。
+    /// 应用切换器会话的一步。遥控器菜单键的映射目标（2026-08-21 用户提的，
+    /// 见 `HIDReportParser.contextMenuButtonUsage`）。
     ///
-    /// **语义是「按一下切到上一个应用」**，不是「按住 Cmd 循环选择」。
-    /// 上面三个键的注入路径**清零修饰键**，这一个恰恰相反——它必须带着
-    /// `.maskCommand`。理由与实现见 `SystemKeyPoster.postAppSwitch`。
-    func postAppSwitch()
+    /// **哪一步在什么时候发，由 `AppSwitcher` 决定，不由这里决定。**
+    /// 上面三个键的注入路径**清零修饰键**，这一路恰恰相反——它要让 Command
+    /// 跨越多次按键一直按着。理由与实现见 `SystemKeyPoster.postAppSwitch`。
+    func postAppSwitch(_ step: AppSwitchStep)
 }
 
 struct SystemKeyPoster: KeyPoster {
@@ -57,14 +75,10 @@ struct SystemKeyPoster: KeyPoster {
     /// 通行做法是走 `.cghidEventTap`（HID 层，位置更靠前，等价于「像真键盘
     /// 一样按下去」），所以默认取它。
     ///
-    /// **真机上若按下菜单键没有切换应用，第一件要试的就是把这一行改成
-    /// `.cgSessionEventTap`**（`AppSwitchKeyTests` 里那条钉断言要一起改）。
-    /// 判据在日志：只要看到「菜单键按下，注入 Command+Tab」而应用没切，
-    /// 就是这一层的问题，不必怀疑识别与吞键那两段。
-    ///
-    /// 为什么不在进程内证明它：注入 CGEvent 需要辅助功能授权，测试进程拿
-    /// 不到（TCC 绑 app bundle）；就算发出去了，「应用有没有切」这件事也
-    /// 只有真机能看。所以这里做的是**让换层的成本降到改一行**。
+    /// **2026-08-22 真机验收：这一层是对的，不用改。** 短按确实切到了上一个
+    /// 应用——注入这条链（HID 层 + `kVK_ContextualMenu` == 110）整条通了。
+    /// 原先「未验证、不生效就改这一行」的说明到此作废，留着这段是为了下次
+    /// 有人怀疑注入层时不必再验一遍。
     static let appSwitchTap: CGEventTapLocation = .cghidEventTap
 
     /// nonisolated + Sendable：`CGEvent` 的发送是线程安全的。
@@ -84,52 +98,58 @@ struct SystemKeyPoster: KeyPoster {
         post(key: Self.spaceKey, name: "空格")
     }
 
-    /// Command+Tab。**它不能复用 `post(key:name:)`**：那条路径显式清零修饰键，
-    /// 而这里恰恰需要 Command 是按下的。所以写成一个兄弟函数，不去动那条
-    /// 已经真机验过的路——清零那一步对回车 / 退格 / 空格是**关键行为**，
-    /// 理由见下面的注释。
+    /// 应用切换器会话的一步。**它不能复用 `post(key:name:)`**：那条路径
+    /// 显式清零修饰键，而这一路恰恰需要 Command 是按下的。所以写成一个
+    /// 兄弟函数，不去动那条已经真机验过的路——清零那一步对回车 / 退格 /
+    /// 空格是**关键行为**，理由见下面 `post` 里的注释。
     ///
-    /// **为什么发四个事件而不是「一个带 Command 标志的 Tab」。**
-    /// 应用切换器不是普通快捷键：它靠的是「Command 处于按下状态」这个
-    /// **修饰键状态**，而不是某个事件上的标志位。只发一个带 `.maskCommand`
-    /// 的 Tab，系统这边的修饰键状态从头到尾没变过，切换器可能根本不认。
-    /// 所以按真键盘的顺序补全：
+    /// **为什么 Command 要用 `flagsChanged` 而不是普通按键事件。**
+    /// 应用切换器靠的是「Command 处于按下状态」这个**修饰键状态**，
+    /// 不是某个事件上的标志位。`CGEvent` 造不出 `flagsChanged`，
+    /// 只能先造键盘事件再改 `type`——这是这类注入的通行写法。
     ///
-    /// 1. `flagsChanged`，Command 按下（键码 55，标志 `.maskCommand`）；
-    /// 2. Tab 按下，带 `.maskCommand`；
-    /// 3. Tab 松开，带 `.maskCommand`；
-    /// 4. `flagsChanged`，Command 松开（标志清空）。
-    ///
-    /// 第 4 步立刻发出去，正是「按一下 = 切到上一个应用」这个语义的来源：
-    /// Command 一松，切换器当场落定，不会停在选择界面上等用户。
-    ///
-    /// `CGEvent` 造不出 `flagsChanged`，只能先造键盘事件再改 `type`
-    /// ——这是这类注入的通行写法。
-    func postAppSwitch() {
-        guard
-            let commandDown = CGEvent(
-                keyboardEventSource: nil, virtualKey: Self.commandKey, keyDown: true),
-            let tabDown = CGEvent(
-                keyboardEventSource: nil, virtualKey: Self.tabKey, keyDown: true),
-            let tabUp = CGEvent(
-                keyboardEventSource: nil, virtualKey: Self.tabKey, keyDown: false),
-            let commandUp = CGEvent(
-                keyboardEventSource: nil, virtualKey: Self.commandKey, keyDown: false)
+    /// **为什么三步分开发（2026-08-22 真机验收后改的）。**
+    /// 原来是「按一下发全四个事件」，Command 当场松开。macOS 一提交切换就
+    /// 重排 MRU，于是下一次按又从头开始，用户只能在两个应用之间来回。
+    /// 现在 Command 由 `AppSwitcher` 按住跨越多次按键，中间只补 Tab，
+    /// 停手才抬起。**哪一步在什么时候发，这里不判断。**
+    func postAppSwitch(_ step: AppSwitchStep) {
+        switch step {
+        case .commandDown:
+            postCommandFlag(down: true)
+        case .commandUp:
+            // 抬起那一刻切换才提交；同时它是「卡住的修饰键」那条风险的出口，
+            // 所以 `flags` 显式清空——不清的话系统会留在「Command 还按着」
+            // 的状态里，之后用户敲什么都变成快捷键。
+            postCommandFlag(down: false)
+        case .tab:
+            guard
+                let down = CGEvent(
+                    keyboardEventSource: nil, virtualKey: Self.tabKey, keyDown: true),
+                let up = CGEvent(
+                    keyboardEventSource: nil, virtualKey: Self.tabKey, keyDown: false)
+            else {
+                AppLogger.shared.log("应用切换器 Tab 注入失败：建不出 CGEvent")
+                return
+            }
+            // 带着 Command 标志：切换器认的是「Command 按着时按下的 Tab」。
+            down.flags = .maskCommand
+            up.flags = .maskCommand
+            down.post(tap: Self.appSwitchTap)
+            up.post(tap: Self.appSwitchTap)
+        }
+    }
+
+    private func postCommandFlag(down: Bool) {
+        guard let event = CGEvent(
+            keyboardEventSource: nil, virtualKey: Self.commandKey, keyDown: down)
         else {
-            AppLogger.shared.log("Command+Tab 注入失败：建不出 CGEvent")
+            AppLogger.shared.log("应用切换器 Command \(down ? "按下" : "抬起")注入失败：建不出 CGEvent")
             return
         }
-        commandDown.type = .flagsChanged
-        commandUp.type = .flagsChanged
-        commandDown.flags = .maskCommand
-        tabDown.flags = .maskCommand
-        tabUp.flags = .maskCommand
-        // 最后一个显式清空：不清的话系统会留在「Command 还按着」的状态里，
-        // 之后用户敲什么都变成快捷键。
-        commandUp.flags = []
-        for event in [commandDown, tabDown, tabUp, commandUp] {
-            event.post(tap: Self.appSwitchTap)
-        }
+        event.type = .flagsChanged
+        event.flags = down ? .maskCommand : []
+        event.post(tap: Self.appSwitchTap)
     }
 
     private func post(key: CGKeyCode, name: String) {

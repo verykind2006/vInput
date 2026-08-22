@@ -1503,7 +1503,7 @@ Windows 上跑本地大模型的可行性差异极大——带独显的往往比
 HID 先于键盘事件 2 毫秒到达（实测），据此开 50 毫秒相关性窗口，**只吞窗口
 内那一次**，用户自己键盘的 `` ` `` 与 `~` 一律放行。用户实测通过。
 
-## 遥控器菜单键 → Command+Tab（2026-08-21 用户提出，2026-08-22 代码完成，待真机验收）
+## 遥控器菜单键 → Command+Tab（2026-08-21 用户提出，2026-08-22 落地；第二轮「循环切换」待真机验收）
 
 用户原话：「小米遥控器上还有多余的按键，其中有一个键，我想让它按下去之后，
 起到 Command + Tab 的效果。」
@@ -1557,7 +1557,69 @@ macOS 侧的虚拟键码需要实现时用诊断日志实测，不要猜。
   `flagsChanged` → Tab 按下 → Tab 松开 → Command 松开的 `flagsChanged`），
   最后那一步立刻发出去，正是「按一下就落定、不停在选择界面」的来源。
 
-### 两条只有真机能判的（验收时按这个看日志）
+### 第一轮真机验收（2026-08-22）：两条推断都对，但语义要改
+
+**通过的部分：** 短按确实切到了上一个应用。`.cghidEventTap` 与
+`kVK_ContextualMenu`（110）**两个推断都是对的**，注入这条链整条通了，
+下面那两条「只有真机能判的」到此结案，留档不再是待办。
+
+**要改的部分（用户原话）：** 「短按是可以切到上一个应用，但是只能切到上一个
+应用吗？我希望能从上一个应用，我再按一次再切到上一个应用……比方说我现在正在
+Terminal，按一下去到 Finder，再按一下去到 Word，然后再按一下刚好回到
+Terminal。」——要的是**在最近使用列表里循环**，不是在两个应用间来回。
+
+做不到的原因：每次按完都松开 Command，macOS 一提交切换就重排 MRU，
+下一次按又回到原处。
+
+### 第二轮（2026-08-22 同日）：按住 Command 跨越多次按键
+
+`AppSwitcher`（`Sources/vInput/Output/AppSwitcher.swift`）把每一次按键攒成
+**一次切换器会话**：
+
+- 第一次按：`.commandDown` + `.tab`，浮层出现，选中项前进一格；
+- 会话中再按：**只发 `.tab`**，Command 保持按住，再前进一格；
+- 停手 `idleCommitDelay` = **700 毫秒** → `.commandUp`，此刻才提交。
+
+700 毫秒是「够连按第二下、又不明显拖沓」的取舍，具名常量，改一行即可调。
+**代价用户已知**：单次按键不再立刻切换，浮层会停留那 0.7 秒才落地。
+
+`KeyPoster.postAppSwitch()` 相应拆成 `postAppSwitch(_ step: AppSwitchStep)`
+三步；哪一步什么时候发由 `AppSwitcher` 决定。
+
+#### 唯一可能造成真实伤害的地方：卡住的 Command
+
+合成的 Command 留在按下状态，用户之后敲什么都变成快捷键，而且他既不知道
+发生了什么、也没法自己解除（松开真键盘没用）。五道兜底，任何一条走到都释放，
+且释放是**幂等**的：
+
+| # | 兜底 | 实现 |
+|---|---|---|
+| 1 | 停手 700 毫秒 | `tick` → `dueRelease` 返回 `.idle` |
+| 2 | **总时长封顶 5 秒** | `tick` 返回 `.cap`；外加 `press` 里的防御性检查，防计时器漏拍 |
+| 3 | 应用失活 | `NSApplication.willResignActiveNotification` 观察者（`queue: nil`，同步执行） |
+| 4 | 听写开始 | `AppModel` 的 `session.onStateChange`，非 idle 就释放 |
+| 5 | 停止 / 退出 / 宿主析构 | `stop()`（`AppModel.stopRemote`、`shutdown`）与 `deinit` |
+
+第 4 条挂在 `onStateChange` 而不是三个 `session.start()` 调用点上：⌥D、
+遥控器、鼠标三条路都汇到那一个回调，逐个去接迟早漏一个（`keySuppressor`
+的 Esc 出口就漏过一次）。第 5 条的 `deinit` 靠一份 `nonisolated(unsafe)`
+的镜像状态，理由同 `RemoteEchoSwallower.tapHandle`。
+
+时钟被 NTP 往回拨时，`dueRelease` 的取舍与 `RemoteEchoSwallower` **方向
+相反**：那边负值意味着「别吞用户的键」，往安全一侧倒是不吞；这边负值意味着
+「期限永远到不了」，往安全一侧倒是**立刻释放**。
+
+#### 第二轮真机要看的日志行
+
+- `菜单键按下，推进应用切换器`（每按一次一行）
+- `应用切换器：Command 按下，会话开始`（**一次会话只该有一行**）
+- `应用切换器：第 N 次 Tab`（N 要跟按键次数一一对上）
+- `应用切换器：Command 抬起（原因=…，共 N 次 Tab，按住 X.XX 秒）`
+  ——**原因必须是「停手」**。出现「封顶」说明连按超过 5 秒；出现「听写介入」
+  「应用失活」「停止或退出」「宿主析构」都说明是别的兜底救的场，要看为什么
+  正常那条没走到。
+
+### 第一轮那两条「只有真机能判的」（已结案，留档）
 
 日志文件：`~/Library/Logs/vInput/vInput.log`。
 
@@ -1565,16 +1627,15 @@ macOS 侧的虚拟键码需要实现时用诊断日志实测，不要猜。
    Application = PC 键盘的菜单键 → 用户按下时弹出右键菜单 → macOS 把这件事
    绑在 Carbon 的 `kVK_ContextualMenu`（`0x6E` == 110）上。日志里没有能直接
    证明它的行：那十下都不在听写会话里，而按键抑制器只在会话期间记键码。
-   - **推断对了**看到：`遥控器菜单键：已吞掉原始按键`，且右键菜单不再弹出。
+   - **结论：推断对了**（2026-08-22 真机，右键菜单不再弹出）。看到的是
+     `遥控器菜单键：已吞掉原始按键`。
    - **推断错了**看到：`遥控器菜单键的武装窗口内出现 keyCode=X，不是 110，
      未吞`——`X` 就是真实键码（**除了 `keyCode=48`**，那是我们自己注入的
      Tab 穿过这个 tap，属于预期噪声，同时也证明注入走到了事件层）。
      改 `RemoteEchoSwallower.Key.contextualMenu.keyCode` 一行即可。
 2. **`.cghidEventTap` 这一层没验证过。** Cmd+Tab 由 WindowServer 在比前台
    应用更高的层次上截获，普通按键走的 `.cgSessionEventTap` 可能到不了它。
-   - 若日志有 `菜单键按下，注入 Command+Tab` 而应用**没切**，就是这一层的
-     问题：把 `SystemKeyPoster.appSwitchTap` 改成 `.cgSessionEventTap`
-     （`AppSwitchKeyTests` 里「Command+Tab 走 HID 层」那条断言一起改）。
+   - **结论：`.cghidEventTap` 是对的**（2026-08-22 真机，短按切换成功）。
    - 进程内证不了它：注入 CGEvent 要辅助功能授权（TCC 绑 app bundle），
      且「应用切没切」只有真机能看。
 

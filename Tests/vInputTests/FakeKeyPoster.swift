@@ -17,7 +17,7 @@ final class FakeKeyPoster: KeyPoster, @unchecked Sendable {
     private var count = 0
     private var backspaces = 0
     private var spaces = 0
-    private var appSwitches = 0
+    private var steps: [AppSwitchStep] = []
 
     var returnCount: Int {
         lock.lock()
@@ -55,15 +55,20 @@ final class FakeKeyPoster: KeyPoster, @unchecked Sendable {
         lock.unlock()
     }
 
-    var appSwitchCount: Int {
+    /// 应用切换器发出去的每一步，**按顺序**记下来。
+    ///
+    /// 只数个数不够：这一路的正确性全在顺序与配对上（Command 按下一次、
+    /// 中间 N 个 Tab、最后抬起一次）。数量对而顺序错，表现就是「卡住的
+    /// Command」——本功能唯一可能造成真实伤害的那种失效。
+    var appSwitchSteps: [AppSwitchStep] {
         lock.lock()
         defer { lock.unlock() }
-        return appSwitches
+        return steps
     }
 
-    func postAppSwitch() {
+    func postAppSwitch(_ step: AppSwitchStep) {
         lock.lock()
-        appSwitches += 1
+        steps.append(step)
         lock.unlock()
     }
 }

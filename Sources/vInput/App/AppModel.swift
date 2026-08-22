@@ -231,6 +231,16 @@ final class AppModel {
     /// （`6a24f18`），这个是常开的。分开之后这里出问题最多是原始按键不被吞，
     /// 听写照常。两个键共用一个实例的理由见 `RemoteEchoSwallower` 的注释。
     private let echoSwallower = RemoteEchoSwallower()
+    /// 菜单键那一路的应用切换器。**按住 Command 跨越多次按键**，用户才能在
+    /// 最近使用列表里连着往后翻（2026-08-22 真机验收后改的，原来一次按一次
+    /// 松，只能在两个应用之间来回）。五道「别把 Command 卡住」的兜底见
+    /// `AppSwitcher` 的类型注释。
+    ///
+    /// `lazy` 是因为它要用同一个 `remoteKeyPoster`，而存储属性的默认值里
+    /// 引用不到别的存储属性；`@ObservationIgnored` 是因为 `@Observable` 会把
+    /// 普通存储属性改写成计算属性，而 `lazy` 用不了计算属性。它也确实不该
+    /// 参与视图刷新。
+    @ObservationIgnored private lazy var appSwitcher = AppSwitcher(poster: remoteKeyPoster)
     private let keepalive = VoiceSessionKeepalive()
     private var remoteCoordinator: RemoteCoordinator?
     private var bluetoothBridge: XiaomiBluetoothBridge?
@@ -614,6 +624,18 @@ final class AppModel {
 
         session.onStateChange = { [weak self] state in
             guard let self else { return }
+            // **听写一开始就把按住的 Command 抬起来。**
+            //
+            // `contextMenuKeyPostsAppSwitch(dictationIdle:)` 那个守卫只挡
+            // **新按键**，挡不住一个**已经按住**的 Command：用户按了菜单键、
+            // 在那 0.7 秒里又按了语音键开始说话，Command 就会一直按到停手
+            // 计时器到点为止，期间语音键那一路的按键全变成快捷键。
+            //
+            // 挂在 `onStateChange` 而不是三个 `session.start()` 调用点上：
+            // ⌥D、遥控器、鼠标三条路都汇到这一个回调，逐个去接迟早漏一个
+            // ——同 `keySuppressor.update(for:)` 那条教训（Esc 那个出口就漏过）。
+            // `release` 是幂等的，非 idle 状态每次都调也无害。
+            if state != .idle { self.appSwitcher.release(reason: .dictation) }
             switch state {
             case .idle:
                 self.phase = .idle
@@ -2052,12 +2074,17 @@ final class AppModel {
                 AppLogger.shared.log("菜单键按下，但正在听写，忽略")
                 return
             }
-            AppLogger.shared.log("菜单键按下，注入 Command+Tab")
-            self.remoteKeyPoster.postAppSwitch()
+            AppLogger.shared.log("菜单键按下，推进应用切换器")
+            // **不是「发一次 Command+Tab」，是「推进一次切换器会话」。**
+            // Command 会一直按着，停手 0.7 秒才提交——这样连按才能在最近
+            // 使用列表里一格一格往后翻。理由与五道兜底见 `AppSwitcher`。
+            self.appSwitcher.press()
         }
         hidListener.start()
         keySuppressor.start()
         echoSwallower.start()
+        // 挂上「应用失活就把 Command 抬起来」那条兜底。
+        appSwitcher.start()
 
         // 把鼠标桥当前占着的那台排除掉。遥控器桥的连接判据是「服务 UUID
         // 匹配**或**名字匹配」，若某设备广播了 ATVV 服务 UUID 它就会去连
@@ -2080,6 +2107,10 @@ final class AppModel {
         // 没有 HID 监听就没人来武装它，常开的 tap 也该一起收——
         // 「tap 不能活得比它的用途久」同 `RemoteKeySuppressor` 那条教训。
         echoSwallower.stop()
+        // **同一条教训的另一半：合成的 Command 更不能活得比它的用途久。**
+        // 遥控器都停了还留着一个按住的 Command，用户敲什么都是快捷键，
+        // 而且他没法自己解除。`stop()` 摘观察者 + 无条件释放，幂等。
+        appSwitcher.stop()
         bluetoothBridge?.stop()
         bluetoothBridge = nil
         remoteCoordinator = nil
