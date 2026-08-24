@@ -42,7 +42,11 @@ let package = Package(
                 .product(name: "MLXLLM", package: "mlx-swift-examples"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-examples"),
             ],
-            path: "Sources/vInput"
+            path: "Sources/vInput",
+            // tokenizer 随 app 分发（2.8 MB）：`.copy` 保留目录结构，运行时经
+            // `Bundle.module` 找到 `Tokenizers/openai/whisper-large-v3/`。
+            // 理由见 `BundledTokenizer` 的类型注释。
+            resources: [.copy("Resources/Tokenizers")]
         ),
         .testTarget(
             name: "vInputTests",

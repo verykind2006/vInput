@@ -2,7 +2,7 @@ import Foundation
 
 /// 下载源的真实网络探测。
 ///
-/// `DownloadSource.choose(probe:forced:)` 把「谁快用谁」的决策做成了纯函数，
+/// `DownloadSource.choose(probe:forced:demoted:)` 把「谁快用谁」的决策做成了纯函数，
 /// 但它要的那个 `probe` 一直是空缺的——本文件补上，且**只补这一件事**。
 ///
 /// ## 为什么单独一个文件
@@ -11,11 +11,21 @@ import Foundation
 /// 「换一种探测方式」就得动向导；单独放着，`OnboardingCoordinator.Wiring.probe`
 /// 一行就能换成假的（测试就是这么做的），也能换成别的判据。
 ///
-/// ## 为什么探到仓库路径而不是站点根
+/// ## 为什么探的是 `resolve/main/<variant>/config.json`，不是仓库页
 ///
-/// 站点根通了不代表这个源上有我们要的仓库。探
-/// `<endpoint>/argmaxinc/whisperkit-coreml`——两个源都以网页形式提供这条路径，
-/// hf-mirror 是 huggingface.co 的整站镜像。
+/// 第一版探 `<endpoint>/argmaxinc/whisperkit-coreml`（仓库的 HTML 页）。
+/// 2026-08-23 太太的机器上，那一页三次都在 1.5–2.2 秒内回了，而紧接着的
+/// 下载三次都在 `…/resolve/main/<variant>/<file>` 上 60 秒超时——其中一个
+/// 文件只有 243 字节。**仓库页通不代表下载路径通**，两条路多半不在同一组
+/// 主机上。所以改探下载真正会走的那条路：同一个仓库、同一个变体、
+/// 里面一个小的非 LFS 文件（`config.json`，1149 字节）。HEAD 只要响应头。
+///
+/// **它不是目录里最小的那个**（2026-08-24 订正）：`*.mlmodelc/analytics/
+/// coremldata.bin` 有 4 个，各 243 字节，08-23 卡死的正是其中一个。
+/// `config.json` 只是**顶层**最小。选它的理由是「在 `resolve/main/<variant>/`
+/// 这一层、非 LFS、必然存在」，不是「最小」。
+///
+/// `variant` 取 `ModelDownloader.variant`——向导只下这一个，探别的没意义。
 ///
 /// **重定向、403、404 都算「通」**：这里量的是「这个源有没有响应、多快」，
 /// 不是「这个 URL 语义上对不对」。判死只有一种情形——传输层根本没回来
@@ -53,15 +63,20 @@ enum EndpointProbe {
         return URLSession(configuration: config)
     }()
 
-    /// 探测用的仓库路径。
+    /// 探测用的 URL：下载真正会走的那条路上一个小的非 LFS 文件。理由见类型注释。
     static func probeURL(for source: DownloadSource) -> URL? {
-        URL(string: source.endpoint + "/argmaxinc/whisperkit-coreml")
+        URL(
+            string: source.endpoint
+                + "/argmaxinc/whisperkit-coreml/resolve/main/"
+                + ModelDownloader.variant + "/config.json")
     }
 
     /// 探测请求。
     ///
-    /// - `HEAD`：只要响应头，不拉正文。仓库页面的 HTML 有几十 KB，
-    ///   在慢网络上拉全文会把「响应有多快」量成「带宽有多大」。
+    /// - `HEAD`：只要响应头，不拉正文。第一版探的是几十 KB 的仓库 HTML 页，
+    ///   拉全文会把「响应有多快」量成「带宽有多大」；现在探的 `config.json`
+    ///   只有 1 KB，但 HEAD 仍然要保留——同一层还有 LFS 大文件，将来换探测
+    ///   目标时 GET 会直接把这个隐患变成一次真下载。
     /// - `reloadIgnoringLocalAndRemoteCacheData`：命中缓存的话量到的是
     ///   本机磁盘速度，两个源会双双报出个位数毫秒，`choose` 的比较从此无意义。
     static func request(for source: DownloadSource) -> URLRequest? {

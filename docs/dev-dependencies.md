@@ -131,6 +131,61 @@ codesign --force --sign - .build/*/debug/vInputPackageTests.xctest
 一条测试都还没跑。实在反复出现就把 `DERIVED_DATA` / `.build` 挪到同步
 目录之外（与 `scripts/decode-sweep.sh` 把缓存挪出 `/tmp` 是同一类卫生问题）。
 
+## OneDrive 会把早就删掉的旧文件整批恢复回仓库（2026-08-24 踩了一天）
+
+**一次同步，四种完全不同的症状**，没有一种指向真正的原因。全部来自同一批
+被 OneDrive 恢复的旧文件——**共同特征：权限 `-rwx------`、带 `@` 扩展属性、
+未跟踪、时间戳是几天前**。
+
+| 被恢复的 | 症状 |
+|---|---|
+| `Sources/vInput/RemoteKeySuppressor.swift`（0 字节，08-21） | `error: … multiple producers: Compiling Swift Module 'vInput' (110 sources), Compiling Swift Module 'vInput' (110 sources)`。真正的实现在 `Sources/vInput/Remote/` 下，**SwiftPM 按 basename 生成 `.o`，撞名就报这个** |
+| `Tests/vInputTests/ZZTempRatioAnalysis{,2}.swift`（08-18 的临时探针） | 链接失败 `ld: symbol(s) not found`（引用了另一个已经删掉的探针文件） |
+| **六个门控标记**：`Bench/.run-config.json`、`.long-audio.json`、`.decode-sweep.json`、`.prompt-sweep.json`、`.translate-sweep.json`、`MouseDecode/.run-config.json` | **所有重型基准套件被打开**：加载真模型、拉起 ANE 与 MLX，单条 544 秒。表现是「测试卡住不动」和 `MLX error: Failed to load the default metallib` |
+| `OnboardingWindow.swift.bak`、`default.profraw`、两个 SBC 夹具 | 暂时无害 |
+
+**为什么「今早还好好的」不能作为排除依据**：增量构建复用旧的构建计划时看不见
+新出现的文件，**一次完整 re-plan 才会**；门控标记则是同步回来那一刻就生效。
+
+**判定（两条都要跑）**：
+
+```bash
+# 一、未跟踪且权限是 700 的文件
+git status --porcelain -uall | awk '$1=="??"{print $2}' | \
+  while read f; do stat -f "%Sp %N" "$f"; done | grep '^-rwx------'
+
+# 二、门控标记。**`git status` 看不见它们**——全在 .gitignore 里，
+#     而它们本该由各个 sweep 脚本的 trap 跑完就删。
+ls -la Bench/.*.json MouseDecode/.run-config.json Testing/.*-enabled 2>/dev/null
+
+# 三、同名源文件（上面第一条已经删掉的话这条会是空的）
+find Sources Tests -name "*.swift" -exec basename {} \; | sort | uniq -d
+```
+
+删之前先确认哪一份是真的（比大小、看 `git status` 里哪份未跟踪）。
+
+## 完整重建会把 `.build` 里的 `mlx-swift_Cmlx.bundle` 冲掉（2026-08-24 遇到）
+
+症状：`Failed to load the default metallib`（配合上一节的门控标记一起出现——
+门控关着时根本不会有测试去碰 MLX，所以这条只在两件事叠加时才暴露）。
+
+成因：**SwiftPM 命令行编不了 Metal 着色器**（mlx-swift README 写明的限制，
+`scripts/build-app.sh` 开头那段注释讲的就是它），所以 `.build` 里那份
+`default.metallib` 不是 SwiftPM 产的。一次完整 re-plan 会把它清掉。
+
+解法（`.xcbuild` 是 `build-app.sh` 的 DerivedData，跑过一次就有）：
+
+```bash
+cp .xcbuild/Build/Products/Debug/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib \
+   .build/arm64-apple-macosx/debug/vInputPackageTests.xctest/Contents/MacOS/mlx.metallib
+```
+
+放这个位置是因为它是 mlx 查找顺序的**第一条**（与二进制同目录的
+`mlx.metallib`，见 `Source/Cmlx/mlx/mlx/backend/metal/device.cpp` 的
+`load_default_library`）。放进 `Contents/Resources/` 里的 SwiftPM bundle 形状
+实测**不生效**，而放进 `Contents/MacOS/` 之后 `codesign` 会拒签
+（「code object is not signed at all」）——不重签也能跑，别去重签。
+
 ## 菜单栏图标「不见了」，先量位置再怀疑代码（2026-08-21 踩过）
 
 作者的机器是 14 寸 MacBook，逻辑分辨率 1470×956，**有刘海**，刘海大致占

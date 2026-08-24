@@ -1114,6 +1114,309 @@ struct OnboardingWiringTests {
         #expect(OnboardingCoordinator.stepIndicator(step: .microphone, planned: planned) == nil)
     }
 
+    // MARK: - 下载失败自动换源（2026-08-23：探测三次通、下载三次超时）
+
+    /// 官方源下载失败、镜像探得通：自动换到镜像，**换之前先记源**，最后成功。
+    @Test("下载失败后自动换到另一个源")
+    func fallsBackToTheOtherSourceAfterDownloadFailure() async throws {
+        let backend = FakeDownloadBackend()
+        let order = OrderRecorder()
+        backend.onCall = { order.append("download") }
+        var adopted: [String] = []
+        // 夹具里镜像 10ms、官方 20ms，两个都可达 → 第一轮选镜像。
+        // 让镜像下载失败、官方成功，验的就是「镜像 → 官方」这一次换源。
+        let (coordinator, _) = makeCoordinator(
+            backend: backend,
+            reachable: [.official, .mirror],
+            onAdopt: { adopted.append($0) },
+            onResolvedSource: { order.append("record:\($0.rawValue)") })
+        backend.failingEndpoints = [DownloadSource.mirror.endpoint]
+        coordinator.present()
+        try await waitUntil { coordinator.downloadFinished }
+
+        #expect(
+            backend.calls == [DownloadSource.mirror.endpoint, DownloadSource.official.endpoint],
+            "没有换源：镜像失败后应当再从官方源下一次")
+        #expect(
+            order.events == ["record:mirror", "download", "record:official", "download"],
+            "换到的源没有在下载之前被记住：本次向导最后一步取 tokenizer 会走错主机")
+        #expect(coordinator.downloadFailure == nil)
+        #expect(adopted.count == 1)
+        #expect(coordinator.failedSources == [.mirror])
+        coordinator.close()
+    }
+
+    /// 第一个源失败、另一个源探不通：**只探一次、不下第二次**，文案点两个名。
+    @Test("另一个源不通时不再自动换，文案说清两个都怎么了")
+    func doesNotSwitchWhenTheOtherSourceIsUnreachable() async throws {
+        let backend = FakeDownloadBackend()
+        backend.shouldFail = true
+        let probes = ProbeCounter()
+        let (coordinator, _) = makeCoordinator(
+            backend: backend, reachable: [.official], probeCounter: probes)
+        coordinator.present()
+        try await waitUntil { coordinator.downloadFailure != nil }
+
+        #expect(backend.calls == [DownloadSource.official.endpoint], "镜像探不通还去下了")
+        // 第一轮并发探两个 + 换源前再探镜像一次 = 3。
+        #expect(probes.count == 3, "换源前没有先探另一个源（或探了不止一次）")
+        let text = coordinator.downloadFailure ?? ""
+        #expect(text.contains(DownloadSource.official.displayName))
+        #expect(text.contains(DownloadSource.mirror.displayName))
+        #expect(text.contains("连不上"), "文案没说镜像是「连不上」而不是「下载失败」")
+        #expect(coordinator.failedSources == [.official])
+        coordinator.close()
+    }
+
+    /// 两个源都下载失败：各下一次就停，不来回打转；文案说「都试过了」。
+    @Test("两个源都失败只换一轮")
+    func switchesOnlyOnceWhenBothFail() async throws {
+        let backend = FakeDownloadBackend()
+        backend.shouldFail = true
+        let (coordinator, _) = makeCoordinator(backend: backend)
+        coordinator.present()
+        try await waitUntil { coordinator.downloadFailure != nil }
+
+        #expect(backend.calls.count == 2, "两个源都失败后还在继续换：\(backend.calls)")
+        #expect(Set(backend.calls) == [DownloadSource.official.endpoint, DownloadSource.mirror.endpoint])
+        #expect(coordinator.downloadFailure == OnboardingCoordinator.bothFailedMessage)
+        #expect(coordinator.failedSources == [.official, .mirror])
+        coordinator.close()
+    }
+
+    /// **下载途中用户手动导入了模型：这次下载的结果一律不采用。**
+    ///
+    /// 「我已经有模型文件」在下载进行中照样可点（两个源都慢时它就是唯一的
+    /// 出路），点完会 `adoptModelFolder` + `advance()` 把人送到第五步。而那次
+    /// 下载还在飞：成功分支会**第二次** `adoptModelFolder`，把用户刚选的模型
+    /// 顶成刚下好的。2026-08-24 收尾 QA 复现；本批把窗口从约 60 秒拉长到
+    /// 约 125 秒（换源多一次探测 + 一次完整下载）。
+    @Test("下载晚到时不顶掉用户刚手动导入的模型")
+    func lateDownloadDoesNotOverrideManualImport() async throws {
+        let folder = try makeFakeModelFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let backend = FakeDownloadBackend()
+        var adopted: [String] = []
+        // **从第四步恢复**：`present()` 里就把下载踢起来了（为的是用户走到
+        // 第四步时模型已经在下），不指定的话此刻 step 还停在 `.welcome`，
+        // 而「我已经有模型文件」那个按钮只在第四步上。
+        //
+        // 不在 `onCall` 里补 `advance()`：那会在下载 Task 飞行途中重入
+        // `enter(.downloadModel)`，把整个套件搅乱（2026-08-24 实测：本套件
+        // 20 个 issue、全量耗时 4.6 秒 → 22 秒）。
+        let (coordinator, _) = makeCoordinator(
+            backend: backend, chooseFolder: folder, onAdopt: { adopted.append($0) },
+            restoredStep: .downloadModel)
+        // 下载真的在飞的那一刻，用户点了「我已经有模型文件」。
+        backend.onCall = { [weak coordinator] in coordinator?.importExistingModel() }
+        coordinator.present()
+        try await waitUntil { coordinator.downloadFinished && !coordinator.isDownloading }
+
+        #expect(
+            adopted == [folder.path],
+            "下载晚到时把用户手动导入的模型顶掉了：\(adopted)")
+        coordinator.close()
+    }
+
+    /// 同一条缝的失败侧：用户已经走到第五步，第四步不该再被补上一句红字，
+    /// 也不该为了他再去换源下一次。
+    @Test("下载失败晚到时不给已经导入完的用户补红字")
+    func lateDownloadFailureDoesNotPaintOverManualImport() async throws {
+        let folder = try makeFakeModelFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let backend = FakeDownloadBackend()
+        backend.shouldFail = true
+        var adopted: [String] = []
+        // 同上：从第四步恢复，那是「我已经有模型文件」唯一可见的地方。
+        let (coordinator, state) = makeCoordinator(
+            backend: backend, chooseFolder: folder, onAdopt: { adopted.append($0) },
+            restoredStep: .downloadModel)
+        backend.onCall = { [weak coordinator] in coordinator?.importExistingModel() }
+        coordinator.present()
+        try await waitUntil { coordinator.downloadFinished && !coordinator.isDownloading }
+
+        #expect(adopted == [folder.path])
+        #expect(
+            coordinator.downloadFailure == nil,
+            "用户已经导入完走到第五步了，第四步还被补了一句红字：\(coordinator.downloadFailure ?? "")")
+        #expect(
+            backend.calls.count == 1,
+            "用户已经导入了模型，还在为他换源重下一次：\(backend.calls)")
+        #expect(state.step == .testDictation)
+        coordinator.close()
+    }
+
+    /// 用户强制了源：失败就是失败，不换、不探。
+    @Test("强制的源失败时不换源")
+    func forcedSourceIsNeverSwitched() async throws {
+        let backend = FakeDownloadBackend()
+        backend.shouldFail = true
+        let probes = ProbeCounter()
+        let (coordinator, _) = makeCoordinator(
+            backend: backend, probeCounter: probes, forcedSource: .official)
+        coordinator.present()
+        try await waitUntil { coordinator.downloadFailure != nil }
+
+        #expect(backend.calls == [DownloadSource.official.endpoint])
+        #expect(probes.count == 0, "强制了源还去探")
+        #expect(coordinator.downloadFailure == OnboardingCoordinator.failureMessage(source: .official))
+        coordinator.close()
+    }
+
+    /// 失败过的源在重试时让位：第一轮镜像失败 → 换官方也失败；用户点重试，
+    /// 两个都可达时该先选**没失败过的**——都失败过就回到谁快用谁。这里把
+    /// 官方源从失败集里拿不掉，所以验的是「重试时 demoted 真的传进了 choose」：
+    /// 让镜像失败一次后，重试那一轮两个都可达，必须先选官方（没失败过）。
+    @Test("重试时失败过的源让位给没失败过的")
+    func retryPrefersTheSourceThatHasNotFailed() async throws {
+        let backend = FakeDownloadBackend()
+        // 第一轮：镜像（更快）失败；官方源探不通 → 停。
+        backend.failingEndpoints = [DownloadSource.mirror.endpoint]
+        var reachable: Set<DownloadSource> = [.mirror]
+        let probes = ProbeCounter()
+        let defaults = makeDefaults()
+        let state = OnboardingState(defaults: defaults)
+        var wiring = OnboardingCoordinator.Wiring()
+        var permissions = Permissions()
+        permissions.microphoneAuthorized = { true }
+        permissions.accessibilityTrusted = { true }
+        wiring.permissions = permissions
+        wiring.modelRoot = { "/tmp/vinput-onboarding-test" }
+        wiring.alreadyPresent = { _ in false }
+        wiring.probe = { source in
+            probes.bump()
+            return reachable.contains(source)
+                ? .responded(millis: source == .mirror ? 10 : 20) : .unreachable
+        }
+        wiring.makeBackend = { backend }
+        wiring.forcedDownloadSource = { nil }
+        let coordinator = OnboardingCoordinator(state: state, wiring: wiring)
+        coordinator.present()
+        try await waitUntil { coordinator.downloadFailure != nil }
+        #expect(backend.calls == [DownloadSource.mirror.endpoint])
+
+        // 重试：两个都可达，镜像仍更快，但它失败过 → 该选官方。
+        reachable = [.official, .mirror]
+        coordinator.retryModelDownload()
+        try await waitUntil { coordinator.downloadFinished }
+        #expect(
+            backend.calls == [DownloadSource.mirror.endpoint, DownloadSource.official.endpoint],
+            "重试时又选了刚失败过的镜像：demoted 没传进 choose")
+        coordinator.close()
+    }
+
+    // MARK: - 第五步要说清模型为什么没好
+
+    /// `Wiring.modelLoadFailure` 接进来的那句话，协调器原样给视图。
+    @Test("模型加载失败的原因经协调器给到视图")
+    func modelLoadFailureFlowsThroughWiring() {
+        let defaults = makeDefaults()
+        let state = OnboardingState(defaults: defaults)
+        var wiring = OnboardingCoordinator.Wiring()
+        wiring.modelLoadFailure = { "加载模型「turbo」失败：缺少 tokenizer" }
+        let coordinator = OnboardingCoordinator(state: state, wiring: wiring)
+        #expect(coordinator.modelLoadFailure == "加载模型「turbo」失败：缺少 tokenizer")
+
+        var quiet = OnboardingCoordinator.Wiring()
+        quiet.modelLoadFailure = { nil }
+        #expect(OnboardingCoordinator(state: state, wiring: quiet).modelLoadFailure == nil)
+    }
+
+    /// 视图的第五步真的读了它，`AppDelegate` 真的接了它——两处各一行，
+    /// 删掉都没有编译错误，而后果是回到「永远还在准备」。
+    @Test("第五步显示加载失败，AppDelegate 接了这一路")
+    func testStepShowsLoadFailureAndAppWiresIt() throws {
+        let view = Self.codeOnly(try Self.source("Sources/vInput/Onboarding/OnboardingView.swift"))
+        let step = try #require(
+            Self.functionBody(view, signature: "private var testDictationStep: some View"),
+            "找不到 testDictationStep")
+        #expect(step.contains("coordinator.modelLoadFailure"), "第五步没有显示 modelLoadFailure：用户只会看到永远的「还在准备」")
+        // 「还在准备」与「加载失败」不能同时出现：一句说等、一句说别等了。
+        #expect(
+            step.contains("!coordinator.isDictationReady, coordinator.modelLoadFailure == nil"),
+            "「语音模型还在准备」没有在 modelLoadFailure 非 nil 时隐藏：失败了还让用户等")
+
+        let app = Self.codeOnly(try Self.source("Sources/vInput/App/vInputApp.swift"))
+        #expect(
+            app.contains("wiring.modelLoadFailure = {") && app.contains("model.modelLoadFailure"),
+            "AppDelegate 没把 model.modelLoadFailure 接进 wiring.modelLoadFailure")
+
+        let appModel = Self.codeOnly(try Self.source("Sources/vInput/App/AppModel.swift"))
+        let select = try #require(
+            Self.functionBody(appModel, signature: "func selectModel(_ model: ModelDescriptor)"))
+        #expect(select.contains("modelLoadFailure = message"), "selectModel 失败时没有写 modelLoadFailure")
+        #expect(select.contains("modelLoadFailure = nil"), "selectModel 开始时没有清 modelLoadFailure：上次的错会一直挂着")
+    }
+
+    /// 启动预热那一路的失败也要写进 `modelLoadFailure`。
+    ///
+    /// 没走完的向导每次启动都会重新出现，而那时唯一的一次模型加载是
+    /// `bootstrap` 里的预热（`warmUpAndAttachPreview`）——它原来只记一行日志。
+    /// 后果：第五步的「开始说话」能点（`hasModel` 为真、没有 `loadingModelName`），
+    /// 点下去转写失败，向导上什么都不说。`selectModel` 那一路的测试盯不到这里。
+    @Test("启动预热失败也写 modelLoadFailure，成功则清掉")
+    func warmUpFailureIsSurfacedThroughModelLoadFailure() throws {
+        let appModel = Self.codeOnly(try Self.source("Sources/vInput/App/AppModel.swift"))
+        let warmUp = try #require(
+            Self.functionBody(appModel, signature: "private func warmUpAndAttachPreview() async"),
+            "找不到 warmUpAndAttachPreview")
+        // 只看 catch 那一段：do 里的 `modelLoadFailure = nil` 不能替 catch 顶数。
+        let catchBlock = try #require(
+            warmUp.range(of: "} catch {").map { String(warmUp[$0.upperBound...]) },
+            "warmUpAndAttachPreview 里没有 catch")
+        // **两个串分开查，不要连写成 `modelLoadFailure = "加载模型「`。**
+        // 那样写只在赋值恰好在同一行时成立：2026-08-24 把它改成三元表达式
+        // （有模型 / 没模型两句话）之后，代码完全正确而这条断言直接红——
+        // 正是本仓库栽过很多次的「行式匹配看不见跨行字符串」。
+        #expect(
+            catchBlock.contains("modelLoadFailure"),
+            "预热失败时没有写 modelLoadFailure：未完成的向导第五步会显示一个能点但必失败的「开始说话」")
+        #expect(
+            catchBlock.contains("加载模型「"),
+            "预热失败时没有写出「加载模型…失败」那句话")
+        #expect(
+            catchBlock.contains("hasModel"),
+            "预热失败写 modelLoadFailure 时没有判 hasModel：零模型启动时第五步会红一句「加载模型「(无)」失败」")
+        // **零模型那一支也必须说话。** 原先是「什么都不写，第四步自己会说」，
+        // 而上次停在第五步没点完成时第四步根本不在屏幕上、向导也没有「上一步」
+        // ——用户看到的是一个永远转的「语音模型还在准备」。2026-08-24 收尾 QA。
+        #expect(
+            catchBlock.contains("还没有模型"),
+            "零模型预热失败时什么都不写：恢复到第五步的用户会对着「还在准备」永远等下去")
+        let doBlock = String(warmUp[..<warmUp.range(of: "} catch {")!.lowerBound])
+        #expect(doBlock.contains("modelLoadFailure = nil"), "预热成功没有清 modelLoadFailure：上次的错会一直挂着")
+    }
+
+    /// **模型后来加载成功了，那句红字要擦掉。**
+    ///
+    /// `modelLoadFailure` 原先只有两个清空点（预热成功、`selectModel` 开始），
+    /// 于是有一条永远擦不掉的路：没打包的变体 + 断网 → 预热被
+    /// `TokenizerPreflight` 判死 → 网络恢复后按 ⌥D，`transcribe()` 里
+    /// `prepare()` 重跑、这次通了 → 听写完全正常，但预热只跑一次、点当前模型
+    /// 又被 `guard model.name != activeModelName` 挡掉 → 第五步永远挂着红字，
+    /// 旁边是个好用的「开始说话」。2026-08-24 收尾 QA 发现。
+    ///
+    /// `AppModel` 在测试进程里构造不出来（`init` 就要真麦克风、真 CGEvent
+    /// tap），所以钉源码：会话状态机里那一行在不在，且**不能只认
+    /// `.transcribing`**——`prepare()` 就在它里面跑，那时还没有结论。
+    @Test("转写真的出了文本就把上次的模型加载失败擦掉")
+    func successfulDictationClearsModelLoadFailure() throws {
+        let appModel = Self.codeOnly(try Self.source("Sources/vInput/App/AppModel.swift"))
+        let bootstrap = try #require(
+            Self.functionBody(appModel, signature: "func bootstrap()"), "找不到 bootstrap()")
+        let handler = try #require(
+            bootstrap.range(of: "session.onStateChange = ").map { String(bootstrap[$0.upperBound...]) },
+            "bootstrap() 里没有 session.onStateChange")
+        #expect(
+            handler.contains("modelLoadFailure = nil"),
+            "会话状态机里没有清 modelLoadFailure：模型后来加载成功了，第五步那句红字也擦不掉")
+        #expect(
+            handler.contains("state != .transcribing"),
+            "清 modelLoadFailure 时没有排除 .transcribing：prepare() 就在它里面跑，那时还没有结论")
+    }
+
     // MARK: - 网络探测里能榨出来的那部分
 
     /// 探测请求的形状。真发请求那一层测不了（要联网），但「探哪个 URL、
@@ -1128,7 +1431,16 @@ struct OnboardingWiringTests {
             "探测走了缓存：量到的是本机磁盘速度，两个源会双双报出个位数毫秒，选源从此无意义。"
         )
         #expect(request.url?.absoluteString.hasPrefix(DownloadSource.mirror.endpoint) == true)
-        #expect(request.url?.absoluteString.contains("whisperkit-coreml") == true)
+        // **必须是下载真正会走的 `resolve/main/<variant>/` 那条路**，不是仓库页。
+        // 2026-08-23 太太的机器上仓库页三次都 2 秒内回了，下载三次都在
+        // resolve 路径上 60 秒超时——探仓库页等于没探。
+        #expect(
+            request.url?.absoluteString
+                == DownloadSource.mirror.endpoint
+                + "/argmaxinc/whisperkit-coreml/resolve/main/"
+                + ModelDownloader.variant + "/config.json",
+            "探测 URL 不是下载路径上的 config.json：仓库页通不代表下载路径通。"
+        )
     }
 
     /// 只有传输层没回来才算不通。
@@ -1227,6 +1539,8 @@ private final class RecordingSink: TextSink {
 private final class FakeDownloadBackend: ModelDownloadBackend {
     var calls: [String] = []
     var shouldFail = false
+    /// 只对这几个 endpoint 失败——自动换源那组用例要的是「A 失败、B 成功」。
+    var failingEndpoints: Set<String> = []
     /// 下载开始那一刻的钩子。用来钉「记源在下载之前」那条先后顺序。
     var onCall: () -> Void = {}
     func download(
@@ -1236,7 +1550,9 @@ private final class FakeDownloadBackend: ModelDownloadBackend {
         onCall()
         calls.append(endpoint)
         onProgress(0.5)
-        if shouldFail { throw ModelDownloadError.transportFailed }
+        if shouldFail || failingEndpoints.contains(endpoint) {
+            throw ModelDownloadError.transportFailed
+        }
     }
 }
 

@@ -42,6 +42,44 @@ struct DownloadSourceTests {
         #expect(picked == nil)
     }
 
+    // MARK: - 下载失败过的源要让位（2026-08-23：探测三次通、下载三次超时）
+
+    /// 官方源更快但刚失败过：让给没失败过的镜像。
+    @Test func demotedSourceLosesToAFreshOne() async {
+        let picked = await DownloadSource.choose(
+            probe: { source in source == .official ? .responded(millis: 50) : .responded(millis: 900) },
+            forced: nil, demoted: [.official])
+        #expect(picked == .mirror)
+    }
+
+    /// 只有失败过的那个可达：仍然选它。用户点了重试就该再试，不能无源可选。
+    @Test func demotedSourceStillPickedWhenItIsTheOnlyOneReachable() async {
+        let picked = await DownloadSource.choose(
+            probe: { source in source == .official ? .responded(millis: 50) : .unreachable },
+            forced: nil, demoted: [.official])
+        #expect(picked == .official)
+    }
+
+    /// 两个都失败过：回到「谁快用谁」。
+    @Test func bothDemotedFallsBackToFastest() async {
+        let picked = await DownloadSource.choose(
+            probe: { source in source == .mirror ? .responded(millis: 30) : .responded(millis: 400) },
+            forced: nil, demoted: [.official, .mirror])
+        #expect(picked == .mirror)
+    }
+
+    /// 强制的仍然最高，哪怕它刚失败过。
+    @Test func forcedBeatsDemotion() async {
+        let picked = await DownloadSource.choose(
+            probe: { _ in .responded(millis: 1) }, forced: .official, demoted: [.official])
+        #expect(picked == .official)
+    }
+
+    @Test func otherIsTheOtherOne() {
+        #expect(DownloadSource.official.other == .mirror)
+        #expect(DownloadSource.mirror.other == .official)
+    }
+
     /// 钉住「并发」本身，而不只是钉「结果相同」——把 `async let` 悄悄改回
     /// 顺序 `await` 之后，前面几条单靠结果值的用例测不出区别（结果确实一样，
     /// 只是不再并发），所以单独测「两次探测有没有同时在飞过」。

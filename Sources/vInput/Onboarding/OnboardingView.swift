@@ -216,11 +216,19 @@ struct OnboardingView: View {
             HStack(spacing: 12) {
                 primaryButton("开始 / 结束说话") { coordinator.toggleDictation() }
                     .disabled(!coordinator.isDictationReady)
-                if !coordinator.isDictationReady {
+                if !coordinator.isDictationReady, coordinator.modelLoadFailure == nil {
                     Text("语音模型还在准备，稍等一下…")
                         .font(.system(size: TypeScale.secondary))
                         .foregroundStyle(.secondary)
                 }
+            }
+            // 加载失败要说出来。没有这几行，用户看到的是永远的「还在准备」
+            // ——2026-08-23 那台机器上就是这样等了两分钟。
+            if let failure = coordinator.modelLoadFailure {
+                Text(failure)
+                    .font(.system(size: TypeScale.secondary))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             // 框里有字才让点「完成」。**手打也算**——这不是漏洞，是逃生口：

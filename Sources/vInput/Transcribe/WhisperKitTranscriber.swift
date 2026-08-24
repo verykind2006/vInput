@@ -312,8 +312,27 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
 
     func prepare() async throws {
         guard pipe == nil else { return }
+        let downloadBase = Self.defaultDownloadBase()
+        // **两步都必须在造 `WhisperKit` 之前**：tokenizer 是它 `init` 里查的。
+        //
+        // 第一步把随 app 分发的 tokenizer 种进它第一个查的目录——从此
+        // large-v3 / turbo 不需要联网。第二步给没打包的变体兜底：要联网就先
+        // 探 2.5 秒，不通立刻失败并说清该做什么，而不是让 WhisperKit 挂
+        // 两分钟后吐一句英文（2026-08-23 太太的机器上实测 2 分 18 秒）。
+        BundledTokenizer.seedIfNeeded(downloadBase: downloadBase)
+        switch await TokenizerPreflight.check(modelFolder: modelFolder, downloadBase: downloadBase) {
+        case .unreachable(let repo, let source):
+            AppLogger.shared.log(
+                "tokenizer 不在本地且\(source.displayName)不通，不再等 WhisperKit 超时：\(repo)")
+            throw TranscribeError.engineFailed(TokenizerPreflight.message(repo: repo, source: source))
+        case .willDownload(let repo, let source):
+            AppLogger.shared.log("tokenizer 不在本地，将从\(source.displayName)下载：\(repo)")
+        case .unknownEndpoint(let repo):
+            AppLogger.shared.log("tokenizer 不在本地，HF_ENDPOINT 指向未知主机，交给 WhisperKit：\(repo)")
+        case .local, .unknownVariant:
+            break
+        }
         do {
-            let downloadBase = Self.defaultDownloadBase()
             let config = if let modelFolder {
                 WhisperKitConfig(downloadBase: downloadBase, modelFolder: modelFolder)
             } else {

@@ -29,6 +29,11 @@ final class AppModel {
     /// 正在加载模型。首次使用某模型时 Core ML 要编译到神经引擎，
     /// 实测可达 40–125 秒，期间必须让用户看到进度而不是以为卡死。
     private(set) var loadingModelName: String?
+    /// 最近一次模型加载失败的整句话；开始下一次加载或加载成功时清空。
+    ///
+    /// 与 `phase = .error` 分开存：`phase` 会被任何别的错误覆盖、也会被下一次
+    /// 听写重置，而向导第五步要在用户回来看的时候还能说清「模型为什么没好」。
+    private(set) var modelLoadFailure: String?
     /// 上一次转写失败后音频还留着，菜单栏的「重试上次转写」据此点亮。
     ///
     /// 真实判据在 `DictationSession.canRetry`，这里是它的可观察镜像：
@@ -655,7 +660,21 @@ final class AppModel {
             case .listening: self.phase = .listening
             // 校正、翻译与转写、注入同归 working：Phase 是给菜单栏用的粗粒度
             // 状态，不必区分到这一级，细节由 HUD 呈现。
-            case .transcribing, .correcting, .translating, .injecting: self.phase = .working
+            case .transcribing, .correcting, .translating, .injecting:
+                self.phase = .working
+                // **模型这次真的加载成功了，把上一次的失败擦掉。**
+                //
+                // 原先只有两个清空点（预热成功、`selectModel` 开始），于是有
+                // 一条永远擦不掉的路：盘上是没打包的变体 + 断网 → 预热被
+                // `TokenizerPreflight` 判死、写下红字 → 网络恢复 → 用户按 ⌥D，
+                // `transcribe()` 里 `prepare()` 重跑、这次通了 → 听写完全正常，
+                // 但预热只跑一次，点当前模型又被 `selectModel` 的
+                // `guard model.name != activeModelName` 挡掉 → 向导第五步永远
+                // 挂着一句「加载模型失败」，旁边是个好用的「开始说话」。
+                //
+                // **`.transcribing` 不算数**：`prepare()` 就在它里面跑，那时
+                // 还没有结论。到得了后面三个状态才说明转写真的出了文本。
+                if state != .transcribing { self.modelLoadFailure = nil }
             }
             self.hudModel.phase = state
             self.cancelHotkey.update(for: state)
@@ -931,9 +950,27 @@ final class AppModel {
         guard let transcriber else { return }
         do {
             try await transcriber.prepare()
+            modelLoadFailure = nil
             AppLogger.shared.log("模型预热完成")
         } catch {
             AppLogger.shared.log("模型预热失败，本次运行无实时预览：\(error)")
+            // 向导第五步也要看得到这一路的失败：没走完的向导每次启动都会
+            // 重新出现，而启动预热是那时唯一的一次加载——不写的话，用户看到
+            // 的是一个能点的「开始说话」，点下去转写失败，向导上什么都不说。
+            // 两句话分开说：有模型是「加载失败」，没模型是「还没有模型」。
+            //
+            // 原先零模型时**什么都不写**，理由写的是「第四步自己会说」。
+            // 2026-08-24 收尾 QA 指出那条理由在一条真实路径上是假的：上次停在
+            // 第五步没点完成（step 会持久化，`present()` 直接恢复到第五步），
+            // 这次启动模型目录被移走 / 外置盘没挂 → `hasModel` 为假 → 什么都
+            // 不写 → 第五步「语音模型还在准备，稍等一下…」**永远**转，按钮
+            // 灰着，而**第四步此刻不在屏幕上，向导也没有「上一步」**。
+            //
+            // 仍然不写成「加载模型「(无)」失败」——那句话既不准，也没法照做。
+            modelLoadFailure =
+                hasModel
+                ? "加载模型「\(activeModelName)」失败：\(error)"
+                : "还没有模型。在下面的框里随便打点字就能点「完成」，之后从菜单栏面板的「高级」里下载或选择模型。"
             return
         }
         await attachPreview()
@@ -1705,6 +1742,7 @@ final class AppModel {
 
         log.log("开始切换模型 \(activeModelName) → \(model.name) 目录=\(model.folder)")
         loadingModelName = model.name
+        modelLoadFailure = nil
         phase = .idle
 
         Task { [weak self] in
@@ -1721,7 +1759,9 @@ final class AppModel {
             } catch {
                 // 切换失败时旧模型仍然可用，见 SwitchableTranscriber 的保证。
                 log.log("切换失败 \(model.name): \(error)")
-                self?.phase = .error("加载模型「\(model.name)」失败：\(error)")
+                let message = "加载模型「\(model.name)」失败：\(error)"
+                self?.modelLoadFailure = message
+                self?.phase = .error(message)
             }
             // 无论成败都必须解除加载态，否则 toggle() 会被永久挡住。
             self?.loadingModelName = nil

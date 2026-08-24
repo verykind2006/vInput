@@ -235,6 +235,9 @@ final class OnboardingCoordinator {
         var adoptModelFolder: (String) -> Void = { _ in }
         /// 模型是否已经加载完、可以开始听写。
         var isDictationReady: () -> Bool = { true }
+        /// 最近一次模型加载失败的整句话；nil = 没失败。第五步据此说清
+        /// 「为什么还没好」，而不是永远的「还在准备」。
+        var modelLoadFailure: () -> String? = { nil }
         /// 开始 / 结束一次听写。就是 ⌥D 那一支。
         var toggleDictation: () -> Void = {}
         /// 挂上/摘掉转写改道。传 nil 表示摘掉，文本回到平常那条路。
@@ -257,6 +260,9 @@ final class OnboardingCoordinator {
     /// 失败时给用户看的整句话，**必须说清是哪个源**。nil 表示当前没有失败。
     private(set) var downloadFailure: String?
     private(set) var isDownloading = false
+    /// 本次会话里下载失败过的源。选源时让位（`DownloadSource.choose` 的
+    /// `demoted`），不持久化——下次启动网络可能完全不同。
+    private(set) var failedSources: Set<DownloadSource> = []
 
     var progressText: String { ModelDownloader.percentText(downloadProgress) }
 
@@ -506,7 +512,9 @@ final class OnboardingCoordinator {
 
         Task { [weak self] in
             guard let self else { return }
-            guard let source = await DownloadSource.choose(probe: self.wiring.probe, forced: forced)
+            guard
+                let source = await DownloadSource.choose(
+                    probe: self.wiring.probe, forced: forced, demoted: self.failedSources)
             else {
                 AppLogger.shared.log("向导：两个下载源都不通")
                 self.downloadFailure = Self.noSourceMessage
@@ -514,34 +522,90 @@ final class OnboardingCoordinator {
                 self.wiring.onDownloadProgress(nil)
                 return
             }
-            AppLogger.shared.log("向导：选中下载源 \(source.displayName)")
-            // **必须在 run() 之前。** 下载成功会紧接着 adoptModelFolder →
-            // 换模型 → `prepare()` → 取 tokenizer，而取 tokenizer 只认
-            // `HF_ENDPOINT`。排在后面的话，本次向导的最后一步照样走官方源。
-            self.wiring.recordResolvedSource(source)
 
-            let outcome = await ModelDownloader.run(
-                root: root,
-                alreadyPresent: self.wiring.alreadyPresent,
-                backend: self.wiring.makeBackend(),
-                source: source,
-                onProgress: { [weak self] fraction in
-                    self?.downloadProgress = fraction
-                    self?.wiring.onDownloadProgress(fraction)
-                })
+            var outcome = await self.download(from: source, root: root)
+
+            // **用户在下载途中手动导入了模型：这一次下载的结果一律不采用。**
+            //
+            // 第四步的「我已经有模型文件」在下载进行中照样可点（那是故意的
+            // ——两个源都慢的时候它就是唯一的出路），导入成功会
+            // `adoptModelFolder` + `advance()` 把人送到第五步。而这个 Task
+            // 还在飞：成功分支会**第二次** `adoptModelFolder`，把用户刚选的
+            // 模型顶成刚下好的；失败分支会在用户已经离开第四步之后，往第四步
+            // 补一句红色的失败文案。
+            //
+            // 2026-08-24 收尾 QA 复现出来的，是个预先存在的缺陷；但**本批把
+            // 窗口从约 60 秒拉长到约 125 秒**（换源多一次探测 + 一次完整下载
+            // 尝试），而失败文案本身就在劝用户「或者直接用你已经有的模型
+            // 文件」——正好把人推进这个缝里。
+            //
+            // 判据用 `downloadFinished`：`startModelDownload()` 入口的守卫认的
+            // 也是它，语义一致（这一步已经完成了，别再下了）。
+            guard !self.downloadFinished else {
+                AppLogger.shared.log("向导：下载结束时用户已手动导入模型，本次结果不采用")
+                self.isDownloading = false
+                self.wiring.onDownloadProgress(nil)
+                return
+            }
+
+            // **下载失败自动换另一个源，只换一轮。** 2026-08-23 太太的机器上，
+            // 官方源探测三次都通、下载三次都超时，而用户每次只能点「重试」
+            // 再等一分钟。用户强制了源就不换——那是他的明确意愿。
+            //
+            // 换之前只探另一个源（2.5 秒封顶）：它多半就是刚才探测里输掉或
+            // 没响应的那个，不探直接下等于再白等一个 60 秒超时。
+            if case .failed(let first) = outcome, forced == nil {
+                self.failedSources.insert(first)
+                let alternative = first.other
+                AppLogger.shared.log(
+                    "向导：从\(first.displayName)下载失败，尝试换源 → \(alternative.displayName)")
+                if case .responded = await self.wiring.probe(alternative) {
+                    outcome = await self.download(from: alternative, root: root)
+                    if case .failed = outcome {
+                        self.failedSources.insert(alternative)
+                        self.downloadFailure = Self.bothFailedMessage
+                    }
+                } else {
+                    AppLogger.shared.log("向导：\(alternative.displayName)也不通，不再自动换源")
+                    self.downloadFailure = Self.failureMessage(
+                        source: first, alternativeUnreachable: alternative)
+                }
+            } else if case .failed(let failedSource) = outcome {
+                self.downloadFailure = Self.failureMessage(source: failedSource)
+            }
 
             switch outcome {
             case .alreadyPresent, .downloaded:
                 self.downloadProgress = 1
                 self.downloadFinished = true
                 self.wiring.adoptModelFolder(folder)
-            case .failed(let failedSource):
-                self.downloadFailure = Self.failureMessage(source: failedSource)
+            case .failed:
+                break
             }
             self.isDownloading = false
             // 成败都要收：不收的话面板上会永远挂着一行「正在下载模型 100%」。
             self.wiring.onDownloadProgress(nil)
         }
+    }
+
+    /// 从一个定下来的源下载：先记源，再下。
+    ///
+    /// **记源必须在 run() 之前。** 下载成功会紧接着 adoptModelFolder →
+    /// 换模型 → `prepare()` → 取 tokenizer，而取 tokenizer 只认
+    /// `HF_ENDPOINT`。排在后面的话，本次向导的最后一步照样走官方源。
+    /// 换源那一路也经这里，于是换到的源同样被记住。
+    private func download(from source: DownloadSource, root: String) async -> ModelDownloader.Outcome {
+        AppLogger.shared.log("向导：选中下载源 \(source.displayName)")
+        wiring.recordResolvedSource(source)
+        return await ModelDownloader.run(
+            root: root,
+            alreadyPresent: wiring.alreadyPresent,
+            backend: wiring.makeBackend(),
+            source: source,
+            onProgress: { [weak self] fraction in
+                self?.downloadProgress = fraction
+                self?.wiring.onDownloadProgress(fraction)
+            })
     }
 
     /// 换个网络再来一次。
@@ -575,6 +639,19 @@ final class OnboardingCoordinator {
         "从\(source.displayName)下载模型失败了。可以换个网络重试，或者直接用你已经有的模型文件。"
     }
 
+    /// 从 A 下载失败、准备换 B 时 B 探不通。两个都点名，各说各的死法。
+    nonisolated static func failureMessage(
+        source: DownloadSource, alternativeUnreachable alternative: DownloadSource
+    ) -> String {
+        "从\(source.displayName)下载模型失败了，\(alternative.displayName)也连不上。"
+            + "可以换个网络重试，或者直接用你已经有的模型文件。"
+    }
+
+    /// 两个源都下载失败了（不是不通，是下到一半断了）。
+    nonisolated static let bothFailedMessage =
+        "\(DownloadSource.official.displayName)和\(DownloadSource.mirror.displayName)都试过了，"
+        + "下载都失败了。可以换个网络重试，或者直接用你已经有的模型文件。"
+
     /// 两个源都不通。同样点名，且点两个的名。
     nonisolated static let noSourceMessage =
         "\(DownloadSource.official.displayName)和\(DownloadSource.mirror.displayName)都连不上。"
@@ -587,6 +664,9 @@ final class OnboardingCoordinator {
     // MARK: - 第五步：试说一句
 
     var isDictationReady: Bool { wiring.isDictationReady() }
+
+    /// 模型加载失败的原因；nil = 没失败。视图在第五步显示它。
+    var modelLoadFailure: String? { wiring.modelLoadFailure() }
 
     /// 开始 / 结束一次听写。
     ///

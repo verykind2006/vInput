@@ -98,6 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return false }
             return self.model.loadingModelName == nil && self.model.hasModel
         }
+        // 模型加载失败时第五步要说清原因，而不是永远「还在准备」——
+        // 2026-08-23 那台机器上用户对着这句话等了两分钟。
+        wiring.modelLoadFailure = { [weak self] in self?.model.modelLoadFailure }
         wiring.toggleDictation = { [weak self] in self?.model.toggle() }
         // 「试说一句」的文字落进向导自己的输入框，不投递任何 CGEvent、
         // 不经 TypingSink，因此不可能打进别的应用。见 RedirectableTextSink。

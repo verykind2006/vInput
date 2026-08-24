@@ -20,6 +20,14 @@ enum DownloadSource: String, CaseIterable, Equatable, Sendable {
         }
     }
 
+    /// 另一个源。只有两个源，这一条是「下载失败自动换源」的全部选源逻辑。
+    var other: DownloadSource {
+        switch self {
+        case .official: .mirror
+        case .mirror: .official
+        }
+    }
+
     enum ProbeResult: Equatable, Sendable {
         case responded(millis: Int)
         case unreachable
@@ -34,9 +42,14 @@ enum DownloadSource: String, CaseIterable, Equatable, Sendable {
     ///
     /// 两个都不通时返回 nil：调用方要去说「两个源都连不上」并给手动导入入口，
     /// 硬选一个只会卡在下载里。
+    ///
+    /// `demoted` 是**本次会话里下载失败过的源**（2026-08-23：官方源探测三次
+    /// 都通、下载三次都超时）。可达的源里先挑没失败过的；都失败过就仍按最快
+    /// 的挑——用户点了重试，就该再试，而不是无源可选。`forced` 仍然最高。
     static func choose(
         probe: @Sendable (DownloadSource) async -> ProbeResult,
-        forced: DownloadSource?
+        forced: DownloadSource?,
+        demoted: Set<DownloadSource> = []
     ) async -> DownloadSource? {
         if let forced { return forced }
 
@@ -50,6 +63,7 @@ enum DownloadSource: String, CaseIterable, Equatable, Sendable {
             guard case .responded(let millis) = result else { return nil }
             return (source, millis)
         }
-        return reachable.min { $0.1 < $1.1 }?.0
+        let fresh = reachable.filter { !demoted.contains($0.0) }
+        return (fresh.isEmpty ? reachable : fresh).min { $0.1 < $1.1 }?.0
     }
 }

@@ -616,14 +616,23 @@ struct CloudEgressTests {
                 //
                 // - **发出去的是什么**：一个 HEAD，没有请求体，没有 key，
                 //   没有任何用户内容。对面只知道「有人问了这个公开仓库在不在」。
-                // - **用户能不能禁掉**：能，而且默认就不发——模型已经在本地时
-                //   `OnboardingCoordinator.startModelDownload()` 直接返回，
-                //   一个包都不出；向导完成过之后（`shouldPresent` 为 false）
-                //   整条路径不再被走到。也就是说它只在「第一次装、且本机
-                //   还没有模型」这一种情形下发生。
+                // - **用户能不能禁掉**：向导那一路默认就不发——模型已经在
+                //   本地时 `OnboardingCoordinator.startModelDownload()` 直接
+                //   返回，一个包都不出；向导完成过之后（`shouldPresent` 为
+                //   false）整条路径不再被走到。
+                //
+                //   **但 2026-08-24 起不止向导这一路了**：`TokenizerPreflight`
+                //   在每次 `prepare()`（启动预热、换模型）里也可能探一次，
+                //   判据是「tokenizer 在不在本地」而不是「向导走没走完」。
+                //   打包的 large-v3 / turbo 被 `BundledTokenizer` 种进去之后
+                //   永远算本地有，所以实际只在**导入了没打包的变体
+                //   （base/small…）且它的 tokenizer 不在本地**时才发——
+                //   而那种情形下 WhisperKit 本来就要去下同一个仓库，这个 HEAD
+                //   只是把「下不下得来」的结论从 2 分 18 秒提前到 2.5 秒。
                 // - **怎么验证真的没发**：`OnboardingWiringTests` 的
                 //   「模型已在本地时不探测、不下载」——那条用假 probe 断言
-                //   backend 一次都没被调到。
+                //   backend 一次都没被调到；预检那一路是 `TokenizerPreflightTests`
+                //   的「本地有 tokenizer 时不探」（假 probe 被调到就红）。
                 //
                 // 它与「一切不出本机」并不冲突：模型本来就得从网上取，
                 // 而这一步只是决定从哪个源取。
@@ -634,6 +643,31 @@ struct CloudEgressTests {
             这个 app 的产品大原则是一切不出本机（含报价这类内容），
             新增一条网络调用要先回 CloudEgressTests 的类型注释里想一遍
             「用户能不能禁掉它、禁掉之后怎么验证真的禁掉了」。
+            """
+        )
+
+        // **光扫 `URLSession` 是不够的，这一条是拿真实缺陷换来的。**
+        //
+        // 2026-08-24 加 `TokenizerPreflight` 时，它经 `EndpointProbe.probe`
+        // 真的发了一个新的 HEAD，而文件里 `URLSession` 出现 **0 次**——
+        // 上面那条断言的集合一点没变，全绿。于是「出站面只有三个文件」这句
+        // 话在整整一批改动里都是错的，没有任何测试察觉。
+        //
+        // 转手发请求只有 `EndpointProbe.probe` 这一个入口，所以把调用点也
+        // 钉住。新增调用点要连同上面的清单一起更新，并回答那三问。
+        let probeCallers = sources.filter { $0.text.contains("EndpointProbe.probe(") }
+        #expect(
+            Set(probeCallers.map(\.name)) == [
+                // 向导第四步选源。
+                "OnboardingWindow.swift",
+                // 加载模型前判「tokenizer 要不要联网」，要联网就探 2.5 秒。
+                "TokenizerPreflight.swift",
+            ],
+            """
+            经 EndpointProbe 出站的地方变了：\(probeCallers.map(\.name).sorted())。
+            它不含 URLSession 字样，上面那条清单扫不到它——所以新增一处就
+            必须在这里登记，并在上面的清单注释里回答「发的是什么、用户能不能
+            禁掉、怎么验证真的没发」。
             """
         )
     }

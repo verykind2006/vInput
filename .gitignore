@@ -73,3 +73,8 @@ Testing/.gemini-e2e-enabled
 # 缺失时 build-app.sh 会自动重生成，见该脚本注释。
 Resources/AppIcon.icns
 .superpowers/
+
+# 真机排查用的日志（`debug/vInput.log` 等）。里面是**别人机器上的**路径和
+# 用户名（2026-08-23 那份来自 sara 的机器），且是未跟踪状态放在仓库里，
+# 一个 `git add -A` 就带进版本库了。结论进 docs/Roadmap.md，日志本身不进。
+debug/

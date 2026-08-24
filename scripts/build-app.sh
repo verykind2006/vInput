@@ -75,6 +75,22 @@ if [[ ! -e "$APP_DIR/Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Resources
 fi
 print "已打包 $BUNDLE_COUNT 个资源 bundle（含 default.metallib）"
 
+# 随 app 分发的 tokenizer（Sources/vInput/Resources/Tokenizers，见 BundledTokenizer）。
+#
+# 少了它的表现是**离线机器上模型齐了也说不了话**——2026-08-23 太太的机器上
+# 就是这样等了两分钟。而 `Bundle.module` 找不到资源包时是 fatalError，
+# 不是 nil，所以必须在这里拦，不能等用户来发现。
+# 查的是**完整的嵌套路径**，不是「包里任何地方有个 tokenizer.json」：
+# `resources:` 从 `.copy` 改成 `.process` 会把目录拍平，tokenizer.json 仍在
+# 包里，而运行时 `url(forResource: "Tokenizers")` 是 nil、种入静默跳过。
+TOKENIZER_IN_BUNDLE="$APP_DIR/Contents/Resources/vInput_vInput.bundle/Contents/Resources/Tokenizers/openai/whisper-large-v3/tokenizer.json"
+if [[ ! -s "$TOKENIZER_IN_BUNDLE" ]]; then
+  print -u2 "包里缺 Tokenizers/openai/whisper-large-v3/tokenizer.json（vInput_vInput.bundle）——离线机器上模型齐了也加载不了"
+  print -u2 "检查 Package.swift 的 resources: 声明（必须是 .copy）与 Sources/vInput/Resources/Tokenizers/"
+  exit 1
+fi
+print "tokenizer 已随包分发"
+
 # 优先用固定的自签名身份签名。ad-hoc 签名（--sign -）的指纹随二进制内容
 # 变化，macOS 因此认定每次构建都是「另一个应用」，把辅助功能与输入监控
 # 授权全部作废——开发期每改一行代码就要重授权一次。
