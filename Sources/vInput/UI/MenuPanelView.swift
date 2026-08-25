@@ -399,8 +399,10 @@ struct MenuPanelView: View {
     /// 区别——写进注释就等于把那条守卫废掉。
     private var outputLanguageValueLabel: String {
         stripPrefix(
+            // TEMP(Task 11 菜单重做)：仅机械适配新签名，UI 形态不变。
             AppModel.outputLanguageMenuTitle(
-                target: model.outputLanguage,
+                choice: model.translationChoice,
+                input: model.inputLanguage,
                 modelMissing: model.translationModelMissing
             ),
             "输出语言："
@@ -531,9 +533,14 @@ struct MenuPanelView: View {
     /// 拼在这里就没有任何测试守得住它（与 `HUDViewModel` 同一条分工）。
     @ViewBuilder
     private var outputLanguageSection: some View {
+        // TEMP(Task 11 菜单重做)：仅机械适配两态 choice。旧「中文」项此中间态
+        // 下点击＝选 .translate(to: .chinese)，输入中文时等效不翻译且标题会
+        // 明说——可接受；显式的「不翻译」项与输入语言选择归 Task 11。
         ForEach(Language.allCases, id: \.rawValue) { target in
-            expandedButton(target.menuLabel, checked: target == model.outputLanguage) {
-                model.selectOutputLanguage(target)
+            expandedButton(
+                target.menuLabel, checked: model.translationChoice == .translate(to: target)
+            ) {
+                model.selectTranslationChoice(.translate(to: target))
             }
         }
     }
@@ -577,7 +584,10 @@ struct MenuPanelView: View {
         ForEach(
             AppModel.translationBackendDetailLines(
                 status: model.translationBackend,
-                target: model.outputLanguage
+                // TEMP(Task 11 菜单重做)：detailLines 只在 cloudActive 那格用
+                // target；没有有效目标时给输入语言占位（那格不会走到）。
+                target: model.translationChoice.effectiveTarget(input: model.inputLanguage)
+                    ?? model.inputLanguage
             ),
             id: \.self
         ) { line in

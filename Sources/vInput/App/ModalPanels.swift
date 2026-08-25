@@ -334,7 +334,7 @@ func presentCloudModelPanel(current: String) -> String? {
         填 Google 的模型标识符，例如 gemini-2.0-flash。
 
         这里填什么都不会被校验——vInput 至今没有对 Gemini 发过一次真实
-        请求。填错的表现是每次听写都退回中文原文，日志里是一条 HTTP 4xx。
+        请求。填错的表现是每次听写都退回原文，日志里是一条 HTTP 4xx。
         """
     let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
     field.stringValue = current

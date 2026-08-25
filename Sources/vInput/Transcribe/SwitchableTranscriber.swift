@@ -52,7 +52,7 @@ actor SwitchableTranscriber: Transcriber {
     /// 否则 `current` 会被换回旧 descriptor 构造的实例，与 `descriptor`
     /// 两字段脱钩（UI 显示新模型、实际转写旧模型）。
     ///
-    /// 生产调用方在 `AppModel`（Task 10 接线），此刻尚无。
+    /// 生产调用方是 `AppModel.rebuildTranscriberForInputLanguage()`。
     func rebuild() async throws {
         let snapshot = descriptor
         let candidate = makeTranscriber(snapshot)

@@ -48,7 +48,8 @@ struct CloudBackendMenuTests {
 
     /// 真值表的一格。**期望值是手写的。**
     private struct Cell {
-        let target: Language
+        let input: Language
+        let choice: TranslationChoice
         let cloud: Bool
         let hasKey: Bool
         /// nil ＝ 连校正模型目录都没有（`translationAttachment` 会给
@@ -62,9 +63,9 @@ struct CloudBackendMenuTests {
         /// 不是另写一条等价路径。
         var status: AppModel.TranslationBackendStatus {
             let attachment = AppModel.translationAttachment(
-                // TEMP(Task 10/11 菜单重做)：这张表还是旧的单语言形态，
-                // 沿用旧语义「中文=不翻译」折算成有效目标。
-                effectiveTarget: target.requiresTranslation ? target : nil,
+                // 有效目标由 (input, choice) 算出，与协调器同一条路：
+                // off 与「目标==输入」都是 nil＝不翻译。
+                effectiveTarget: choice.effectiveTarget(input: input),
                 usesCloudBackend: cloud,
                 translationModelDirectory: nil,
                 correctionModelDirectory: directory,
@@ -82,35 +83,48 @@ struct CloudBackendMenuTests {
 
     private static let cells: [Cell] = [
         Cell(
-            target: .chinese, cloud: false, hasKey: true, directory: correctionDirectory,
+            input: .chinese, choice: .off, cloud: false, hasKey: true,
+            directory: correctionDirectory,
             expected: .local,
             why: "云端关：翻译（这里根本不翻译）在本机"),
         Cell(
-            target: .chinese, cloud: true, hasKey: true, directory: correctionDirectory,
+            input: .chinese, choice: .off, cloud: true, hasKey: true,
+            directory: correctionDirectory,
             expected: .cloudIdleBecauseChinese,
-            why: "开关开着，但输出中文＝不翻译，一个字节都不出站——这一格最容易被显示成「正在往外发」"),
+            why: "开关开着，但选了不翻译，一个字节都不出站——这一格最容易被显示成「正在往外发」"),
         Cell(
-            target: .chinese, cloud: true, hasKey: false, directory: correctionDirectory,
+            input: .chinese, choice: .off, cloud: true, hasKey: false,
+            directory: correctionDirectory,
             expected: .cloudIdleBecauseChinese,
-            why: "输出是中文时，有没有 key 都无关紧要，菜单不该去提 key"),
+            why: "不翻译时，有没有 key 都无关紧要，菜单不该去提 key"),
         Cell(
-            target: .english, cloud: false, hasKey: true, directory: correctionDirectory,
+            input: .english, choice: .translate(to: .english), cloud: true, hasKey: true,
+            directory: correctionDirectory,
+            expected: .cloudIdleBecauseChinese,
+            why: "存的目标恰好等于输入语言＝不翻译：云端开着也一个字节都不出站"),
+        Cell(
+            input: .chinese, choice: .translate(to: .english), cloud: false, hasKey: true,
+            directory: correctionDirectory,
             expected: .local,
-            why: "外语 + 云端关：本地 MLX，零出站"),
+            why: "要翻译 + 云端关：本地 MLX，零出站"),
         Cell(
-            target: .english, cloud: false, hasKey: true, directory: nil,
+            input: .chinese, choice: .translate(to: .english), cloud: false, hasKey: true,
+            directory: nil,
             expected: .local,
-            why: "外语 + 云端关 + 连模型目录都没有：仍然是本机的事，缺目录由「输出语言」那一行的后缀说"),
+            why: "要翻译 + 云端关 + 连模型目录都没有：仍然是本机的事，缺目录由「输出语言」那一行的后缀说"),
         Cell(
-            target: .english, cloud: true, hasKey: true, directory: correctionDirectory,
+            input: .chinese, choice: .translate(to: .english), cloud: true, hasKey: true,
+            directory: correctionDirectory,
             expected: .cloudActive,
             why: "唯一真的会出站的一格"),
         Cell(
-            target: .english, cloud: true, hasKey: false, directory: correctionDirectory,
+            input: .chinese, choice: .translate(to: .english), cloud: true, hasKey: false,
+            directory: correctionDirectory,
             expected: .cloudMissingKey,
-            why: "开了云端却没配 key：每次听写退回中文原文，用户必须看得见"),
+            why: "开了云端却没配 key：每次听写退回原文，用户必须看得见"),
         Cell(
-            target: .english, cloud: true, hasKey: true, directory: nil,
+            input: .chinese, choice: .translate(to: .english), cloud: true, hasKey: true,
+            directory: nil,
             expected: .cloudActive,
             why: "云端不需要本地权重，缺目录不影响它"),
     ]
@@ -122,7 +136,8 @@ struct CloudBackendMenuTests {
             #expect(
                 cell.status == cell.expected,
                 """
-                \(cell.target.rawValue) × 云端\(cell.cloud ? "开" : "关") × \
+                输入 \(cell.input.rawValue) × 目标 \(cell.choice.storageValue) × \
+                云端\(cell.cloud ? "开" : "关") × \
                 key\(cell.hasKey ? "有" : "无") × 目录\(cell.directory == nil ? "无" : "有")
                 期望 \(cell.expected)，实际 \(cell.status)
                 这一格的意义：\(cell.why)
@@ -136,10 +151,10 @@ struct CloudBackendMenuTests {
     func everyForeignLanguageBehavesTheSame() {
         for target in Language.allCases where target.requiresTranslation {
             let withKey = Cell(
-                target: target, cloud: true, hasKey: true,
+                input: .chinese, choice: .translate(to: target), cloud: true, hasKey: true,
                 directory: Self.correctionDirectory, expected: .cloudActive, why: "")
             let withoutKey = Cell(
-                target: target, cloud: true, hasKey: false,
+                input: .chinese, choice: .translate(to: target), cloud: true, hasKey: false,
                 directory: Self.correctionDirectory, expected: .cloudMissingKey, why: "")
             #expect(withKey.status == .cloudActive, "\(target.rawValue) 有 key 时不是 cloudActive")
             #expect(
@@ -223,7 +238,7 @@ struct CloudBackendMenuTests {
         let missing = AppModel.cloudAPIKeyMenuLine(hasKey: false)
         #expect(missing.contains("未配置"))
         // 没 key 时要说清后果，否则用户只看到「未配置」，不知道会怎样。
-        #expect(missing.contains("中文原文"), "没说清缺 key 时会发生什么：\(missing)")
+        #expect(missing.contains("退回原文"), "没说清缺 key 时会发生什么：\(missing)")
 
         #expect(has != missing)
     }
@@ -251,7 +266,7 @@ struct CloudBackendMenuTests {
         let missing = AppModel.translationBackendDetailLines(
             status: .cloudMissingKey, target: .english
         ).joined(separator: "\n")
-        #expect(missing.contains("退回中文原文"), "缺 key 那格没说清每次听写会发生什么：\(missing)")
+        #expect(missing.contains("退回原文"), "缺 key 那格没说清每次听写会发生什么：\(missing)")
         #expect(missing.contains("不会发出任何请求"), "缺 key 那格没说清仍然零出站：\(missing)")
         // 要能照着做，不必去翻文档——与挂载时那条日志同一个取向。
         #expect(missing.contains("security add-generic-password"), "缺 key 那格没给存 key 的命令：\(missing)")

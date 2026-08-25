@@ -294,15 +294,15 @@ struct AppModelWiringTests {
     /// 菜单标题上的「（缺模型目录）」后缀是常驻提示，但它在菜单里；
     /// 少了这几行，选了西班牙文而没有模型时用户得不到任何即时反馈——
     /// 正是「静默不工作」。2026-08-19 QA 实测：删掉这三行，981 tests 全绿。
-    @Test("换输出语言时缺模型要当场弹 HUD")
-    func selectingOutputLanguageWarnsWhenModelMissing() throws {
+    @Test("换翻译目标时缺模型要当场弹 HUD")
+    func selectingTranslationChoiceWarnsWhenModelMissing() throws {
         let body = try Self.memberBody(
             try Self.appModelSource(),
-            startingAt: "func selectOutputLanguage(_ target: Language) {")
+            startingAt: "func selectTranslationChoice(_ choice: TranslationChoice) {")
         #expect(
             body.contains("if translationModelMissing"),
             """
-            selectOutputLanguage 里没有「缺模型目录就提示」的判断。
+            selectTranslationChoice 里没有「缺模型目录就提示」的判断。
             菜单当场就关了，用户这一刻唯一看得见的反馈就是 HUD。
             """
         )
@@ -311,7 +311,7 @@ struct AppModelWiringTests {
         #expect(
             body.contains("showHUDNotice(TranslationAnnotation.missingLocalModel.hudLabel)"),
             """
-            selectOutputLanguage 里没有 showHUDNotice(
+            selectTranslationChoice 里没有 showHUDNotice(
             TranslationAnnotation.missingLocalModel.hudLabel)。
             """
         )
@@ -723,5 +723,114 @@ struct AppModelWiringTests {
                 "startRemote 里没有 appSwitcher.start()——「应用失活就抬起 Command」那条兜底没挂上。")
         #expect(source.contains("appSwitcher.stop()"),
                 "stopRemote 里没有 appSwitcher.stop()——遥控器都停了还可能留着一个按住的 Command。")
+    }
+
+    // MARK: - 输入语言接线（Task 10）
+
+    /// 括号配平取函数体：从 `func <名字>` 的起始花括号数到配平为止。
+    ///
+    /// 与 `memberBody` 分工不同：那个的结束锚点是**下一个成员级 `///`**，
+    /// 对紧跟着普通声明（没有文档注释）的函数会一路吃到隔壁；这里按花括号
+    /// 配平切一刀，界限是语法的，不依赖邻居长什么样。被扫的这些函数体里
+    /// 没有含花括号的字符串字面量，配平不会被字符串骗到。
+    static func functionBody(named name: String, in source: String) throws -> String {
+        let start = try #require(
+            source.range(of: "func \(name)"),
+            "找不到 func \(name)，这个测试的锚点失效了")
+        let rest = source[start.lowerBound...]
+        let open = try #require(rest.firstIndex(of: "{"), "func \(name) 后面没有起始花括号")
+        var depth = 0
+        var index = open
+        while index < rest.endIndex {
+            switch rest[index] {
+            case "{": depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0 { return String(rest[open...index]) }
+            default: break
+            }
+            index = rest.index(after: index)
+        }
+        Issue.record("func \(name) 的花括号没配平")
+        return ""
+    }
+
+    /// 切出 `onStateChange` 的 `.idle` 分支（从 "case .idle:" 到下一个
+    /// "case .listening"）。整文件 `contains` 会把声明行也算进去——
+    /// `private func rebuildTranscriberForInputLanguage()` 那行声明本身
+    /// 就含目标子串，删掉 `.idle` 分支里的调用照样绿（本仓栽过的老坑，
+    /// 见 `idleResumesPendingModelAdoption` 的注释）。
+    static func idleCaseBody() throws -> String {
+        let source = try appModelSource()
+        let start = try #require(
+            source.range(of: "case .idle:"), "找不到 case .idle:，锚点失效了")
+        let rest = source[start.upperBound...]
+        let end = try #require(
+            rest.range(of: "case .listening"), "找不到 case .listening，锚点失效了")
+        return String(rest[..<end.lowerBound])
+    }
+
+    /// 换输入语言时，转写、校正、翻译三层都要跟着动——漏任何一层都是
+    /// 「菜单显示英文，实际还按中文跑」这一类静默脱节。
+    @Test("换输入语言要把校正、翻译、转写三层都带上")
+    func inputLanguageChangeRebuildsAndReappliesEverything() throws {
+        let body = try Self.functionBody(
+            named: "selectInputLanguage", in: try Self.appModelSource())
+        #expect(
+            body.contains("applyCorrectionPreference()"),
+            "selectInputLanguage 里没有 applyCorrectionPreference()——切到外语后校正管线不会被摘掉。")
+        #expect(
+            body.contains("applyTranslationPreference()"),
+            "selectInputLanguage 里没有 applyTranslationPreference()——(input, choice) 矩阵变了翻译层却没重挂。")
+        #expect(
+            body.contains("rebuildTranscriberForInputLanguage()"),
+            "selectInputLanguage 里没有 rebuildTranscriberForInputLanguage()——语言是转写器的构造参数，不重建等于没换。")
+    }
+
+    /// onStateChange 的 .idle 分支必须补做被推迟的转写器重建——
+    /// 与校正/翻译/模型换用三条补挂并排。缺了它的表现：录音途中换的
+    /// 输入语言永远不生效，而菜单已经写着新语言。
+    @Test("会话回到 idle 时补做被推迟的输入语言重建")
+    func idleBranchRepaysPendingInputLanguageRebuild() throws {
+        let body = try Self.idleCaseBody()
+        #expect(
+            body.contains("rebuildTranscriberForInputLanguage")
+                || body.contains("inputLanguageRebuildPending"),
+            """
+            onStateChange 的 .idle 分支里没有输入语言重建的补做。
+            录音途中换的输入语言会被 canSwitchModel 挡下（挡是对的），
+            但此后再也没有人重试——转写永远停在旧语言。
+            """
+        )
+    }
+
+    /// 校正的机制是拼音同音字，对拉丁语种无意义——不是「以后补」，是
+    /// 「不适用」。守的是 makeCorrectionPipeline 里那道语言门。
+    @Test("校正管线只在输入中文时构造")
+    func correctionPipelineIsChineseOnly() throws {
+        let body = try Self.functionBody(
+            named: "makeCorrectionPipeline", in: try Self.appModelSource())
+        #expect(
+            body.contains("== .chinese"),
+            """
+            makeCorrectionPipeline 里没有输入语言守卫。
+            拼音同音字校正对拉丁语种毫无意义，非中文输入必须摘除管线，
+            否则英文转写会被中文校正模型改得面目全非。
+            """
+        )
+    }
+
+    /// 旧键 `translation.outputLanguage` 的 "zh" 含义是「不翻译」，
+    /// 迁移写好了却没人调的话，老用户升级后偏好静默丢失。
+    @Test("旧偏好迁移在 init 里接上了")
+    func legacyPreferenceMigrationIsWiredAtInit() throws {
+        #expect(
+            try Self.appModelSource().contains("migrateLegacyOutputLanguageIfNeeded()"),
+            """
+            AppModel 里没有 migrateLegacyOutputLanguageIfNeeded() 的调用。
+            迁移函数写好了但没人调等于没写——老用户的输出语言设置会被
+            静默丢弃（幸好新键的默认值恰是「不翻译」，但那是运气不是设计）。
+            """
+        )
     }
 }

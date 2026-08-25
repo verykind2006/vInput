@@ -11,28 +11,23 @@ struct TranslationPreferenceTests {
         UserDefaults(suiteName: "vinput.translation.tests.\(UUID().uuidString)")!
     }
 
-    /// **默认中文＝不翻译。** 翻译要额外加载一个 2 GB 级模型并给每句话多加
+    /// **默认不翻译。** 翻译要额外加载一个 2 GB 级模型并给每句话多加
     /// 几秒推理，用户没主动选之前不该承担这些成本。
-    @Test("默认是中文，即不翻译")
-    func defaultsToChinese() {
+    @Test("默认不翻译")
+    func defaultsToOff() {
         let preference = TranslationPreference(defaults: makeDefaults())
-        // TEMP(Task 10 重写)：旧语义等价桥
-        #expect((preference.choice.effectiveTarget(input: .chinese) ?? .chinese) == .chinese)
-        // 顺带把「中文就是不翻译」这条语义钉住：默认值换成任何
-        // requiresTranslation == true 的语言，本行都会红。
-        // TEMP(Task 10 重写)：旧语义等价桥
-        #expect(
-            (preference.choice.effectiveTarget(input: .chinese) ?? .chinese)
-                .requiresTranslation == false)
+        #expect(preference.choice == .off)
+        // 顺带钉住「off 对任何输入语言都没有有效目标」——默认值换成任何
+        // .translate(to:) 本行都会红。
+        #expect(preference.choice.effectiveTarget(input: .chinese) == nil)
+        #expect(preference.choice.effectiveTarget(input: .english) == nil)
     }
 
     @Test("设置后能读回")
     func roundTrips() {
         let preference = TranslationPreference(defaults: makeDefaults())
-        // TEMP(Task 10 重写)：旧语义等价桥
         preference.choice = .translate(to: .spanish)
-        // TEMP(Task 10 重写)：旧语义等价桥
-        #expect((preference.choice.effectiveTarget(input: .chinese) ?? .chinese) == .spanish)
+        #expect(preference.choice == .translate(to: .spanish))
     }
 
     /// 存稳定字符串而不是枚举序号——加一种语言不该把用户已保存的设置挪到
@@ -41,22 +36,19 @@ struct TranslationPreferenceTests {
     func storesStableIdentifier() {
         let defaults = makeDefaults()
         let preference = TranslationPreference(defaults: defaults)
-        // TEMP(Task 10 重写)：旧语义等价桥（键随 outputLanguage → choice 迁移）
         preference.choice = .translate(to: .german)
         #expect(defaults.string(forKey: "translation.choice") == "de")
     }
 
-    /// 存了个不认识的值（应用降级回旧版本、或用户手改 plist）时退回中文。
+    /// 存了个不认识的值（应用降级回旧版本、或用户手改 plist）时退回「不翻译」。
     ///
-    /// **退回中文而不是崩掉、也不是退回上一次的外语**：中文是唯一不会把
-    /// 用户没要的语言注进输入框的取值。
-    @Test("无法识别的值退回中文")
+    /// **退回不翻译而不是崩掉、也不是退回上一次的外语**：不翻译是唯一
+    /// 不会把用户没要的语言注进输入框的取值。
+    @Test("无法识别的值退回不翻译")
     func fallsBackOnUnknownValue() {
         let defaults = makeDefaults()
-        // TEMP(Task 10 重写)：旧语义等价桥（键随 outputLanguage → choice 迁移）
         defaults.set("klingon", forKey: "translation.choice")
-        let choice = TranslationPreference(defaults: defaults).choice
-        #expect((choice.effectiveTarget(input: .chinese) ?? .chinese) == .chinese)
+        #expect(TranslationPreference(defaults: defaults).choice == .off)
     }
 
     /// 云端默认关。**这条的理由和校正默认关不同**：那边是成本，这边是出站。
@@ -77,20 +69,13 @@ struct TranslationPreferenceTests {
         let preference = TranslationPreference(defaults: defaults)
 
         preference.usesCloudBackend = true
-        // TEMP(Task 10 重写)：旧语义等价桥
-        #expect(
-            (preference.choice.effectiveTarget(input: .chinese) ?? .chinese) == .chinese,
-            "开云端不该顺手改了输出语言")
+        #expect(preference.choice == .off, "开云端不该顺手改了翻译目标")
 
-        // TEMP(Task 10 重写)：旧语义等价桥
         preference.choice = .translate(to: .spanish)
-        #expect(preference.usesCloudBackend, "改语言不该顺手关了云端")
+        #expect(preference.usesCloudBackend, "改翻译目标不该顺手关了云端")
 
         preference.usesCloudBackend = false
-        // TEMP(Task 10 重写)：旧语义等价桥
-        #expect(
-            (preference.choice.effectiveTarget(input: .chinese) ?? .chinese) == .spanish,
-            "关云端不该顺手改了输出语言")
+        #expect(preference.choice == .translate(to: .spanish), "关云端不该顺手改了翻译目标")
     }
 
     /// 模型目录默认为 nil——**今天没有任何入口会去设它**。
@@ -302,11 +287,13 @@ struct TranslationAttachmentTests {
     // MARK: - 菜单标题
 
     /// 缺目录时标题带后缀。不带的话它恰好在骗人——用户看到
-    /// 「输出语言：西班牙文」，得到的却是中文。
+    /// 「输出语言：西班牙文」，得到的却是原文。
     @Test("缺模型目录时菜单标题带后缀")
     func menuTitleFlagsMissingModel() {
-        let normal = AppModel.outputLanguageMenuTitle(target: .spanish, modelMissing: false)
-        let missing = AppModel.outputLanguageMenuTitle(target: .spanish, modelMissing: true)
+        let normal = AppModel.outputLanguageMenuTitle(
+            choice: .translate(to: .spanish), input: .chinese, modelMissing: false)
+        let missing = AppModel.outputLanguageMenuTitle(
+            choice: .translate(to: .spanish), input: .chinese, modelMissing: true)
         #expect(normal == "输出语言：西班牙文")
         #expect(missing != normal, "缺目录时标题必须和正常时不同")
         #expect(missing.hasPrefix(normal), "后缀式提示，不要重排标题")
@@ -317,11 +304,44 @@ struct TranslationAttachmentTests {
     func menuTitleNamesEveryLanguage() {
         for target in Language.allCases {
             #expect(
-                AppModel.outputLanguageMenuTitle(target: target, modelMissing: false)
-                    .contains(target.displayName),
+                AppModel.outputLanguageMenuTitle(
+                    choice: .translate(to: target), input: .chinese, modelMissing: false
+                ).contains(target.displayName),
                 "\(target.rawValue) 的标题里没有它的显示名"
             )
         }
+    }
+
+    /// 两态 × 输入语言的三个代表状态逐字钉死。第三条最重要：
+    /// 存的目标恰好等于后来改的输入语言（用户先选了英文目标、后来把输入
+    /// 也改成英文）——菜单必须明说这等于不翻译，否则它在骗人。
+    @Test("菜单标题覆盖全部状态")
+    func outputLanguageMenuTitleCoversAllStates() {
+        #expect(
+            AppModel.outputLanguageMenuTitle(choice: .off, input: .english, modelMissing: false)
+                == "输出语言：不翻译")
+        #expect(
+            AppModel.outputLanguageMenuTitle(
+                choice: .translate(to: .spanish), input: .chinese, modelMissing: true)
+                == "输出语言：西班牙文（缺模型目录）")
+        #expect(
+            AppModel.outputLanguageMenuTitle(
+                choice: .translate(to: .english), input: .english, modelMissing: false)
+                == "输出语言：英文（与输入相同，不翻译）")
+    }
+
+    /// 校正是拼音同音字机制，只对中文输入有意义。置灰说明只给非中文——
+    /// 输入中文时 nil（照常可用），别在正常状态下多挂一行解释。
+    @Test("校正置灰说明只给非中文输入")
+    func correctionUnavailableNoteOnlyForNonChinese() {
+        #expect(AppModel.correctionUnavailableNote(input: .chinese) == nil)
+        #expect(
+            AppModel.correctionUnavailableNote(input: .english)?.contains("仅中文输入可用")
+                == true)
+        #expect(
+            AppModel.correctionUnavailableNote(input: .english)?.contains(
+                Language.english.displayName) == true,
+            "要说出当前输入语言是什么，用户才知道这行字为什么出现")
     }
 }
 

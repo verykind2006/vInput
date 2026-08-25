@@ -358,7 +358,7 @@ struct MenuPanelViewWiringTests {
             "model.toggleCorrection()",  // 开启/关闭校正
             "presentCorrectionModelFolderPanel()",  // 指定校正模型…
             "model.selectCorrectionModel(directory: url)",
-            "model.selectOutputLanguage(target)",  // 六个输出语言
+            "model.selectTranslationChoice(.translate(to: target))",  // 六个输出语言
             "model.useLocalBackend()",  // 后端二选一：本机
             "model.useCloudBackend()",  // 后端二选一：云端（幂等，守卫在 AppModel）
             "model.chooseTranslationModelFolder?()",  // 本机档：指定模型…

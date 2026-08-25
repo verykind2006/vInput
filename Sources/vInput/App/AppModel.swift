@@ -51,12 +51,17 @@ final class AppModel {
     /// 同样是 UserDefaults 的可观察镜像，理由同上。
     private(set) var correctionModelName: String?
 
-    /// 当前输出语言，菜单据此显示。
+    /// 当前输入语言（用户说的是什么）。UserDefaults 的可观察镜像，理由同
+    /// `correctionEnabled`：@Observable 只跟踪自身的存储属性，菜单直接读
+    /// 偏好的话点完标题不会刷新。
     ///
-    /// 真实存储在 UserDefaults（需跨启动保留），这里是它的可观察镜像：
-    /// @Observable 只跟踪自身的存储属性，若菜单直接读 UserDefaults，
-    /// 点完标题不会刷新（与 `correctionEnabled` 同一个坑）。
-    private(set) var outputLanguage: Language = .chinese
+    /// 写入口只有 init 的初始化与 `selectInputLanguage`，**不从协调器抄**
+    /// （协调器 `apply()` 读的 `input` 与这里读的是同一个
+    /// `InputLanguagePreference`，两个镜像的一致性靠「都来自同一偏好」保证）。
+    private(set) var inputLanguage: Language = .chinese
+    /// 翻译目标（两态：不翻译 / 译成某语种）。原 outputLanguage 镜像的替任，
+    /// 从协调器的 `choice` 镜像抄（`syncTranslationMirrors`）。
+    private(set) var translationChoice: TranslationChoice = .off
 
     /// 选了外语，却一个可用的翻译模型目录都没有。
     ///
@@ -506,6 +511,14 @@ final class AppModel {
         // 镜像上次退出时的偏好，菜单打开即是正确状态。
         correctionEnabled = correctionPreference.isEnabled
         correctionModelName = correctionPreference.modelDirectory?.lastPathComponent
+        // 旧格式的翻译目标偏好先迁过来、再读任何镜像：旧键的 "zh" 含义是
+        // 「不翻译」（见 TranslationPreference）。放在 init 而不是 bootstrap，
+        // 保证它必然跑在构造协调器之前——协调器读的是新键。
+        if translationPreference.migrateLegacyOutputLanguageIfNeeded() {
+            AppLogger.shared.log("翻译目标偏好已从旧格式迁移（旧 \"zh\" = 不翻译）")
+        }
+        inputLanguage = inputLanguagePreference.language
+        translationChoice = translationPreference.choice
     }
 
     /// 把 UserDefaults 里的校正偏好同步到可观察镜像上。
@@ -667,6 +680,8 @@ final class AppModel {
                 // 会话结束，把此前被推迟的模型换用补上（下载在录音途中完成的
                 // 那种情况）。不补的话用户刚下的 1.5GB 要等到下次启动才生效。
                 self.applyPendingModelAdoption()
+                // 输入语言在录音途中被换过：现在补做转写器重建。
+                if self.inputLanguageRebuildPending { self.rebuildTranscriberForInputLanguage() }
             case .listening: self.phase = .listening
             // 校正、翻译与转写、注入同归 working：Phase 是给菜单栏用的粗粒度
             // 状态，不必区分到这一级，细节由 HUD 呈现。
@@ -1009,6 +1024,14 @@ final class AppModel {
     /// 只在校正开着时构造，因而也只在开着时加载模型：这是个 2 GB 级的
     /// 模型，加载耗时且占内存，而校正默认关闭，多数启动根本用不到它。
     private func makeCorrectionPipeline() -> CorrectionPipeline? {
+        // 校正的机制是拼音同音字（`Pinyin.swift`），对拉丁语种无意义——
+        // 不是「以后补」，是「不适用」。摘除并记日志；菜单侧的置灰见
+        // correctionUnavailableNote（Task 11 接到面板上）。
+        guard inputLanguagePreference.language == .chinese else {
+            AppLogger.shared.log(
+                "校正不适用：输入语言为\(inputLanguagePreference.language.displayName)（拼音机制只对中文有效）")
+            return nil
+        }
         guard correctionPreference.isEnabled else { return nil }
         return CorrectionPipeline(
             corrector: MLXCorrector(modelDirectory: correctionPreference.modelDirectory)
@@ -1278,13 +1301,31 @@ final class AppModel {
     /// 「输出语言：…」这一行菜单标题。
     ///
     /// 缺目录时带后缀，因为那时选中的语言**根本没生效**，而标题只写语言名
-    /// 的话它恰好在骗人——用户看到「输出语言：西班牙文」，得到的却是中文。
+    /// 的话它恰好在骗人——用户看到「输出语言：西班牙文」，得到的却是原文。
+    ///
+    /// 存的目标恰好等于输入语言时明说等于不翻译——那正是「用户先选了英文
+    /// 目标、后来把输入也改成英文」会走到的状态：`effectiveTarget` 判它为
+    /// nil＝不建管线，标题只写「英文」的话与实际行为正好相反。
     nonisolated static func outputLanguageMenuTitle(
-        target: Language,
-        modelMissing: Bool
+        choice: TranslationChoice, input: Language, modelMissing: Bool
     ) -> String {
-        let title = "输出语言：\(target.displayName)"
+        let value: String
+        switch choice {
+        case .off: value = "不翻译"
+        case .translate(let target):
+            value = target == input ? "\(target.displayName)（与输入相同，不翻译）" : target.displayName
+        }
+        let title = "输出语言：\(value)"
         return modelMissing ? "\(title)（缺模型目录）" : title
+    }
+
+    /// 校正菜单的置灰说明；输入=中文时 nil（照常可用）。
+    ///
+    /// 与 `makeCorrectionPipeline` 里那道语言门是同一件事的两面：那边摘管线，
+    /// 这边把「为什么点不了」说出来（Task 11 接到面板上）。
+    nonisolated static func correctionUnavailableNote(input: Language) -> String? {
+        guard input != .chinese else { return nil }
+        return "校正仅中文输入可用（拼音机制），当前输入语言：\(input.displayName)"
     }
 
     // MARK: - 云端开关：谁来译
@@ -1409,7 +1450,7 @@ final class AppModel {
             ]
         case .cloudMissingKey:
             [
-                "云端开着，但 Keychain 里没有 API key：每次听写都会退回中文原文，也不会发出任何请求。",
+                "云端开着，但 Keychain 里没有 API key：每次听写都会退回原文，也不会发出任何请求。",
                 "存 key：security add-generic-password -a vInput -s \(TranslationKey.geminiService) -w",
                 "存好后下次听写即生效，不必回菜单重选。",
             ]
@@ -1476,9 +1517,12 @@ final class AppModel {
     /// 旧语言」。
     private func syncTranslationMirrors() {
         guard let translationCoordinator else { return }
-        // TEMP(Task 10 重写)：镜像还是旧的单语言形态，用有效目标近似——
-        // off 时显示中文（旧语义的「中文=不翻译」），真目标时显示目标。
-        outputLanguage = translationCoordinator.choice.effectiveTarget(input: translationCoordinator.input) ?? .chinese
+        // 从协调器的镜像抄，不直接读偏好——与下面的挂载结论同源。
+        // `inputLanguage` 镜像**不在这里抄**：它由 init 初始化、
+        // `selectInputLanguage` 维护，而协调器的 `input` 与它读的是同一个
+        // `InputLanguagePreference`——两个镜像的一致性靠「都来自同一偏好」
+        // 保证，不需要第二条同步路径。
+        translationChoice = translationCoordinator.choice
         translationModelMissing = translationCoordinator.modelMissing
         // **从协调器真正算出来的那个挂载结论推，不要另起一套判断。**
         // 菜单是否显示「会发出」，必须与实际会不会发出同源；两处各判一次
@@ -1560,7 +1604,7 @@ final class AppModel {
     /// 真实请求都没发过。所以措辞是「已存」不是「已就绪」，
     /// 后者会让用户以为验证过了。
     nonisolated static func cloudAPIKeyMenuLine(hasKey: Bool) -> String {
-        hasKey ? "API Key：已存入 Keychain（是否有效未验证）" : "API Key：未配置，翻译会退回中文原文"
+        hasKey ? "API Key：已存入 Keychain（是否有效未验证）" : "API Key：未配置，翻译会退回原文"
     }
 
     /// 切到本机后端。**任何时候都可以，不需要确认**——这个方向是「更不出站」。
@@ -1687,16 +1731,61 @@ final class AppModel {
         applyTranslationPreference()
     }
 
-    /// 切换输出语言。改动立即生效并跨启动保留。
-    func selectOutputLanguage(_ target: Language) {
-        // TEMP(Task 10 重写)：旧语义等价桥
-        translationPreference.choice = (target == .chinese ? .off : .translate(to: target))
+    /// 切换翻译目标。改动立即生效并跨启动保留。
+    func selectTranslationChoice(_ choice: TranslationChoice) {
+        translationPreference.choice = choice
         applyTranslationPreference()
         // 菜单标题上的后缀是常驻提示，但用户刚点完菜单、菜单当场就关了，
         // HUD 才是他这一刻会看到的东西。文案取自 `TranslationAnnotation`，
         // 不另写一句——「翻译为什么没生效」只该有一处措辞。
         if translationModelMissing {
             showHUDNotice(TranslationAnnotation.missingLocalModel.hudLabel)
+        }
+    }
+
+    /// 切换输入语言。转写、校正、翻译三层都要跟着动。
+    func selectInputLanguage(_ language: Language) {
+        guard language != inputLanguagePreference.language else { return }
+        inputLanguagePreference.language = language
+        inputLanguage = language
+        AppLogger.shared.log("输入语言设置为：\(language.displayName)")
+        // 顺序：先校正（非中文=摘除）、再翻译（矩阵变了）、最后重建转写器。
+        // 前两个自带「会话忙时记账补挂」，重建的记账在下面自己管。
+        applyCorrectionPreference()
+        applyTranslationPreference()
+        rebuildTranscriberForInputLanguage()
+    }
+
+    /// 上一次按输入语言重建转写器被拒（会话正忙），回到 idle 时补做。
+    /// 与 `correctionApplyPending` 同一个模式。
+    private var inputLanguageRebuildPending = false
+
+    /// 输入语言变了就重建转写器（语言是构造参数）。会话忙时记账，
+    /// 回到 idle 补做——与校正/翻译/模型换用三条补挂同一个模式。
+    private func rebuildTranscriberForInputLanguage() {
+        guard let transcriber else {
+            inputLanguageRebuildPending = true
+            return
+        }
+        guard canSwitchModel else {
+            inputLanguageRebuildPending = true
+            AppLogger.shared.log("输入语言本次会话不生效（会话进行中），会话结束后重建转写器")
+            return
+        }
+        inputLanguageRebuildPending = false
+        loadingModelName = activeModelName  // 复用「加载中」的界面态与 toggle 闸
+        Task { [weak self] in
+            do {
+                try await transcriber.rebuild()
+                // 与 selectModel 同一条理由：预览引擎绑的是旧解码器。
+                await self?.attachPreview()
+                AppLogger.shared.log("转写器已按输入语言重建")
+            } catch {
+                // 失败时旧转写器仍可用（rebuild 的保证），只是语言还是旧的
+                // ——必须说出来，不然用户以为已经切过去了。
+                AppLogger.shared.log("按输入语言重建转写器失败，转写仍用旧语言：\(error)")
+            }
+            self?.loadingModelName = nil
         }
     }
 
