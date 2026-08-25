@@ -146,6 +146,8 @@ final class AppModel {
     private let correctionPreference = CorrectionPreference()
     /// 翻译偏好。输出语言、云端开关、模型目录都要跨启动保留。
     private let translationPreference = TranslationPreference()
+    /// 输入语言偏好。转写解码与翻译源语言都读它，同样跨启动保留。
+    private let inputLanguagePreference = InputLanguagePreference()
     /// 「校正能不能开」的判定。全部规则都在它那边，这里只负责把结果
     /// 翻译成弹面板与错误提示。
     private let correctionActivation: CorrectionActivation
@@ -747,11 +749,12 @@ final class AppModel {
         // 而不是第一次被拒时的快照。
         let translationPreference = self.translationPreference
         let correctionPreference = self.correctionPreference
+        let inputLanguagePreference = self.inputLanguagePreference
         translationCoordinator = TranslationAttachmentCoordinator(
             inputs: {
                 TranslationAttachmentCoordinator.Inputs(
-                    // TEMP(Task 7/10 重写)：旧语义等价桥
-                    target: translationPreference.choice.effectiveTarget(input: .chinese) ?? .chinese,
+                    input: inputLanguagePreference.language,
+                    choice: translationPreference.choice,
                     usesCloudBackend: translationPreference.usesCloudBackend,
                     translationModelDirectory: translationPreference.modelDirectory,
                     correctionModelDirectory: correctionPreference.modelDirectory,
@@ -1239,16 +1242,17 @@ final class AppModel {
     /// 给了「永远为真」的默认值，新出现的调用点会静默绕过校验，而那正是本
     /// 缺陷的形状。
     nonisolated static func translationAttachment(
-        target: Language,
+        effectiveTarget: Language?,
         usesCloudBackend: Bool,
         translationModelDirectory: URL?,
         correctionModelDirectory: URL?,
         isUsableModelDirectory: (URL) -> Bool
     ) -> TranslationAttachment {
-        // 先判语言。**云端开关在这一行之后才允许被读到。**
-        guard target.requiresTranslation else { return .detach }
+        // 先判「有没有有效目标」。nil = 不翻译（off 或 目标==输入），
+        // **云端开关在这一行之后才允许被读到**。
+        guard let target = effectiveTarget else { return .detach }
         // 到这里才轮到后端选择。**这是插入，不是重排**——两行对调时
-        // `TranslationAttachmentTests.chineseWithCloudStillDetaches` 会红，
+        // `TranslationAttachmentTests.offWithCloudStillDetaches` 会红，
         // 那条的期望值（`.detach`）不该被迁就。
         if usesCloudBackend { return .cloud }
         // 云端那一格在上面就返回了：云端不需要本地权重，拿本地目录的死活
@@ -1464,7 +1468,9 @@ final class AppModel {
     /// 旧语言」。
     private func syncTranslationMirrors() {
         guard let translationCoordinator else { return }
-        outputLanguage = translationCoordinator.target
+        // TEMP(Task 10 重写)：镜像还是旧的单语言形态，用有效目标近似——
+        // off 时显示中文（旧语义的「中文=不翻译」），真目标时显示目标。
+        outputLanguage = translationCoordinator.choice.effectiveTarget(input: translationCoordinator.input) ?? .chinese
         translationModelMissing = translationCoordinator.modelMissing
         // **从协调器真正算出来的那个挂载结论推，不要另起一套判断。**
         // 菜单是否显示「会发出」，必须与实际会不会发出同源；两处各判一次

@@ -34,7 +34,7 @@ import Testing
 /// | `useCloudBackend` 去掉确认直接开 | 1 条红：`enablingRequiresConfirmation` |
 /// | 菜单里加一句 `TranslationKey.read` | 1 条红：`menuNeverReadsKeychain` |
 /// | 协调器改成每次 `apply()` 都读 Keychain | 1 条红：`keychainIsReadOnlyWhenCloudActuallyRuns` |
-/// | `translationAttachment` 里语言判断与后端判断对调 | **6 条红**：`statusTable`、`menuClaimMatchesObservedEgress`、`keychainIsReadOnlyWhenCloudActuallyRuns`，以及既有的 3 条（`chineseWithCloudStillDetaches` 等） |
+/// | `translationAttachment` 里语言判断与后端判断对调 | **6 条红**：`statusTable`、`menuClaimMatchesObservedEgress`、`keychainIsReadOnlyWhenCloudActuallyRuns`，以及既有的 3 条（`offWithCloudStillDetaches` 等） |
 ///
 /// **第一行要单独说一句**：那次变异下 `menuClaimMatchesObservedEgress`
 /// **没红**。原因是中文那一格从不去读 Keychain，`cloudKeyPresent` 停在
@@ -62,7 +62,9 @@ struct CloudBackendMenuTests {
         /// 不是另写一条等价路径。
         var status: AppModel.TranslationBackendStatus {
             let attachment = AppModel.translationAttachment(
-                target: target,
+                // TEMP(Task 10/11 菜单重做)：这张表还是旧的单语言形态，
+                // 沿用旧语义「中文=不翻译」折算成有效目标。
+                effectiveTarget: target.requiresTranslation ? target : nil,
                 usesCloudBackend: cloud,
                 translationModelDirectory: nil,
                 correctionModelDirectory: directory,

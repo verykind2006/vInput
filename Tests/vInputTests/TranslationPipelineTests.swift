@@ -21,7 +21,7 @@ struct TranslationPipelineTests {
     // MARK: - 两条「压根不该调翻译器」的短路
 
     @Test("目标与源相同（中文→中文）时原样返回，不调翻译器")
-    func chineseTargetSkipsTranslator() async {
+    func sameLanguagePipelineSkipsTranslator() async {
         let fake = FakeTranslator(.succeed(Self.translated))
         let pipeline = TranslationPipeline(translator: fake, source: .chinese, target: .chinese)
 

@@ -122,14 +122,14 @@ struct TranslationAttachmentTests {
     ///   `TranslationAttachmentCoordinatorTests` 里那条拿**真临时目录**跑的
     ///   用例守着。生产函数本身**不给**这个参数默认值，见它的注释。
     private func attachment(
-        target: Language,
+        effectiveTarget: Language?,
         cloud: Bool = false,
         translationDirectory: URL? = nil,
         correctionDirectory: URL? = nil,
         directoryIsUsable: @escaping (URL) -> Bool = { _ in true }
     ) -> AppModel.TranslationAttachment {
         AppModel.translationAttachment(
-            target: target,
+            effectiveTarget: effectiveTarget,
             usesCloudBackend: cloud,
             translationModelDirectory: translationDirectory,
             correctionModelDirectory: correctionDirectory,
@@ -139,34 +139,34 @@ struct TranslationAttachmentTests {
 
     // MARK: - 那张 2×2 表，逐格钉死
 
-    /// | 中文 | 云端关 | 翻译层完全不参与 | 零出站 |
-    @Test("中文 + 云端关：摘掉")
-    func chineseLocalDetaches() {
-        #expect(attachment(target: .chinese, correctionDirectory: correctionDir) == .detach)
+    /// | 无有效目标（off 或 目标==输入） | 云端关 | 翻译层完全不参与 | 零出站 |
+    @Test("无有效目标 + 云端关：摘掉")
+    func noEffectiveTargetDetaches() {
+        #expect(attachment(effectiveTarget: nil, correctionDirectory: correctionDir) == .detach)
     }
 
-    /// | 中文 | **云端开** | **同上——一个字节都不出站** |
+    /// | 无有效目标 | **云端开** | **同上——一个字节都不出站** |
     ///
     /// **这一格是整张表里最容易漏的。** 用户可能为某次需要打开过云端、之后
-    /// 忘了关；只要输出语言是中文，就不该有任何东西出站，也不该弹任何与
-    /// 云端有关的提示。
+    /// 忘了关；只要没有有效目标（off 或 目标==输入＝不翻译），就不该有任何
+    /// 东西出站，也不该弹任何与云端有关的提示。
     ///
-    /// 它同时是「先判语言、后判后端」这条顺序的**唯一机械守卫**：把
+    /// 它同时是「先判有效目标、后判后端」这条顺序的**唯一机械守卫**：把
     /// `translationAttachment` 里那两个判断对调，本条立刻变成 `.cloud`
     /// ——2026-08-19（Task 13）实测确认这条仍然有牙口，云端真正落地之后
     /// 它守的东西从「返回值不同」变成了「真会发出一条请求」。
     /// **期望值不变，仍是 `.detach`**：对调之后不许去迁就它。
-    @Test("中文 + 云端开：仍然摘掉，云端开关一个字节都不该出站")
-    func chineseWithCloudStillDetaches() {
+    @Test("off + 云端开：仍然摘掉，云端开关一个字节都不该出站")
+    func offWithCloudStillDetaches() {
         #expect(
-            attachment(target: .chinese, cloud: true, correctionDirectory: correctionDir)
+            attachment(effectiveTarget: nil, cloud: true, correctionDirectory: correctionDir)
                 == .detach
         )
         // 六种外语一格不漏地反过来验一次：语言是外语时云端开关**必须**被读到。
         // 只测中文那一格的话，「顺序对调」在外语侧不会被发现。
         for target in Language.allCases where target.requiresTranslation {
             #expect(
-                attachment(target: target, cloud: true, correctionDirectory: correctionDir)
+                attachment(effectiveTarget: target, cloud: true, correctionDirectory: correctionDir)
                     == .cloud,
                 "\(target.rawValue) 开了云端却走进了本地分支"
             )
@@ -177,7 +177,7 @@ struct TranslationAttachmentTests {
     @Test("外语 + 云端关：挂本地")
     func foreignLocalAttaches() {
         #expect(
-            attachment(target: .spanish, translationDirectory: translationDir)
+            attachment(effectiveTarget: .spanish, translationDirectory: translationDir)
                 == .local(directory: translationDir)
         )
     }
@@ -186,7 +186,7 @@ struct TranslationAttachmentTests {
     @Test("外语 + 云端开：走云端分支")
     func foreignCloudRoutesToCloud() {
         #expect(
-            attachment(target: .spanish, cloud: true, translationDirectory: translationDir)
+            attachment(effectiveTarget: .spanish, cloud: true, translationDirectory: translationDir)
                 == .cloud
         )
     }
@@ -203,7 +203,7 @@ struct TranslationAttachmentTests {
     @Test("翻译目录没配时退回校正层的目录")
     func fallsBackToCorrectionDirectory() {
         #expect(
-            attachment(target: .english, correctionDirectory: correctionDir)
+            attachment(effectiveTarget: .english, correctionDirectory: correctionDir)
                 == .local(directory: correctionDir)
         )
     }
@@ -213,7 +213,7 @@ struct TranslationAttachmentTests {
     func translationDirectoryWins() {
         #expect(
             attachment(
-                target: .english,
+                effectiveTarget: .english,
                 translationDirectory: translationDir,
                 correctionDirectory: correctionDir
             ) == .local(directory: translationDir)
@@ -233,12 +233,12 @@ struct TranslationAttachmentTests {
     func unconfiguredIsNotSilent() {
         for target in Language.allCases where target.requiresTranslation {
             #expect(
-                attachment(target: target) == .unconfigured,
+                attachment(effectiveTarget: target) == .unconfigured,
                 "\(target.rawValue) 缺目录时被静默摘掉了"
             )
         }
-        // 中文不受影响：它压根不该被当成「缺配置」。
-        #expect(attachment(target: .chinese) == .detach)
+        // 不翻译（无有效目标）不受影响：它压根不该被当成「缺配置」。
+        #expect(attachment(effectiveTarget: nil) == .detach)
     }
 
     /// **配过但已失效的目录，与没配是同一件事。**
@@ -252,7 +252,7 @@ struct TranslationAttachmentTests {
     func unusableDirectoryIsUnconfigured() {
         #expect(
             attachment(
-                target: .spanish,
+                effectiveTarget: .spanish,
                 correctionDirectory: correctionDir,
                 directoryIsUsable: { _ in false }
             ) == .unconfigured
@@ -261,7 +261,7 @@ struct TranslationAttachmentTests {
         // 「我指了 A 却在用 B」比「A 坏了，告诉我」更难排查。
         #expect(
             attachment(
-                target: .spanish,
+                effectiveTarget: .spanish,
                 translationDirectory: translationDir,
                 correctionDirectory: correctionDir,
                 directoryIsUsable: { $0 != self.translationDir }
@@ -273,21 +273,21 @@ struct TranslationAttachmentTests {
     ///
     /// 云端不需要本地权重。拿本地目录的死活去拦一条根本不读它的路径是纯
     /// 误杀，而校验要碰文件系统——每次 `apply()` 白付一次目录遍历。
-    /// 中文那一格同理：它连翻译都不做。
-    @Test("云端与中文这两格不去校验本地目录")
-    func cloudAndChineseSkipDirectoryValidation() {
+    /// 不翻译（无有效目标）那一格同理：它连翻译都不做。
+    @Test("云端与不翻译这两格不去校验本地目录")
+    func cloudAndNoTargetSkipDirectoryValidation() {
         var validated: [URL] = []
         let spy: (URL) -> Bool = { validated.append($0); return true }
 
         #expect(
             attachment(
-                target: .spanish, cloud: true,
+                effectiveTarget: .spanish, cloud: true,
                 correctionDirectory: correctionDir, directoryIsUsable: spy
             ) == .cloud
         )
         #expect(
             attachment(
-                target: .chinese, correctionDirectory: correctionDir, directoryIsUsable: spy
+                effectiveTarget: nil, correctionDirectory: correctionDir, directoryIsUsable: spy
             ) == .detach
         )
         #expect(validated.isEmpty, "去校验了本地目录：\(validated)")
@@ -296,7 +296,7 @@ struct TranslationAttachmentTests {
     /// 缺目录的判断**排在云端之后**：选了云端时本地目录压根不相关。
     @Test("选了云端时不因为缺本地目录而报未配置")
     func cloudDoesNotNeedLocalDirectory() {
-        #expect(attachment(target: .english, cloud: true) == .cloud)
+        #expect(attachment(effectiveTarget: .english, cloud: true) == .cloud)
     }
 
     // MARK: - 菜单标题

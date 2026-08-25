@@ -117,6 +117,10 @@ struct TranslationPipeline: Sendable {
     /// 源语言与目标语言在挂载那一刻定死——一次会话内规则不变
     /// （`DictationSession.attachTranslation` 的既有语义），中途换设置
     /// 走协调器重建管线，不改这两个值。
+    /// 非 private：`TranslationAttachmentCoordinatorTests.builtPipelineCarriesInputAndTarget`
+    /// 要断言协调器建出的管线带的确实是当时的 (输入, 目标)。「值对了」和
+    /// 「接上了」必须分开验——建管线处硬写一个 `.chinese`，纯函数那组用例
+    /// 一条都不会红。
     let source: Language
     let target: Language
     /// 非 private：`TranslationPipelineTests` 要断言默认值真的被接到了构造器上。

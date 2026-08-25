@@ -52,7 +52,7 @@ struct TranslationAttachmentCoordinatorTests {
     /// | 中文 | 云端关 | 翻译层完全不参与 | 零出站 |
     @Test("中文 + 云端关：翻译器一次都没被造出来")
     func chineseLocalNeverBuildsTranslator() async throws {
-        let harness = Harness(target: .chinese)
+        let harness = Harness(choice: .off)
         harness.coordinator.apply()
         try await harness.runSession()
 
@@ -69,7 +69,7 @@ struct TranslationAttachmentCoordinatorTests {
     /// 也没有任何一条与云端有关的日志（那会让用户以为有东西出站了）。
     @Test("中文 + 云端开：仍然一个字节都不出站，也不提云端")
     func chineseWithCloudStillDetaches() async throws {
-        let harness = Harness(target: .chinese, cloud: true)
+        let harness = Harness(choice: .off, cloud: true)
         harness.coordinator.apply()
         try await harness.runSession()
 
@@ -87,7 +87,7 @@ struct TranslationAttachmentCoordinatorTests {
     /// 这条同时是「挂载那一句」最直接的守卫：删掉它，注入的就是中文原文。
     @Test("外语 + 云端关：挂上本地翻译，注入的是译文")
     func foreignLocalTranslates() async throws {
-        let harness = Harness(target: .english)
+        let harness = Harness(choice: .translate(to: .english))
         harness.coordinator.apply()
         try await harness.runSession()
 
@@ -102,7 +102,7 @@ struct TranslationAttachmentCoordinatorTests {
     /// 这一格走到真的发出请求为止，见下面的 `CloudEgressTests`。
     @Test("外语 + 云端开：不造本地翻译器")
     func foreignCloudDoesNotFallBackToLocal() async throws {
-        let harness = Harness(target: .english, cloud: true)
+        let harness = Harness(choice: .translate(to: .english), cloud: true)
         harness.coordinator.apply()
         try await harness.runSession()
 
@@ -121,7 +121,7 @@ struct TranslationAttachmentCoordinatorTests {
     /// 选了外语但一个模型目录都没有：**不许静默**。
     @Test("外语 + 无模型目录：点亮缺目录标志，注入中文原文")
     func unconfiguredIsVisibleAndFallsBackToChinese() async throws {
-        let harness = Harness(target: .english, correctionDirectory: nil)
+        let harness = Harness(choice: .translate(to: .english), correctionDirectory: nil)
         harness.coordinator.apply()
         try await harness.runSession()
 
@@ -141,7 +141,7 @@ struct TranslationAttachmentCoordinatorTests {
     /// 一句「未指定」会让他去找一个不存在的配置项）、以及去哪儿配。
     @Test("缺目录时那条日志说清查过哪两个位置、也说清去哪儿配")
     func unconfiguredLogSaysWhereToConfigure() {
-        let harness = Harness(target: .english, correctionDirectory: nil)
+        let harness = Harness(choice: .translate(to: .english), correctionDirectory: nil)
         harness.coordinator.apply()
 
         let joined = harness.logs.joined(separator: "\n")
@@ -168,7 +168,7 @@ struct TranslationAttachmentCoordinatorTests {
     /// 那一格已经有现成的三处告知（日志 + 菜单后缀 + 换语言时的 HUD）。
     @Test("外语 + 校正目录已失效：不挂本地，落回缺目录那一格")
     func staleCorrectionDirectoryDoesNotAttach() async throws {
-        let harness = Harness(target: .english, correctionDirectory: Harness.staleDirectory)
+        let harness = Harness(choice: .translate(to: .english), correctionDirectory: Harness.staleDirectory)
         harness.coordinator.apply()
         try await harness.runSession()
 
@@ -195,7 +195,7 @@ struct TranslationAttachmentCoordinatorTests {
     func translatorReceivesChosenDirectory() async throws {
         // 同样是真目录：`.local` 挂上去之前要过一次真的目录校验。
         let translationDirectory = Harness.makeFakeModelDirectory()
-        let harness = Harness(target: .english, translationDirectory: translationDirectory)
+        let harness = Harness(choice: .translate(to: .english), translationDirectory: translationDirectory)
         harness.coordinator.apply()
         try await harness.runSession()
 
@@ -211,12 +211,12 @@ struct TranslationAttachmentCoordinatorTests {
     /// 那条从头到尾就没挂过东西。
     @Test("从外语切回中文时把流水线摘掉")
     func switchingBackToChineseDetaches() async throws {
-        let harness = Harness(target: .english)
+        let harness = Harness(choice: .translate(to: .english))
         harness.coordinator.apply()
         try await harness.runSession()
         #expect(harness.sink.received == [Harness.translated])
 
-        harness.inputs.target = .chinese
+        harness.inputs.choice = .off
         harness.coordinator.apply()
         try await harness.runSession()
 
@@ -251,11 +251,11 @@ struct TranslationAttachmentCoordinatorTests {
     /// 必须生效。
     @Test("会话进行中换语言：本轮不生效，回到 idle 后补挂")
     func midSessionChangeResumesOnIdle() async throws {
-        let harness = Harness(target: .chinese)
+        let harness = Harness(choice: .off)
 
         // 会话已经开始，此时改语言。
         try await harness.session.start()
-        harness.inputs.target = .english
+        harness.inputs.choice = .translate(to: .english)
         harness.coordinator.apply()
         #expect(harness.coordinator.isPending, "被会话拒绝的挂载必须被记下来")
 
@@ -277,7 +277,7 @@ struct TranslationAttachmentCoordinatorTests {
     /// 会话还没建好时就 apply（`bootstrap` 之外的任何早到调用）：同样要记着。
     @Test("会话还不存在时记下待补挂，会话就绪后补上")
     func missingSessionIsPending() async throws {
-        let harness = Harness(target: .english)
+        let harness = Harness(choice: .translate(to: .english))
         harness.sessionAvailable = false
 
         harness.coordinator.apply()
@@ -298,7 +298,7 @@ struct TranslationAttachmentCoordinatorTests {
     /// 这条是 `guard isPending else { return }` 的守卫。
     @Test("没有待补挂时会话结束不重建流水线")
     func idleWithoutPendingDoesNotRebuild() async throws {
-        let harness = Harness(target: .english)
+        let harness = Harness(choice: .translate(to: .english))
         harness.coordinator.apply()
         #expect(harness.translatorDirectories.count == 1)
         #expect(harness.warmUpCount == 1)
@@ -321,17 +321,17 @@ struct TranslationAttachmentCoordinatorTests {
     /// 头两条当场红。
     @Test("只有真要走云端时才读 Keychain，且只读一次")
     func keychainIsReadOnlyWhenCloudActuallyRuns() {
-        let chineseWithCloud = Harness(target: .chinese, cloud: true)
+        let chineseWithCloud = Harness(choice: .off, cloud: true)
         chineseWithCloud.coordinator.apply()
         #expect(
             chineseWithCloud.cloudKeyReads == 0,
             "输出中文却去读了 Keychain：那一格零出站，读它只会白弹一个系统授权框")
 
-        let foreignLocal = Harness(target: .english, cloud: false)
+        let foreignLocal = Harness(choice: .translate(to: .english), cloud: false)
         foreignLocal.coordinator.apply()
         #expect(foreignLocal.cloudKeyReads == 0, "走本地却去读了云端的 key")
 
-        let foreignCloud = Harness(target: .english, cloud: true)
+        let foreignCloud = Harness(choice: .translate(to: .english), cloud: true)
         foreignCloud.coordinator.apply()
         #expect(foreignCloud.cloudKeyReads == 1, "云端那格读了 \(foreignCloud.cloudKeyReads) 次，应当正好一次")
         #expect(
@@ -341,7 +341,7 @@ struct TranslationAttachmentCoordinatorTests {
     /// 缺 key 时镜像也要如实。菜单靠它显示「缺 API key，未生效」。
     @Test("缺 key 时镜像记着缺")
     func missingKeyIsMirrored() {
-        let harness = Harness(target: .english, cloud: true, cloudKey: nil)
+        let harness = Harness(choice: .translate(to: .english), cloud: true, cloudKey: nil)
         harness.coordinator.apply()
 
         #expect(harness.coordinator.cloudKeyPresent == false)
@@ -355,7 +355,7 @@ struct TranslationAttachmentCoordinatorTests {
     /// 挪到 guard 之后，本条红。
     @Test("挂载被会话拒绝时，菜单要的挂载结论与 key 状态照样算好")
     func backendMirrorsUpdateEvenWhenAttachRefused() async throws {
-        let harness = Harness(target: .english, cloud: false)
+        let harness = Harness(choice: .translate(to: .english), cloud: false)
         try await harness.session.start()
 
         harness.inputs.usesCloudBackend = true
@@ -377,17 +377,65 @@ struct TranslationAttachmentCoordinatorTests {
     /// 录音途中换语言会出现「菜单还写着旧语言」，而那正是这个镜像存在的理由。
     @Test("挂载被会话拒绝时镜像照样更新")
     func mirrorsUpdateEvenWhenAttachRefused() async throws {
-        let harness = Harness(target: .chinese, correctionDirectory: nil)
+        let harness = Harness(choice: .off, correctionDirectory: nil)
         try await harness.session.start()
 
-        harness.inputs.target = .english
+        harness.inputs.choice = .translate(to: .english)
         harness.coordinator.apply()
 
-        #expect(harness.coordinator.target == .english, "菜单标题会停在旧语言")
+        #expect(harness.coordinator.choice == .translate(to: .english), "菜单标题会停在旧语言")
         #expect(harness.coordinator.modelMissing, "缺目录的提示会等到会话结束才出现")
 
         harness.source.emit(Harness.samples)
         await harness.session.finish()
+    }
+
+    // MARK: - 全矩阵：挂载判定按「有效目标」走，不再按「目标是不是中文」
+
+    /// 输入=英文、目标=英文：等同不翻译，管线必须摘掉。
+    @Test func sameInputAndTargetDetaches() {
+        let attachment = AppModel.translationAttachment(
+            effectiveTarget: TranslationChoice.translate(to: .english)
+                .effectiveTarget(input: .english),
+            usesCloudBackend: false,
+            translationModelDirectory: nil,
+            correctionModelDirectory: URL(fileURLWithPath: "/tmp/model"),
+            isUsableModelDirectory: { _ in true })
+        #expect(attachment == .detach)
+    }
+
+    /// 新方向 X→中文是真翻译，不再是「不翻译」的别名。
+    @Test func englishToChineseIsARealLocalAttachment() {
+        let attachment = AppModel.translationAttachment(
+            effectiveTarget: .chinese,
+            usesCloudBackend: false,
+            translationModelDirectory: nil,
+            correctionModelDirectory: URL(fileURLWithPath: "/tmp/model"),
+            isUsableModelDirectory: { _ in true })
+        #expect(attachment == .local(directory: URL(fileURLWithPath: "/tmp/model")))
+    }
+
+    /// 「值对了」和「接上了」分开验：协调器建出的管线必须带着当时的
+    /// (输入, 目标)，而不是默认值。
+    @Test("协调器建出的管线带着当时的 (输入, 目标)")
+    func builtPipelineCarriesInputAndTarget() {
+        let harness = Harness(input: .english, choice: .translate(to: .spanish))
+        harness.coordinator.apply()
+
+        #expect(harness.coordinator.pipeline?.source == .english)
+        #expect(harness.coordinator.pipeline?.target == .spanish)
+    }
+
+    /// 上一条的纯函数版之外，协调器侧也要有用例抓「无视输入语言」的写法：
+    /// `apply()` 里有效目标的计算若直接从 choice 取语言（无视 input），
+    /// 这条会挂上一条英→英的管线。
+    @Test("协调器侧：输入=英文、目标=英文时不建管线")
+    func coordinatorDetachesWhenInputEqualsTarget() {
+        let harness = Harness(input: .english, choice: .translate(to: .english))
+        harness.coordinator.apply()
+
+        #expect(harness.coordinator.pipeline == nil, "英→英是句废话，不该建管线")
+        #expect(harness.translatorDirectories.isEmpty, "英→英却造出了翻译器")
     }
 }
 
@@ -445,7 +493,7 @@ struct CloudEgressTests {
     /// **整张 2×2 表里最要紧的那一格。**
     @Test("云端开着但输出语言是中文：从偏好走到注入，请求数是 0")
     func chineseWithCloudSendsNothing() async throws {
-        let harness = Harness(target: .chinese, cloud: true)
+        let harness = Harness(choice: .off, cloud: true)
 
         harness.coordinator.apply()
         try await harness.runSession()
@@ -465,7 +513,7 @@ struct CloudEgressTests {
     /// 这条一红，上面那条就退化成空断言。
     @Test("正对照：云端开 + 外语，确实发出一条发往 Gemini 的请求")
     func foreignWithCloudActuallySendsOneRequest() async throws {
-        let harness = Harness(target: .english, cloud: true)
+        let harness = Harness(choice: .translate(to: .english), cloud: true)
 
         harness.coordinator.apply()
         try await harness.runSession()
@@ -497,7 +545,7 @@ struct CloudEgressTests {
     /// `translatorDirectories` 那条红。
     @Test("云端开 + 外语但没配 key：注入中文原文 + HUD 说明，且一个字节都不出站")
     func missingKeyIsLoudAndDoesNotFallBackToLocal() async throws {
-        let harness = Harness(target: .english, cloud: true, cloudKey: nil)
+        let harness = Harness(choice: .translate(to: .english), cloud: true, cloudKey: nil)
 
         harness.coordinator.apply()
         try await harness.runSession()
@@ -519,7 +567,7 @@ struct CloudEgressTests {
     /// 这是产品大原则里唯一需要用户事后能查证的那件事。
     @Test("挂上云端时日志说清文字会离开本机")
     func attachLogSaysDataLeavesTheMachine() {
-        let harness = Harness(target: .english, cloud: true)
+        let harness = Harness(choice: .translate(to: .english), cloud: true)
         harness.coordinator.apply()
 
         let joined = harness.logs.joined(separator: "\n")
@@ -541,11 +589,11 @@ struct CloudEgressTests {
     @Test("菜单说会出站的那格，正好是真发了请求的那格")
     func menuClaimMatchesObservedEgress() async throws {
         let cases: [(name: String, harness: Harness)] = [
-            ("中文 + 云端关", Harness(target: .chinese)),
-            ("中文 + 云端开", Harness(target: .chinese, cloud: true)),
-            ("外语 + 云端关", Harness(target: .english)),
-            ("外语 + 云端开 + 没配 key", Harness(target: .english, cloud: true, cloudKey: nil)),
-            ("外语 + 云端开 + 有 key", Harness(target: .english, cloud: true)),
+            ("不翻译 + 云端关", Harness(choice: .off)),
+            ("不翻译 + 云端开", Harness(choice: .off, cloud: true)),
+            ("外语 + 云端关", Harness(choice: .translate(to: .english))),
+            ("外语 + 云端开 + 没配 key", Harness(choice: .translate(to: .english), cloud: true, cloudKey: nil)),
+            ("外语 + 云端开 + 有 key", Harness(choice: .translate(to: .english), cloud: true)),
         ]
 
         for (name, harness) in cases {
@@ -796,7 +844,8 @@ private final class Harness {
     ///   - cloudKey: 假的云端 API key。nil ＝ 用户开了云端却没配 key。
     ///   - cloudReply: 记录型 `URLSession` 回给云端翻译器的假响应。
     init(
-        target: Language,
+        input: Language = .chinese,
+        choice: TranslationChoice,
         cloud: Bool = false,
         cloudKey: String? = "not-a-real-key-0000",
         cloudReply: RequestRecorder.Reply = .status(
@@ -817,7 +866,8 @@ private final class Harness {
             targetGuard: guardian
         )
         inputs = TranslationAttachmentCoordinator.Inputs(
-            target: target,
+            input: input,
+            choice: choice,
             usesCloudBackend: cloud,
             translationModelDirectory: translationDirectory,
             correctionModelDirectory: correctionDirectory
@@ -873,7 +923,7 @@ private final class Harness {
 struct CloudPipelineTimeoutTests {
     @Test("云端流水线用的是云端下限，不是本机的 8 秒")
     func cloudPipelineGetsCloudFloor() {
-        let harness = Harness(target: .english, cloud: true)
+        let harness = Harness(choice: .translate(to: .english), cloud: true)
         harness.coordinator.apply()
 
         let pipeline = harness.coordinator.pipeline
@@ -889,7 +939,7 @@ struct CloudPipelineTimeoutTests {
     /// 而那会让本机的失败路径白等 25 秒。
     @Test("本机流水线仍然用本机下限")
     func localPipelineKeepsLocalFloor() {
-        let harness = Harness(target: .english)
+        let harness = Harness(choice: .translate(to: .english))
         harness.coordinator.apply()
 
         #expect(harness.coordinator.pipeline?.timeout == TranslationBudget.floor)

@@ -149,7 +149,7 @@ struct DictationTranslationTests {
     /// 管线侧由 `TranslationPipelineTests.sameSourceAndTargetPassesThrough`
     /// 兜底。
     @Test("没有翻译管线时不进 .translating，注入中文原文")
-    func chineseTargetSkipsTranslatingState() async throws {
+    func noPipelineSkipsTranslatingState() async throws {
         let (session, source, sink) = makeSession()
         session.attachTranslation(nil)
         var observed: [DictationSession.State] = []

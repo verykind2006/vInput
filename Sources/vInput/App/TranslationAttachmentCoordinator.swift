@@ -51,11 +51,12 @@ extension DictationSession: TranslationAttachTarget {}
 /// 四格共用；预热用 detached 任务不占主线程。
 @MainActor
 final class TranslationAttachmentCoordinator {
-    /// 做判断要读的四个值。做成一个结构体而不是四个参数，是为了让
+    /// 做判断要读的六个值。做成一个结构体而不是六个参数，是为了让
     /// 「每次 apply 都重新读一遍偏好」这件事有个明确的形状——补挂那次必须
     /// 读**当时**的偏好，而不是第一次被拒时的那份快照。
     struct Inputs: Equatable {
-        var target: Language
+        var input: Language
+        var choice: TranslationChoice
         var usesCloudBackend: Bool
         var translationModelDirectory: URL?
         var correctionModelDirectory: URL?
@@ -89,14 +90,18 @@ final class TranslationAttachmentCoordinator {
     private let warmUp: @MainActor (TranslationPipeline) -> Void
     private let log: @MainActor (String) -> Void
 
-    /// 当前生效的翻译流水线。目标是中文（不翻译）时为 nil。
+    /// 当前生效的翻译流水线。没有有效目标（off 或 目标==输入）时为 nil。
     ///
-    /// **摘掉而不是挂一个空转的**：不摘的话每次听写都要多走一次
-    /// `requiresTranslation` 判断和一次 actor 跳转，而那是白付的。
+    /// **摘掉而不是挂一个空转的**：会话侧只认「有没有管线」，不摘的话每次
+    /// 听写都要白付一次 actor 跳转、一次用户看得见的 `.translating` 状态
+    /// 迁移，外加一次恒等的 translate 调用。
     private(set) var pipeline: TranslationPipeline?
 
-    /// 最近一次 `apply()` 读到的输出语言。`AppModel` 的可观察镜像从这里取。
-    private(set) var target: Language = .chinese
+    /// 最近一次 `apply()` 读到的翻译选择。`AppModel` 的可观察镜像从这里取。
+    private(set) var choice: TranslationChoice = .off
+
+    /// 最近一次 `apply()` 读到的输入语言。同上，镜像从这里取。
+    private(set) var input: Language = .chinese
 
     /// 选了外语却一个可用的模型目录都没有。同上，供菜单后缀与 HUD 用。
     private(set) var modelMissing = false
@@ -187,14 +192,16 @@ final class TranslationAttachmentCoordinator {
     /// 按当前偏好挂（或摘掉）翻译流水线。
     func apply() {
         let current = inputs()
+        let effectiveTarget = current.choice.effectiveTarget(input: current.input)
         // **镜像与「缺目录」的判断排在会话状态 guard 之前。** 用户点完菜单，
         // 菜单标题与那条 HUD 提示必须当场就对——哪怕这次挂载要等这一轮会话
         // 结束。放到 guard 之后的话，录音途中换语言会出现「菜单还写着旧语言」，
         // 而那正是这个镜像存在的理由。
-        target = current.target
+        choice = current.choice
+        input = current.input
 
         let attachment = AppModel.translationAttachment(
-            target: current.target,
+            effectiveTarget: effectiveTarget,
             usesCloudBackend: current.usesCloudBackend,
             translationModelDirectory: current.translationModelDirectory,
             correctionModelDirectory: current.correctionModelDirectory,
@@ -223,28 +230,31 @@ final class TranslationAttachmentCoordinator {
         case .detach:
             pipeline = nil
         case .local(let directory):
+            // `.local`/`.cloud` 两格的有效目标必非 nil：nil 在
+            // `translationAttachment` 首行就落成了 `.detach`。
+            let target = effectiveTarget!
             let built = TranslationPipeline(
                 // **闸门与超时都用默认值。** 两个数各自有实测支撑
                 // （闸门 1.1、超时 8 秒）且各自有测试守着，在调用点硬写一个
                 // 数等于绕过那两条守卫，而且不会有人发现。
                 translator: makeTranslator(directory),
-                // TEMP(Task 7 重写)：协调器还没带输入语言
-                source: .chinese,
-                target: current.target
+                source: current.input,
+                target: target
             )
             pipeline = built
-            log("翻译已启用：目标=\(current.target.rawValue) 模型目录=\(directory.path)")
+            log("翻译已启用：输入=\(current.input.rawValue) 目标=\(target.rawValue) 模型目录=\(directory.path)")
             // 与校正同一个道理：加载一次要几十秒，注入路径上一秒都不能等。
             warmUp(built)
         case .cloud:
+            // 同 `.local`：这一格的有效目标必非 nil。
+            let target = effectiveTarget!
             // **云端的超时下限比本机高得多**，理由见
             // `TranslationBudget.cloudFloor`：实测均 7.2 秒、最长 12.7 秒，
             // 而本机那个 8 秒会把成功返回的云端译文也掐掉。
             let built = TranslationPipeline(
                 translator: makeCloudTranslator(current.cloudModel),
-                // TEMP(Task 7 重写)：协调器还没带输入语言
-                source: .chinese,
-                target: current.target,
+                source: current.input,
+                target: target,
                 timeout: TranslationBudget.cloudFloor
             )
             pipeline = built
@@ -252,7 +262,7 @@ final class TranslationAttachmentCoordinator {
             if cloudKeyPresent {
                 // **明说「文字会离开本机」。** 产品大原则是一切不出本机，
                 // 出站是唯一需要用户事后能在日志里查证的那件事。
-                log("翻译已启用：云端 Gemini，目标=\(current.target.rawValue)（文字会离开本机）")
+                log("翻译已启用：云端 Gemini，输入=\(current.input.rawValue) 目标=\(target.rawValue)（文字会离开本机）")
             } else {
                 // **缺 key 绝不静默、也绝不退回本地。**
                 //
@@ -263,8 +273,8 @@ final class TranslationAttachmentCoordinator {
                 // `TranslationAnnotation.missingAPIKey`（云端翻译器在
                 // `translate` 里抛 `.missingAPIKey`，一个字节都不出站）。
                 log(
-                    "翻译已启用但云端缺 API key：目标=\(current.target.rawValue)，"
-                        + "每次听写都会退回中文原文并在 HUD 上说明。"
+                    "翻译已启用但云端缺 API key：输入=\(current.input.rawValue) 目标=\(target.rawValue)，"
+                        + "每次听写都会退回原文并在 HUD 上说明。"
                         + "存 key：security add-generic-password -a vInput -s "
                         + "\(TranslationKey.geminiService) -w"
                 )
@@ -281,7 +291,7 @@ final class TranslationAttachmentCoordinator {
             // 校正的启动自检只把开关落回「关」、**不清目录**，此时用户是
             // 「配过了」的，一句「未指定」会让他去找一个根本不存在的配置项。
             log(
-                "翻译未启用：目标=\(current.target.rawValue)，但没有可用的模型目录"
+                "翻译未启用：输入=\(current.input.rawValue) 目标=\(current.choice.storageValue)，但没有可用的模型目录"
                 + "（translation.modelDirectory 与校正模型目录都未指定，"
                 + "或指定的目录已失效——被移动、改名，或不是 MLX 模型目录），"
                 + "请在「校正」菜单里指定本地模型目录"
