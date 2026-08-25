@@ -19,7 +19,7 @@ struct MissingModelTranscriberTests {
     /// 这一条只能真跑：扫源码看不出 `makeTranscriber` 返回的是哪个类型，
     /// 而这正是那条会偷偷联网的岔路口。
     @Test func emptyFolderYieldsTheNonDownloadingTranscriber() {
-        let transcriber = AppModel.makeTranscriber(ModelCatalog.noModel)
+        let transcriber = AppModel.makeTranscriber(ModelCatalog.noModel, language: .chinese)
         let isMissing = transcriber is MissingModelTranscriber
         #expect(isMissing, "空目录换来的是 \(type(of: transcriber))，那条路会去联网下载")
     }
@@ -29,7 +29,7 @@ struct MissingModelTranscriberTests {
     /// 而那样这个应用就再也转写不了任何东西了。
     @Test func realFolderStillYieldsWhisperKit() {
         let descriptor = ModelDescriptor(name: "turbo", folder: "/some/where/turbo")
-        let transcriber = AppModel.makeTranscriber(descriptor)
+        let transcriber = AppModel.makeTranscriber(descriptor, language: .chinese)
         let isWhisperKit = transcriber is WhisperKitTranscriber
         #expect(isWhisperKit, "有目录时换来的是 \(type(of: transcriber))")
     }

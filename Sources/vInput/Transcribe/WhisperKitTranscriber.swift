@@ -217,10 +217,20 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
     /// 网络下会整体超时放弃（见计划「风险 0」）。模型由
     /// `scripts/fetch-model.sh` 用 curl 预先拉取。
     private let modelFolder: String?
-    private let language: String
+    /// 解码语言（Whisper 语言码）。
+    ///
+    /// **非 private 是为了让「生产按输入语言构造」有测试守着**：与 `task`
+    /// 同一条教训（2026-08-19 QA 实测改默认值 981 tests 一条不红）——
+    /// 硬编码回 "zh" 的话，英文用户的每一句话都会被按中文解码，
+    /// 而现有指标全看不出来。守卫见
+    /// `WhisperKitTranscriberTests.transcriberIsBuiltPerInputLanguage`。
+    let language: String
     /// 把输出统一转成简体。Whisper 即便指定 language="zh" 也常输出繁体。
     /// 面向繁体用户时可关闭。
-    private let normalizeToSimplified: Bool
+    ///
+    /// **非 private 的理由与 `language` 同一条**：繁→简是中文专属，
+    /// 英文等语种带着它只有坏处，「生产构造参数正确」必须有测试守着。
+    let normalizeToSimplified: Bool
     private var pipe: WhisperKit?
     /// 引导标点用的 prompt token，模型加载后编码一次并缓存。
     private var promptTokens: [Int]?
@@ -231,7 +241,11 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
     /// `punctuationPrompt` 那一长段注释里的教训），而「改一行静态常量、
     /// 重新编译、跑一轮」的做法每轮都要重新加载模型、也没法把几个候选
     /// 放进同一份报告里对比。生产路径不传这个参数，行为与从前完全一致。
-    private let promptText: String
+    ///
+    /// **非 private 的理由与 `language` 同一条**：中文标点 prompt 是一段
+    /// 中文夹术语的引导文，英文等语种带着它只有坏处，「生产构造参数正确」
+    /// 必须有测试守着（`task` 那条 2026-08-19 的教训同款）。
+    let promptText: String
 
     /// 实际使用的解码参数。默认与 `DecodeTuning.production` 一致。
     ///
@@ -340,7 +354,11 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
             }
             let loaded = try await WhisperKit(config)
             pipe = loaded
-            promptTokens = loaded.tokenizer.map { Self.encodePrompt(promptText, with: $0) }
+            // 空 prompt 不编码成空 token 数组——promptTokens 传 [] 与传 nil 在
+            // WhisperKit 的 prefill 路径上不是一回事，nil 才是「没有条件前缀」。
+            promptTokens = promptText.isEmpty
+                ? nil
+                : loaded.tokenizer.map { Self.encodePrompt(promptText, with: $0) }
         } catch {
             throw TranscribeError.engineFailed(error.localizedDescription)
         }

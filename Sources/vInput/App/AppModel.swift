@@ -524,7 +524,7 @@ final class AppModel {
     /// internal 而不是 private：空目录那一支（「一个模型都没有」）是本批
     /// 最贵的一条静默失效链，必须真跑一遍才算被守住——而扫源码证明不了
     /// 它返回的是哪个类型。
-    nonisolated static func makeTranscriber(_ model: ModelDescriptor) -> Transcriber {
+    nonisolated static func makeTranscriber(_ model: ModelDescriptor, language: Language) -> Transcriber {
         // **空 folder 不再等于「让 WhisperKit 按名字去下载」。**
         // 那条路会在用户没要求的情况下从官方源拉一个 140MB 的
         // openai_whisper-base（还忽略他刚选定的下载源），整个理由写在
@@ -533,7 +533,11 @@ final class AppModel {
         return WhisperKitTranscriber(
             modelName: model.name,
             modelFolder: model.folder,
-            language: "zh"
+            language: language.rawValue,   // Language 的 rawValue 就是 Whisper 语言码
+            // 繁→简与标点 prompt 都是中文专属。英文等语种裸解码的标点表现
+            // 未实测——记录在 Roadmap 未验证清单，不在这里假装有依据。
+            normalizeToSimplified: language == .chinese,
+            prompt: language == .chinese ? WhisperKitTranscriber.punctuationPrompt : ""
         )
     }
 
@@ -590,7 +594,11 @@ final class AppModel {
             initial: initial,
             // 写成显式的 @Sendable 闭包字面量：直接引用静态方法时，
             // 函数值本身不带 @Sendable，转换会触发数据竞争警告。
-            makeTranscriber: { @Sendable model in AppModel.makeTranscriber(model) }
+            makeTranscriber: { @Sendable model in
+                // 每次构造现读偏好：Task 9 的 rebuild() 换语言后重建时拿到的就是新值。
+                // UserDefaults.standard 跨线程读是文档保证的。
+                AppModel.makeTranscriber(model, language: InputLanguagePreference().language)
+            }
         )
         self.transcriber = transcriber
 
