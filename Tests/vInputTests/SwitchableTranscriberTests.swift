@@ -121,7 +121,7 @@ struct SwitchableTranscriberTests {
     /// 需要区分「重建前后是不是同一个底层转写器」。
     private final class SequencedFactory: @unchecked Sendable {
         private let queue: [FakeTranscriber]
-        private(set) var received: [ModelDescriptor] = []
+        private var received: [ModelDescriptor] = []
         private let lock = NSLock()
 
         init(_ fakes: [FakeTranscriber]) { self.queue = fakes }
@@ -129,6 +129,7 @@ struct SwitchableTranscriberTests {
         func make(_ d: ModelDescriptor) -> Transcriber {
             lock.lock(); defer { lock.unlock() }
             received.append(d)
+            precondition(received.count <= queue.count, "SequencedFactory 预置不足")
             return queue[received.count - 1]
         }
 
@@ -164,6 +165,35 @@ struct SwitchableTranscriberTests {
         let text = try await sut.transcribe([0.1])
         #expect(text == "新实例")
         #expect(await sut.descriptor == initial)
+    }
+
+    @Test("rebuild 挂在 prepare 时被并发 switchTo 超越——放弃提交，不覆盖新模型")
+    func rebuildOvertakenBySwitchDoesNotClobber() async throws {
+        // prepare 挂起窗口（真实场景里模型加载可达数十秒）内并发的
+        // switchTo 会完整跑完并提交 current+descriptor；rebuild 恢复后
+        // 必须放弃提交，否则 current 被换回旧 descriptor 的实例、与
+        // descriptor 脱钩。
+        let first = FakeTranscriber()
+        first.result = "旧的"
+        let rebuildCandidate = FakeTranscriber()
+        rebuildCandidate.result = "rebuild 建的"
+        rebuildCandidate.prepareDelay = .milliseconds(120)
+        let switched = FakeTranscriber()
+        switched.result = "来自新模型"
+        let factory = SequencedFactory([first, rebuildCandidate, switched])
+        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: { @Sendable in factory.make($0) })
+
+        // 先让 rebuild 挂在慢 prepare 上
+        async let slowRebuild: Void = sut.rebuild()
+        try await Task.sleep(for: .milliseconds(20))
+        // 挂起窗口内完成一次切换
+        try await sut.switchTo(descriptor("large-v3"))
+        try await slowRebuild
+
+        // 转写必须走 switchTo 提交的新模型，不能被 rebuild 覆盖回去
+        let text = try await sut.transcribe([0.1])
+        #expect(text == "来自新模型")
+        #expect(await sut.descriptor.name == "large-v3")
     }
 
     @Test("rebuild 失败时保持原转写器可用")

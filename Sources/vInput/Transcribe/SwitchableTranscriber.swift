@@ -44,11 +44,23 @@ actor SwitchableTranscriber: Transcriber {
     ///
     /// 存在的理由：输入语言是 `makeTranscriber` 的构造期参数，换语言不换
     /// 模型时 `switchTo` 的 `next != descriptor` guard 会直接返回、什么都
-    /// 不发生。语义与 `switchTo` 相同：先建新的、`prepare()` 成功才替换，
-    /// 失败时旧转写器原样可用。
+    /// 不发生。失败语义与 `switchTo` 相同：先建新的、`prepare()` 成功才
+    /// 替换，失败时旧转写器原样可用。
+    ///
+    /// 重入语义：`prepare()` 挂起期间（模型加载可达数十秒）并发的
+    /// `switchTo` 可能已提交新模型——那时放弃提交、丢掉 candidate，
+    /// 否则 `current` 会被换回旧 descriptor 构造的实例，与 `descriptor`
+    /// 两字段脱钩（UI 显示新模型、实际转写旧模型）。
+    ///
+    /// 生产调用方在 `AppModel`（Task 10 接线），此刻尚无。
     func rebuild() async throws {
-        let candidate = makeTranscriber(descriptor)
+        let snapshot = descriptor
+        let candidate = makeTranscriber(snapshot)
         try await candidate.prepare()
+        // prepare 挂起期间可能有并发 switchTo 提交了新模型——那时丢弃
+        // candidate 是对的：switchTo 走的 makeTranscriber 同样读到最新
+        // 输入语言，不丢功能。
+        guard snapshot == descriptor else { return }
         current = candidate
     }
 

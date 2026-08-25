@@ -12,6 +12,8 @@ final class FakeTranscriber: Transcriber, @unchecked Sendable {
     var prepareError: Error?
     /// 转写前的人为延迟，用于测试超时与并发。
     var delay: Duration = .zero
+    /// `prepare` 前的人为延迟，用于测试加载挂起窗口内的重入交错。
+    var prepareDelay: Duration = .zero
 
     private(set) var receivedSamples: [[Float]] = []
     private(set) var prepareCallCount = 0
@@ -24,6 +26,7 @@ final class FakeTranscriber: Transcriber, @unchecked Sendable {
 
     func prepare() async throws {
         prepareCallCount += 1
+        if prepareDelay > .zero { try await Task.sleep(for: prepareDelay) }
         if let prepareError { throw prepareError }
     }
 
