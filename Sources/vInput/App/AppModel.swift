@@ -750,7 +750,8 @@ final class AppModel {
         translationCoordinator = TranslationAttachmentCoordinator(
             inputs: {
                 TranslationAttachmentCoordinator.Inputs(
-                    target: translationPreference.outputLanguage,
+                    // TEMP(Task 7/10 重写)：旧语义等价桥
+                    target: translationPreference.choice.effectiveTarget(input: .chinese) ?? .chinese,
                     usesCloudBackend: translationPreference.usesCloudBackend,
                     translationModelDirectory: translationPreference.modelDirectory,
                     correctionModelDirectory: correctionPreference.modelDirectory,
@@ -1674,7 +1675,8 @@ final class AppModel {
 
     /// 切换输出语言。改动立即生效并跨启动保留。
     func selectOutputLanguage(_ target: Language) {
-        translationPreference.outputLanguage = target
+        // TEMP(Task 7/10 重写)：旧语义等价桥
+        translationPreference.choice = (target == .chinese ? .off : .translate(to: target))
         applyTranslationPreference()
         // 菜单标题上的后缀是常驻提示，但用户刚点完菜单、菜单当场就关了，
         // HUD 才是他这一刻会看到的东西。文案取自 `TranslationAnnotation`，

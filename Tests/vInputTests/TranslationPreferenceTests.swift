@@ -16,17 +16,23 @@ struct TranslationPreferenceTests {
     @Test("默认是中文，即不翻译")
     func defaultsToChinese() {
         let preference = TranslationPreference(defaults: makeDefaults())
-        #expect(preference.outputLanguage == .chinese)
+        // TEMP(Task 7/10 重写)：旧语义等价桥
+        #expect((preference.choice.effectiveTarget(input: .chinese) ?? .chinese) == .chinese)
         // 顺带把「中文就是不翻译」这条语义钉住：默认值换成任何
         // requiresTranslation == true 的语言，本行都会红。
-        #expect(preference.outputLanguage.requiresTranslation == false)
+        // TEMP(Task 7/10 重写)：旧语义等价桥
+        #expect(
+            (preference.choice.effectiveTarget(input: .chinese) ?? .chinese)
+                .requiresTranslation == false)
     }
 
     @Test("设置后能读回")
     func roundTrips() {
         let preference = TranslationPreference(defaults: makeDefaults())
-        preference.outputLanguage = .spanish
-        #expect(preference.outputLanguage == .spanish)
+        // TEMP(Task 7/10 重写)：旧语义等价桥
+        preference.choice = .translate(to: .spanish)
+        // TEMP(Task 7/10 重写)：旧语义等价桥
+        #expect((preference.choice.effectiveTarget(input: .chinese) ?? .chinese) == .spanish)
     }
 
     /// 存稳定字符串而不是枚举序号——加一种语言不该把用户已保存的设置挪到
@@ -35,8 +41,9 @@ struct TranslationPreferenceTests {
     func storesStableIdentifier() {
         let defaults = makeDefaults()
         let preference = TranslationPreference(defaults: defaults)
-        preference.outputLanguage = .german
-        #expect(defaults.string(forKey: "translation.outputLanguage") == "de")
+        // TEMP(Task 7/10 重写)：旧语义等价桥（键随 outputLanguage → choice 迁移）
+        preference.choice = .translate(to: .german)
+        #expect(defaults.string(forKey: "translation.choice") == "de")
     }
 
     /// 存了个不认识的值（应用降级回旧版本、或用户手改 plist）时退回中文。
@@ -46,8 +53,10 @@ struct TranslationPreferenceTests {
     @Test("无法识别的值退回中文")
     func fallsBackOnUnknownValue() {
         let defaults = makeDefaults()
-        defaults.set("klingon", forKey: "translation.outputLanguage")
-        #expect(TranslationPreference(defaults: defaults).outputLanguage == .chinese)
+        // TEMP(Task 7/10 重写)：旧语义等价桥（键随 outputLanguage → choice 迁移）
+        defaults.set("klingon", forKey: "translation.choice")
+        let choice = TranslationPreference(defaults: defaults).choice
+        #expect((choice.effectiveTarget(input: .chinese) ?? .chinese) == .chinese)
     }
 
     /// 云端默认关。**这条的理由和校正默认关不同**：那边是成本，这边是出站。
@@ -68,13 +77,20 @@ struct TranslationPreferenceTests {
         let preference = TranslationPreference(defaults: defaults)
 
         preference.usesCloudBackend = true
-        #expect(preference.outputLanguage == .chinese, "开云端不该顺手改了输出语言")
+        // TEMP(Task 7/10 重写)：旧语义等价桥
+        #expect(
+            (preference.choice.effectiveTarget(input: .chinese) ?? .chinese) == .chinese,
+            "开云端不该顺手改了输出语言")
 
-        preference.outputLanguage = .spanish
+        // TEMP(Task 7/10 重写)：旧语义等价桥
+        preference.choice = .translate(to: .spanish)
         #expect(preference.usesCloudBackend, "改语言不该顺手关了云端")
 
         preference.usesCloudBackend = false
-        #expect(preference.outputLanguage == .spanish, "关云端不该顺手改了输出语言")
+        // TEMP(Task 7/10 重写)：旧语义等价桥
+        #expect(
+            (preference.choice.effectiveTarget(input: .chinese) ?? .chinese) == .spanish,
+            "关云端不该顺手改了输出语言")
     }
 
     /// 模型目录默认为 nil——**今天没有任何入口会去设它**。

@@ -7,7 +7,7 @@ import Foundation
 ///
 /// ## 两个开关是正交的
 ///
-/// `outputLanguage` 管「要不要翻译」，`usesCloudBackend` 管「翻译时用本地
+/// `choice` 管「要不要翻译」，`usesCloudBackend` 管「翻译时用本地
 /// 还是云端」。**判断顺序永远是先语言、后后端**，理由与守卫见
 /// `AppModel.translationAttachment`：用户可能为某次需要打开过云端然后忘了
 /// 关，而只要输出语言是中文就一个字节都不该出站。
@@ -16,7 +16,9 @@ import Foundation
 /// 转写（Whisper）与校正（本地 MLX）永远在本机，不受它影响。
 struct TranslationPreference {
     private enum Key {
-        static let outputLanguage = "translation.outputLanguage"
+        static let choice = "translation.choice"
+        /// 原 `outputLanguage` 键名改任此职，只为迁移保留。
+        static let legacyOutputLanguage = "translation.outputLanguage"
         static let usesCloudBackend = "translation.usesCloudBackend"
         static let modelDirectory = "translation.modelDirectory"
         static let cloudModel = "translation.cloudModel"
@@ -28,26 +30,32 @@ struct TranslationPreference {
         self.defaults = defaults
     }
 
-    /// 输出语言。**默认中文，即不翻译。**
+    /// 翻译目标。默认「不翻译」——理由与旧 outputLanguage 默认中文相同：
+    /// 翻译要多加载一个 2 GB 级模型，用户没主动选之前不该承担。
     ///
-    /// 翻译要额外加载一个 2 GB 级的模型并给每句话多加几秒推理，用户没主动
-    /// 选之前不该承担这些成本——与 `CorrectionPreference.isEnabled` 默认关闭
-    /// 同一条理由。
-    ///
-    /// **存稳定字符串而不是枚举序号**：`Language` 的 rawValue 由
-    /// `LanguageTests.rawValuesAreStable` 逐个钉死，加一种语言不会
-    /// 把用户已保存的设置挪到别的语言上；存序号的话在中间插一格就全错位了。
-    ///
-    /// 读到不认识的值时退回中文（应用降级回旧版本、或用户手改 plist）。
-    /// **退回中文而不是崩掉或退回上一次的外语**：中文是「不翻译」，是唯一
-    /// 不会把用户没要的语言注进输入框的取值。这条退回不必额外提示——
-    /// 菜单栏当场就显示成「输出语言：中文」，用户看得见。
-    var outputLanguage: Language {
+    /// 存的是 `TranslationChoice.storageValue`（稳定字符串而不是枚举序号），
+    /// 认不出的值退回「不翻译」——两条理由都写在 `TranslationChoice` 上。
+    var choice: TranslationChoice {
         get {
-            guard let raw = defaults.string(forKey: Key.outputLanguage) else { return .chinese }
-            return Language(rawValue: raw) ?? .chinese
+            guard let raw = defaults.string(forKey: Key.choice) else { return .off }
+            return TranslationChoice(storageValue: raw)
         }
-        nonmutating set { defaults.set(newValue.rawValue, forKey: Key.outputLanguage) }
+        nonmutating set { defaults.set(newValue.storageValue, forKey: Key.choice) }
+    }
+
+    /// 一次性迁移旧键。**旧键的 "zh" 含义是「不翻译」**，不能直译成
+    /// 「译成中文」——否则老用户升级后一开口就被翻译。返回是否真的迁移了
+    /// （调用方据此记日志）。新键已存在时不动任何东西。
+    func migrateLegacyOutputLanguageIfNeeded() -> Bool {
+        guard defaults.string(forKey: Key.choice) == nil,
+            let legacy = defaults.string(forKey: Key.legacyOutputLanguage)
+        else { return false }
+        let migrated: TranslationChoice =
+            legacy == Language.chinese.rawValue
+            ? .off
+            : TranslationChoice(storageValue: legacy)
+        defaults.set(migrated.storageValue, forKey: Key.choice)
+        return true
     }
 
     /// 是否使用云端后端翻译。**默认关闭。**
@@ -70,7 +78,7 @@ struct TranslationPreference {
     /// → 同一份权重。
     /// 云端用哪个模型。
     ///
-    /// 存标识符字符串而不是枚举序号，理由与 `outputLanguage` 相同：
+    /// 存标识符字符串而不是枚举序号，理由与 `choice` 相同：
     /// 这张表迟早会变（Google 改名、下线），而用户存下来的选择不该因此
     /// 指到别的模型上。认不出的值当自定义处理，**不静默退回默认**。
     var cloudModel: CloudTranslationModel {
