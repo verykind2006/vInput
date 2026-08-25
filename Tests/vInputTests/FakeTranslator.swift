@@ -55,6 +55,9 @@ actor FakeTranslator: Translator {
     private(set) var prepareCallCount = 0
     /// 每次 `translate` 收到的原文，按顺序。
     private(set) var receivedTexts: [String] = []
+    /// 每次 `translate` 收到的源语言，按顺序。Task 6 的管线测试要靠它证明
+    /// 「真源语言接上了」而不是恒为中文。
+    private(set) var receivedSources: [Language] = []
 
     init(
         _ behavior: Behavior,
@@ -75,9 +78,10 @@ actor FakeTranslator: Translator {
         if let prepareError { throw prepareError }
     }
 
-    func translate(_ text: String, to target: Language) async throws -> String {
+    func translate(_ text: String, from source: Language, to target: Language) async throws -> String {
         callCount += 1
         receivedTexts.append(text)
+        receivedSources.append(source)
         await log?.record("translate")
         switch behavior {
         case .succeed(let output): return output

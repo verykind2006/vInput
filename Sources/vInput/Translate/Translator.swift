@@ -44,11 +44,11 @@ protocol Translator: Sendable {
     /// 会一直等到加载完成，**只应在后台预热时调用**，不要放在注入路径上。
     func prepare() async throws
 
-    /// 把 `text` 译成 `target`。
+    /// 把 `source` 语言的 `text` 译成 `target`。
     ///
     /// 未就绪时应立即抛 `.modelNotReady`，而不是就地加载模型——
     /// 同上，注入路径不等加载。
-    func translate(_ text: String, to target: Language) async throws -> String
+    func translate(_ text: String, from source: Language, to target: Language) async throws -> String
 }
 
 extension Translator {

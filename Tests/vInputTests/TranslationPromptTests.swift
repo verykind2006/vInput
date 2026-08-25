@@ -7,7 +7,7 @@ import Testing
 struct TranslationPromptTests {
     @Test("提示词里出现目标语言的英文名")
     func namesTargetInEnglish() {
-        let prompt = TranslationPrompt.user(for: "你好", target: .spanish)
+        let prompt = TranslationPrompt.user(for: "你好", from: .chinese, to: .spanish)
         #expect(prompt.contains("Spanish"))
         #expect(prompt.contains("你好"))
     }
@@ -20,7 +20,7 @@ struct TranslationPromptTests {
     /// 校正层因此把规则并进了用户提示（见 CorrectionPrompt.user）。
     @Test("规则并在用户消息里，不依赖 instructions")
     func rulesAreInUserMessage() {
-        let prompt = TranslationPrompt.user(for: "测试", target: .english)
+        let prompt = TranslationPrompt.user(for: "测试", from: .chinese, to: .english)
         #expect(prompt.contains("Output only the translation"))
     }
 
@@ -46,7 +46,7 @@ struct TranslationPromptTests {
     /// 照源码字面写会永远匹配不上。
     @Test("提示词要求保留技术术语与数字")
     func asksToPreserveTermsAndNumbers() {
-        let prompt = TranslationPrompt.user(for: "测试", target: .english)
+        let prompt = TranslationPrompt.user(for: "测试", from: .chinese, to: .english)
         #expect(
             prompt.contains(
                 "Keep technical terms, product names, and code identifiers exactly as they appear."
@@ -59,14 +59,30 @@ struct TranslationPromptTests {
         #expect(!prompt.contains("Convert Chinese number words"))
     }
 
+    /// 源语言不再写死中文——提示词第一行要点名真正的源语言。
+    @Test("提示词点名源语言")
+    func promptNamesTheSourceLanguage() {
+        let prompt = TranslationPrompt.user(for: "hello", from: .english, to: .spanish)
+        #expect(prompt.contains("Translate the following English text into Spanish."))
+        #expect(!prompt.contains("Chinese text"))
+    }
+
+    @Test("中文做源语言时措辞与旧版一字不差")
+    func chineseSourceKeepsTheOldWording() {
+        // 老路径的措辞一字不变——它是 M8 实测过的那一版。
+        let prompt = TranslationPrompt.user(for: "你好", from: .chinese, to: .german)
+        #expect(prompt.contains("Translate the following Chinese text into German."))
+    }
+
     /// 提示词里唯一随语言变化的东西只能是语言名。
     ///
     /// 轴心挑 en/de 而不是别的对：`replacingOccurrences` 这一手隐含要求
     /// **`"English"` 不作为固定文案出现在提示词里**（出现了就会被连带替换成
-    /// `"German"`，比对以很难看懂的方式炸掉）。今天成立——固定文案里只有
-    /// `Chinese` 这个源语言名。将来谁往规则里写一句含 English 的固定文案
-    /// （比如 "Answer in English if unsure"），要么换轴心，要么改成只比对
-    /// 去掉语言名之后的残余。
+    /// `"German"`，比对以很难看懂的方式炸掉）。今天成立——除语言名外的
+    /// 固定文案里没有任何语言名（源语言名如今来自 `from:` 参数，本条把它
+    /// 钉死在 `.chinese`，保障不缩水）。将来谁往规则里写一句含 English 的
+    /// 固定文案（比如 "Answer in English if unsure"），要么换轴心，要么改成
+    /// 只比对去掉语言名之后的残余。
     ///
     /// **`en != de` 这一条不是凑数的。** 只留下面那个
     /// `replacingOccurrences` 的比对，一个**压根不提语言**的实现（比如
@@ -76,19 +92,41 @@ struct TranslationPromptTests {
     /// 「有语言名」和「只有语言名在变」。
     @Test("不同语言的提示词只差语言名")
     func differsOnlyByLanguage() {
-        let en = TranslationPrompt.user(for: "同一句", target: .english)
-        let de = TranslationPrompt.user(for: "同一句", target: .german)
+        let en = TranslationPrompt.user(for: "同一句", from: .chinese, to: .english)
+        let de = TranslationPrompt.user(for: "同一句", from: .chinese, to: .german)
         #expect(en != de)
         #expect(en.replacingOccurrences(of: "English", with: "German") == de)
+    }
+
+    /// 与上一条对称：固定目标、遍历源语言，两两之间也只能差源语言名。
+    ///
+    /// 防的是将来有人给某个源语言单独改正文措辞（比如给英文源加一句
+    /// 特殊规则），正文一漂移，Task 3 那套对照就分不清差异来自语言名还是
+    /// 来自正文。锚定 `.chinese` 再逐一比对，传递性上等价于两两比对。
+    ///
+    /// 目标固定挑 `.spanish` 与源语言名不撞车的场合最多；`Spanish` 自己做
+    /// 源时（源=目标的废话形态）替换会把两个位置一起换掉，恰好也等于真实
+    /// 输出，不用单独排除。`prompt != baseline` 同款不是凑数的：忽略
+    /// `source` 参数的实现会让替换空转、比对恒真。
+    @Test("不同源语言的提示词只差源语言名")
+    func sourcesDifferOnlyBySourceLanguageName() {
+        let baseline = TranslationPrompt.user(for: "同一句", from: .chinese, to: .spanish)
+        for source in Language.allCases where source != .chinese {
+            let prompt = TranslationPrompt.user(for: "同一句", from: source, to: .spanish)
+            #expect(prompt != baseline)
+            #expect(
+                baseline.replacingOccurrences(of: "Chinese", with: source.englishName) == prompt,
+                "源语言 \(source.englishName) 的提示词与锚点的差异不止源语言名")
+        }
     }
 
     /// 缺省变体就是生产用的那个，换句话说：加变体这件事没有顺手改掉生产提示词。
     @Test("不传变体时用英文语言名")
     func defaultVariantIsEnglishName() {
         #expect(
-            TranslationPrompt.user(for: "同一句", target: .spanish)
+            TranslationPrompt.user(for: "同一句", from: .chinese, to: .spanish)
                 == TranslationPrompt.user(
-                    for: "同一句", target: .spanish, variant: .englishLanguageName))
+                    for: "同一句", from: .chinese, to: .spanish, variant: .englishLanguageName))
     }
 
     /// 两个变体**只差语言名**——对照实验的全部效力都押在这一条上。
@@ -101,26 +139,32 @@ struct TranslationPromptTests {
     /// 实现会让两串完全相同、替换是空操作，断言恒真。
     ///
     /// 轴心挑 `.spanish`：`Spanish` 不作为固定文案出现在提示词里，而
-    /// `.english` 会——`English` 被替换后连 `Chinese text` 那句都不受影响，
-    /// 但目标语言名与固定文案撞车的风险不必去试。
+    /// `.english` 会——目标语言名与固定文案撞车的风险不必去试。
+    ///
+    /// 源语言带上之后，变体换的是**两个**语言名——源与目标都出自
+    /// `variant.languageName(for:)`，所以这里要替换两处（Chinese→中文、
+    /// Spanish→西班牙文）才该相等。
     @Test("提示词变体只换语言名")
     func variantsDifferOnlyByLanguageName() {
-        let en = TranslationPrompt.user(for: "同一句", target: .spanish)
+        let en = TranslationPrompt.user(for: "同一句", from: .chinese, to: .spanish)
         let zh = TranslationPrompt.user(
-            for: "同一句", target: .spanish, variant: .chineseLanguageName)
+            for: "同一句", from: .chinese, to: .spanish, variant: .chineseLanguageName)
         #expect(en != zh)
-        #expect(en.replacingOccurrences(of: "Spanish", with: "西班牙文") == zh)
+        #expect(
+            en.replacingOccurrences(of: "Chinese", with: "中文")
+                .replacingOccurrences(of: "Spanish", with: "西班牙文") == zh)
     }
 
     /// 中文变体里不能残留英文语言名，否则「换成中文」只换了一半。
     @Test("中文变体不再出现英文语言名")
     func chineseVariantDropsEnglishName() {
         let zh = TranslationPrompt.user(
-            for: "同一句", target: .german, variant: .chineseLanguageName)
+            for: "同一句", from: .chinese, to: .german, variant: .chineseLanguageName)
         #expect(zh.contains("德文"))
         #expect(!zh.contains("German"))
-        // 源语言名 Chinese 是固定文案，仍然在——变体换的是**目标**语言名。
-        #expect(zh.contains("Chinese text"))
+        // 源语言名如今也走变体：中文变体下 Chinese 换成了「中文」。
+        #expect(zh.contains("中文 text"))
+        #expect(!zh.contains("Chinese"))
     }
 }
 
@@ -136,7 +180,7 @@ private struct StubTranslator: Translator {
 
     func prepare() async throws {}
 
-    func translate(_ text: String, to target: Language) async throws -> String {
+    func translate(_ text: String, from source: Language, to target: Language) async throws -> String {
         if shouldFail { throw TranslatorError.modelNotReady }
         return "\(target.englishName): \(text)"
     }
@@ -171,7 +215,7 @@ struct TranslatorProtocolTests {
     func notReadyThrows() async {
         let stub = StubTranslator(shouldFail: true)
         await #expect(throws: TranslatorError.modelNotReady) {
-            try await stub.translate("你好", to: .english)
+            try await stub.translate("你好", from: .chinese, to: .english)
         }
     }
 }

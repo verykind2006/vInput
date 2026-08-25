@@ -58,18 +58,19 @@ enum TranslationPrompt {
     /// 翻译要不要给示例、给几条，同样该由 Task 3 的对照装置来定，
     /// 而不是在这里拍脑袋。
     ///
-    /// **调用方保证 `target.requiresTranslation`。** 这里不拦 `.chinese`：
-    /// 传进来会生成 "Translate the following Chinese text into Chinese."，
-    /// 是句废话但不是崩溃。要在这一层拦就得决定「拦了返回什么」，而唯一
-    /// 合理的答案（原样返回、根本别调模型）是流水线的分支，不是提示词的。
-    /// Task 7 的 pipeline 落地时按这条来。
+    /// **调用方保证 `source != target`。** 这里不拦相等：传进来会生成
+    /// "Translate the following English text into English."，是句废话但不是
+    /// 崩溃。要在这一层拦就得决定「拦了返回什么」，而唯一合理的答案
+    /// （原样返回、根本别调模型）是流水线的分支（Task 6 落地），
+    /// 不是提示词的。
     static func user(
         for text: String,
-        target: Language,
+        from source: Language,
+        to target: Language,
         variant: Variant = .englishLanguageName
     ) -> String {
         """
-        Translate the following Chinese text into \(variant.languageName(for: target)).
+        Translate the following \(variant.languageName(for: source)) text into \(variant.languageName(for: target)).
 
         Output only the translation. Do not add explanations, pinyin, \
         or the original text.

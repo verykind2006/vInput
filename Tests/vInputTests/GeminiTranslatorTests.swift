@@ -97,7 +97,7 @@ struct GeminiTranslatorTests {
         let translator = translator(recorder, key: nil)
 
         await #expect(throws: TranslatorError.missingAPIKey) {
-            _ = try await translator.translate(Self.source, to: .english)
+            _ = try await translator.translate(Self.source, from: .chinese, to: .english)
         }
         #expect(recorder.requests.isEmpty, "缺 key 时把用户说的话发出去了")
     }
@@ -115,10 +115,10 @@ struct GeminiTranslatorTests {
             session: recorder.makeSession(), readKey: { box.value })
 
         await #expect(throws: TranslatorError.missingAPIKey) {
-            _ = try await translator.translate(Self.source, to: .english)
+            _ = try await translator.translate(Self.source, from: .chinese, to: .english)
         }
         box.value = Self.fakeKey
-        let output = try await translator.translate(Self.source, to: .english)
+        let output = try await translator.translate(Self.source, from: .chinese, to: .english)
 
         #expect(output == "We go live.")
         #expect(recorder.requests.count == 1)
@@ -129,7 +129,7 @@ struct GeminiTranslatorTests {
     @Test("请求形状：POST、端点、头、体")
     func requestShapeMatchesGeminiAPI() async throws {
         let recorder = RequestRecorder(reply: .status(200, Self.successBody("We go live.")))
-        _ = try await translator(recorder).translate(Self.source, to: .spanish)
+        _ = try await translator(recorder).translate(Self.source, from: .chinese, to: .spanish)
 
         let request = try #require(recorder.requests.first)
         #expect(recorder.requests.count == 1, "一次翻译只该发一条请求")
@@ -149,7 +149,7 @@ struct GeminiTranslatorTests {
         // 改成新文本了事；而抄错一个字时它反而绿。
         #expect(
             parts.first?["text"] as? String
-                == TranslationPrompt.user(for: Self.source, target: .spanish))
+                == TranslationPrompt.user(for: Self.source, from: .chinese, to: .spanish))
         let config = try #require(body["generationConfig"] as? [String: Any])
         #expect((config["temperature"] as? NSNumber)?.doubleValue == 0)
     }
@@ -161,7 +161,7 @@ struct GeminiTranslatorTests {
     @Test("key 不出现在 URL 里")
     func keyNeverAppearsInURL() async throws {
         let recorder = RequestRecorder(reply: .status(200, Self.successBody("Hi.")))
-        _ = try await translator(recorder).translate(Self.source, to: .english)
+        _ = try await translator(recorder).translate(Self.source, from: .chinese, to: .english)
 
         let url = try #require(recorder.requests.first?.url?.absoluteString)
         #expect(!url.contains(Self.fakeKey), "key 进了 URL：\(url)")
@@ -174,7 +174,7 @@ struct GeminiTranslatorTests {
     @Test("请求超时与流水线预算同源")
     func requestTimeoutFollowsPipelineBudget() async throws {
         let recorder = RequestRecorder(reply: .status(200, Self.successBody("Hi.")))
-        _ = try await translator(recorder).translate(Self.source, to: .english)
+        _ = try await translator(recorder).translate(Self.source, from: .chinese, to: .english)
 
         let timeout = try #require(recorder.requests.first?.timeoutInterval)
         #expect(timeout == TimeInterval(TranslationPipeline.defaultTimeout.components.seconds))
@@ -187,7 +187,7 @@ struct GeminiTranslatorTests {
     func parsesTranslationAndTrims() async throws {
         let recorder = RequestRecorder(
             reply: .status(200, Self.successBody("\n  We go live this afternoon.  \n")))
-        let output = try await translator(recorder).translate(Self.source, to: .english)
+        let output = try await translator(recorder).translate(Self.source, from: .chinese, to: .english)
         #expect(output == "We go live this afternoon.")
     }
 
@@ -204,7 +204,7 @@ struct GeminiTranslatorTests {
             {"text":"this afternoon."}]},"finishReason":"STOP"}]}
             """.utf8)
         let recorder = RequestRecorder(reply: .status(200, body))
-        let output = try await translator(recorder).translate(Self.source, to: .english)
+        let output = try await translator(recorder).translate(Self.source, from: .chinese, to: .english)
         #expect(output == "We go live this afternoon.")
     }
 
@@ -212,7 +212,7 @@ struct GeminiTranslatorTests {
     func nonOKStatusBecomesEngineFailed() async throws {
         let recorder = RequestRecorder(reply: .status(503, Data("{}".utf8)))
         await #expect(throws: TranslatorError.engineFailed("HTTP 503")) {
-            _ = try await translator(recorder).translate(Self.source, to: .english)
+            _ = try await translator(recorder).translate(Self.source, from: .chinese, to: .english)
         }
     }
 
@@ -232,7 +232,7 @@ struct GeminiTranslatorTests {
         let recorder = RequestRecorder(reply: .status(400, body))
 
         do {
-            _ = try await translator(recorder).translate(Self.source, to: .english)
+            _ = try await translator(recorder).translate(Self.source, from: .chinese, to: .english)
             Issue.record("400 应当抛错")
         } catch let error as TranslatorError {
             guard case .engineFailed(let message) = error else {
@@ -249,7 +249,7 @@ struct GeminiTranslatorTests {
     func unknownStructureIsReported() async throws {
         let recorder = RequestRecorder(reply: .status(200, Data("{\"whatever\":1}".utf8)))
         await #expect(throws: TranslatorError.engineFailed("响应结构不认识")) {
-            _ = try await translator(recorder).translate(Self.source, to: .english)
+            _ = try await translator(recorder).translate(Self.source, from: .chinese, to: .english)
         }
     }
 
@@ -261,7 +261,7 @@ struct GeminiTranslatorTests {
         let recorder = RequestRecorder(reply: .status(200, body))
 
         do {
-            _ = try await translator(recorder).translate(Self.source, to: .english)
+            _ = try await translator(recorder).translate(Self.source, from: .chinese, to: .english)
             Issue.record("没有译文时应当抛错")
         } catch let error as TranslatorError {
             guard case .engineFailed(let message) = error else {
@@ -283,7 +283,7 @@ struct GeminiTranslatorTests {
     func networkTimeoutBecomesTimedOut() async throws {
         let recorder = RequestRecorder(reply: .failure(.timedOut))
         await #expect(throws: TranslatorError.timedOut) {
-            _ = try await translator(recorder).translate(Self.source, to: .english)
+            _ = try await translator(recorder).translate(Self.source, from: .chinese, to: .english)
         }
     }
 
@@ -291,7 +291,7 @@ struct GeminiTranslatorTests {
     func offlineBecomesEngineFailed() async throws {
         let recorder = RequestRecorder(reply: .failure(.notConnectedToInternet))
         do {
-            _ = try await translator(recorder).translate(Self.source, to: .english)
+            _ = try await translator(recorder).translate(Self.source, from: .chinese, to: .english)
             Issue.record("断网时应当抛错")
         } catch let error as TranslatorError {
             guard case .engineFailed(let message) = error else {
@@ -347,7 +347,7 @@ struct GeminiLocationNotSupportedTests {
         let translator = GeminiTranslator(
             model: "gemini-3.6-flash", session: recorder.makeSession(), readKey: { "k" })
         await #expect(throws: TranslatorError.locationNotSupported) {
-            try await translator.translate("今天开会。", to: .english)
+            try await translator.translate("今天开会。", from: .chinese, to: .english)
         }
     }
 
@@ -362,7 +362,7 @@ struct GeminiLocationNotSupportedTests {
         let translator = GeminiTranslator(
             model: "gemini-3.6-flash", session: recorder.makeSession(), readKey: { "k" })
         await #expect(throws: TranslatorError.engineFailed("HTTP 400 INVALID_ARGUMENT")) {
-            try await translator.translate("今天开会。", to: .english)
+            try await translator.translate("今天开会。", from: .chinese, to: .english)
         }
     }
 
@@ -374,7 +374,7 @@ struct GeminiLocationNotSupportedTests {
         let translator = GeminiTranslator(
             model: "gemini-2.0-flash", session: recorder.makeSession(), readKey: { "k" })
         await #expect(throws: TranslatorError.engineFailed("HTTP 404 NOT_FOUND")) {
-            try await translator.translate("今天开会。", to: .english)
+            try await translator.translate("今天开会。", from: .chinese, to: .english)
         }
     }
 }

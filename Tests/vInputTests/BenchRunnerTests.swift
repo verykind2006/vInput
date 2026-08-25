@@ -412,7 +412,7 @@ final class BenchTranslationSection {
         var failure: String?
         do {
             guard let translator else { throw TranslatorError.modelNotReady }
-            output = try await translator.translate(source, to: target)
+            output = try await translator.translate(source, from: .chinese, to: target)
         } catch {
             // 一条失败不该让整轮白跑——报告才是产物，失败原样记进表里。
             failure = "\(error)"
@@ -848,7 +848,7 @@ struct BenchTranslationSectionTests {
             那条对照用例），实际 \(gates) 处。多出来的那处很可能是度量路径上的。
             """
         )
-        let callsTranslatorDirectly = source.contains("translator.translate(source, to: target)")
+        let callsTranslatorDirectly = source.contains("translator.translate(source, from: .chinese, to: target)")
         #expect(callsTranslatorDirectly, "翻译段没有直接调 Translator.translate，度量点可能被挪走了")
     }
 }

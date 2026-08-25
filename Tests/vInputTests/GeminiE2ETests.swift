@@ -141,7 +141,7 @@ struct GeminiE2ETests {
         let translator = GeminiTranslator(
             model: GeminiE2EGate.model, readKey: { "not-a-real-key-0000" })
         do {
-            let output = try await translator.translate("你好。", to: .english)
+            let output = try await translator.translate("你好。", from: .chinese, to: .english)
             Issue.record("错的 key 竟然译出来了：\(output)")
         } catch let error as TranslatorError {
             guard case .engineFailed(let message) = error else {

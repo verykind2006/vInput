@@ -502,7 +502,7 @@ struct TranslationSweepTests {
                 var output = ""
                 var failure: String?
                 do {
-                    output = try await translator.translate(input, to: target)
+                    output = try await translator.translate(input, from: .chinese, to: target)
                 } catch {
                     // 一条失败不该让整轮白跑——报告才是产物。失败原样记进表里，
                     // 汇总里单列一格。

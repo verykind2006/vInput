@@ -477,7 +477,7 @@ struct CloudEgressTests {
             .first?["parts"] as? [[String: Any]]
         #expect(
             parts?.first?["text"] as? String
-                == TranslationPrompt.user(for: Harness.transcript, target: .english))
+                == TranslationPrompt.user(for: Harness.transcript, from: .chinese, to: .english))
         // 云端译文一路走到注入。
         #expect(harness.sink.received == [Harness.translated])
         #expect(harness.translatorDirectories.isEmpty, "走云端却顺手造了本地翻译器")

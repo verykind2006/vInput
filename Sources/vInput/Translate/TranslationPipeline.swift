@@ -194,7 +194,8 @@ struct TranslationPipeline: Sendable {
         let output: String
         do {
             output = try await withTimeout(budget) {
-                try await translator.translate(rewritten, to: target)
+                // TEMP(Task 6 重写)：旧世界源恒为中文
+                try await translator.translate(rewritten, from: .chinese, to: target)
             }
         } catch is TimedOut {
             // 记耗时：只写「超时」看不出实际要多久，也就无从判断预算该调到多少。
