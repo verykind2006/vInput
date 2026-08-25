@@ -137,6 +137,8 @@ struct TranslationPipelineBudgetTests {
     private func pipeline(delay: Duration) -> TranslationPipeline {
         TranslationPipeline(
             translator: FakeTranslator(.slow(delay, Self.output)),
+            source: .chinese,
+            target: .english,
             // 下限压到 1 毫秒：不压的话 8 秒下限会盖过长度的影响，
             // 这条用例就退化成「等 8 秒然后成功」，什么都没验到。
             timeout: .milliseconds(1)
@@ -147,7 +149,7 @@ struct TranslationPipelineBudgetTests {
     @Test("短文本的预算不够，超时退回中文")
     func shortTextTimesOut() async {
         let result = await pipeline(delay: .milliseconds(300))
-            .translate("今天开会", to: .english)
+            .translate("今天开会")
         #expect(result.annotation == .timedOut)
         #expect(result.text == "今天开会")
     }
@@ -159,7 +161,7 @@ struct TranslationPipelineBudgetTests {
     @Test("长文本拿到更多时间，同一个延迟就来得及了")
     func longerTextGetsMoreTime() async {
         let long = String(repeating: "今天开会", count: 5)   // 20 字
-        let result = await pipeline(delay: .milliseconds(300)).translate(long, to: .english)
+        let result = await pipeline(delay: .milliseconds(300)).translate(long)
         #expect(result.annotation == nil, "长文本没拿到放大的预算：\(String(describing: result.annotation))")
         #expect(result.text == Self.output)
     }

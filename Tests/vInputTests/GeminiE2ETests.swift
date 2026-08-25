@@ -59,9 +59,9 @@ struct GeminiE2ETests {
     ) async -> TranslationResult {
         // **闸门与超时都用默认值。** 两个数各自有实测支撑且各自有测试守着，
         // 在这里硬写等于绕过那两道守卫，而且不会有人发现。
-        let pipeline = TranslationPipeline(translator: translator)
+        let pipeline = TranslationPipeline(translator: translator, source: .chinese, target: target)
         let started = ContinuousClock.now
-        let result = await pipeline.translate(source, to: target)
+        let result = await pipeline.translate(source)
         let elapsed = ContinuousClock.now - started
         let seconds =
             Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18

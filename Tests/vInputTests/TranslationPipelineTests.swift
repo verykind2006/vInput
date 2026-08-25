@@ -20,25 +20,25 @@ struct TranslationPipelineTests {
 
     // MARK: - 两条「压根不该调翻译器」的短路
 
-    @Test("目标是中文时原样返回，不调翻译器")
+    @Test("目标与源相同（中文→中文）时原样返回，不调翻译器")
     func chineseTargetSkipsTranslator() async {
         let fake = FakeTranslator(.succeed(Self.translated))
-        let pipeline = TranslationPipeline(translator: fake)
+        let pipeline = TranslationPipeline(translator: fake, source: .chinese, target: .chinese)
 
-        let result = await pipeline.translate(Self.source, to: .chinese)
+        let result = await pipeline.translate(Self.source)
 
         #expect(result.text == Self.source)
         #expect(result.annotation == nil)
-        // 目标是中文时连翻译器都不该碰——它可能还要为此加载模型。
+        // 目标==源时连翻译器都不该碰——它可能还要为此加载模型。
         #expect(await fake.callCount == 0)
     }
 
     @Test("空文本不调翻译器")
     func blankTextSkipsTranslator() async {
         let fake = FakeTranslator(.succeed("whatever"))
-        let pipeline = TranslationPipeline(translator: fake)
+        let pipeline = TranslationPipeline(translator: fake, source: .chinese, target: .english)
 
-        let result = await pipeline.translate("   ", to: .english)
+        let result = await pipeline.translate("   ")
 
         #expect(result.text == "   ")
         // 用户没说话，没什么可提示的——标注是给「有话但没译成」用的。
@@ -50,9 +50,10 @@ struct TranslationPipelineTests {
 
     @Test("成功时返回译文")
     func returnsTranslation() async {
-        let pipeline = TranslationPipeline(translator: FakeTranslator(.succeed(Self.translated)))
+        let pipeline = TranslationPipeline(
+            translator: FakeTranslator(.succeed(Self.translated)), source: .chinese, target: .english)
 
-        let result = await pipeline.translate(Self.source, to: .english)
+        let result = await pipeline.translate(Self.source)
 
         #expect(result.text == Self.translated)
         // 正常译出时 HUD 什么都不显示。
@@ -66,9 +67,9 @@ struct TranslationPipelineTests {
     @Test("翻译器收到的是数词改写后的文本")
     func translatorReceivesRewrittenNumerals() async {
         let fake = FakeTranslator(.succeed("Contract amount is 4600000, paid in three parts."))
-        let pipeline = TranslationPipeline(translator: fake)
+        let pipeline = TranslationPipeline(translator: fake, source: .chinese, target: .english)
 
-        let result = await pipeline.translate("合同金额四百六十万，分三期付款。", to: .english)
+        let result = await pipeline.translate("合同金额四百六十万，分三期付款。")
 
         #expect(await fake.receivedTexts == ["合同金额4600000，分三期付款。"])
         #expect(result.text == "Contract amount is 4600000, paid in three parts.")
@@ -86,9 +87,10 @@ struct TranslationPipelineTests {
     func failureFallsBackToUnrewrittenSource() async {
         let source = "合同金额四百六十万，分三期付款。"
         let pipeline = TranslationPipeline(
-            translator: FakeTranslator(.fail(.engineFailed("boom"))))
+            translator: FakeTranslator(.fail(.engineFailed("boom"))),
+            source: .chinese, target: .english)
 
-        let result = await pipeline.translate(source, to: .english)
+        let result = await pipeline.translate(source)
 
         #expect(result.text == source)
         #expect(result.annotation == .failed("boom"))
@@ -100,9 +102,10 @@ struct TranslationPipelineTests {
     func gateRejectFallsBackToUnrewrittenSource() async {
         let source = "合同金额四百六十万，分三期付款。"
         let pipeline = TranslationPipeline(
-            translator: FakeTranslator(.succeed("合同金额四百六十万，分三期付款。")))
+            translator: FakeTranslator(.succeed("合同金额四百六十万，分三期付款。")),
+            source: .chinese, target: .english)
 
-        let result = await pipeline.translate(source, to: .english)
+        let result = await pipeline.translate(source)
 
         #expect(result.text == source)
         #expect(result.annotation == .rejected(.residualHan(count: 14)))
@@ -113,9 +116,10 @@ struct TranslationPipelineTests {
     func timeoutFallsBackToUnrewrittenSource() async {
         let source = "合同金额四百六十万，分三期付款。"
         let pipeline = TranslationPipeline(
-            translator: FakeTranslator(.hang), timeout: .milliseconds(50))
+            translator: FakeTranslator(.hang), source: .chinese, target: .english,
+            timeout: .milliseconds(50))
 
-        let result = await pipeline.translate(source, to: .english)
+        let result = await pipeline.translate(source)
 
         #expect(result.text == source)
         #expect(result.annotation == .timedOut)
@@ -135,9 +139,10 @@ struct TranslationPipelineTests {
     /// 而流水线该验的是「它接的是真的那道闸门」。
     @Test("闸门拦下时退回中文原文并标注")
     func fallsBackWhenGateRejects() async {
-        let pipeline = TranslationPipeline(translator: FakeTranslator(.succeed(Self.source)))
+        let pipeline = TranslationPipeline(
+            translator: FakeTranslator(.succeed(Self.source)), source: .chinese, target: .english)
 
-        let result = await pipeline.translate(Self.source, to: .english)
+        let result = await pipeline.translate(Self.source)
 
         #expect(result.text == Self.source)
         #expect(result.annotation == .rejected(.residualHan(count: 8)))
@@ -149,10 +154,11 @@ struct TranslationPipelineTests {
     @Test("超时时退回中文原文并标注")
     func fallsBackOnTimeout() async {
         let pipeline = TranslationPipeline(
-            translator: FakeTranslator(.hang), timeout: .milliseconds(50))
+            translator: FakeTranslator(.hang), source: .chinese, target: .english,
+            timeout: .milliseconds(50))
 
         let started = ContinuousClock.now
-        let result = await pipeline.translate(Self.source, to: .english)
+        let result = await pipeline.translate(Self.source)
         let elapsed = ContinuousClock.now - started
 
         #expect(result.text == Self.source)
@@ -171,10 +177,10 @@ struct TranslationPipelineTests {
     @Test("模型未就绪时立即退回，不等加载")
     func doesNotWaitForModelLoad() async {
         let fake = FakeTranslator(.succeed(Self.translated), ready: false)
-        let pipeline = TranslationPipeline(translator: fake)
+        let pipeline = TranslationPipeline(translator: fake, source: .chinese, target: .english)
 
         let started = ContinuousClock.now
-        let result = await pipeline.translate(Self.source, to: .english)
+        let result = await pipeline.translate(Self.source)
         let elapsed = ContinuousClock.now - started
 
         #expect(result.text == Self.source)
@@ -186,9 +192,10 @@ struct TranslationPipelineTests {
 
     @Test("引擎报错时退回中文原文")
     func fallsBackWhenEngineFails() async {
-        let pipeline = TranslationPipeline(translator: FakeTranslator(.fail(.engineFailed("boom"))))
+        let pipeline = TranslationPipeline(
+            translator: FakeTranslator(.fail(.engineFailed("boom"))), source: .chinese, target: .english)
 
-        let result = await pipeline.translate(Self.source, to: .english)
+        let result = await pipeline.translate(Self.source)
 
         #expect(result.text == Self.source)
         // 消息原样带出来给日志用；HUD 不显示它（见 `hudLabel`）。
@@ -200,9 +207,10 @@ struct TranslationPipelineTests {
     /// 引擎故障没有，两句话不一样。
     @Test("缺 API key 时的标注与引擎错误分开")
     func missingAPIKeyIsItsOwnAnnotation() async {
-        let pipeline = TranslationPipeline(translator: FakeTranslator(.fail(.missingAPIKey)))
+        let pipeline = TranslationPipeline(
+            translator: FakeTranslator(.fail(.missingAPIKey)), source: .chinese, target: .english)
 
-        let result = await pipeline.translate(Self.source, to: .english)
+        let result = await pipeline.translate(Self.source)
 
         #expect(result.text == Self.source)
         #expect(result.annotation == .missingAPIKey)
@@ -212,17 +220,19 @@ struct TranslationPipelineTests {
     /// 就是这个形态。对用户是同一件事：等一下再说。
     @Test("引擎自报模型未就绪时落进「加载中」")
     func engineReportedNotReadyMapsToModelLoading() async {
-        let pipeline = TranslationPipeline(translator: FakeTranslator(.fail(.modelNotReady)))
+        let pipeline = TranslationPipeline(
+            translator: FakeTranslator(.fail(.modelNotReady)), source: .chinese, target: .english)
 
-        #expect(await pipeline.translate(Self.source, to: .english).annotation == .modelLoading)
+        #expect(await pipeline.translate(Self.source).annotation == .modelLoading)
     }
 
     /// 引擎自报超时（云端请求超时）与我们的预算判的是同一件事。
     @Test("引擎自报超时落进「超时」")
     func engineReportedTimeoutMapsToTimedOut() async {
-        let pipeline = TranslationPipeline(translator: FakeTranslator(.fail(.timedOut)))
+        let pipeline = TranslationPipeline(
+            translator: FakeTranslator(.fail(.timedOut)), source: .chinese, target: .english)
 
-        #expect(await pipeline.translate(Self.source, to: .english).annotation == .timedOut)
+        #expect(await pipeline.translate(Self.source).annotation == .timedOut)
     }
 
     /// **兜底那条 catch 的守卫。** 只 catch `TranslatorError` 的话，
@@ -231,9 +241,10 @@ struct TranslationPipelineTests {
     /// 改成 `catch {}` 吞掉时也红。
     @Test("非 TranslatorError 的错误同样退回中文原文")
     func fallsBackOnUnknownError() async {
-        let pipeline = TranslationPipeline(translator: FakeTranslator(.failOther))
+        let pipeline = TranslationPipeline(
+            translator: FakeTranslator(.failOther), source: .chinese, target: .english)
 
-        let result = await pipeline.translate(Self.source, to: .english)
+        let result = await pipeline.translate(Self.source)
 
         #expect(result.text == Self.source)
         guard case .failed(let message) = result.annotation else {
@@ -248,7 +259,7 @@ struct TranslationPipelineTests {
     @Test("预热转交给翻译器")
     func prepareForwardsToTranslator() async throws {
         let fake = FakeTranslator(.succeed(Self.translated))
-        let pipeline = TranslationPipeline(translator: fake)
+        let pipeline = TranslationPipeline(translator: fake, source: .chinese, target: .english)
 
         try await pipeline.prepareTranslator()
 
@@ -261,7 +272,8 @@ struct TranslationPipelineTests {
     @Test("预热失败抛给调用方")
     func prepareRethrows() async {
         let pipeline = TranslationPipeline(
-            translator: FakeTranslator(.succeed(Self.translated), prepareError: .modelNotReady))
+            translator: FakeTranslator(.succeed(Self.translated), prepareError: .modelNotReady),
+            source: .chinese, target: .english)
 
         await #expect(throws: TranslatorError.modelNotReady) {
             try await pipeline.prepareTranslator()
@@ -290,8 +302,63 @@ struct TranslationPipelineTests {
     @Test("默认超时真的接到了构造器上")
     func defaultTimeoutIsWiredIntoInit() {
         #expect(
-            TranslationPipeline(translator: FakeTranslator(.hang)).timeout
+            TranslationPipeline(
+                translator: FakeTranslator(.hang), source: .chinese, target: .english
+            ).timeout
                 == TranslationPipeline.defaultTimeout)
+    }
+
+    // MARK: - (源, 目标) 二元组在构造时定死
+
+    /// 英文源不跑中文数词改写——「无操作」要靠这条守着，不靠碰巧。
+    @Test("数词改写只属于中文源")
+    func numeralRewriteOnlyForChineseSource() async {
+        let fake = FakeTranslator(.succeed("ok"))
+        let pipeline = TranslationPipeline(translator: fake, source: .english, target: .spanish)
+        _ = await pipeline.translate("两万三 units")
+        // 原样送达，未被改写成 23000。
+        #expect(await fake.receivedTexts.last == "两万三 units")
+
+        let zhPipeline = TranslationPipeline(translator: fake, source: .chinese, target: .spanish)
+        _ = await zhPipeline.translate("两万三个")
+        #expect(await fake.receivedTexts.last?.contains("23000") == true)
+    }
+
+    /// 「值对了」和「接上了」分开验：管线构造时的 source 必须真的传给翻译器
+    /// ——Task 4 的变异②（翻译器内部硬写 .chinese）当时无人抓，这条补上。
+    @Test("翻译器收到的是构造时的源语言")
+    func translatorReceivesTheConstructedSource() async {
+        let fake = FakeTranslator(.succeed("ok"))
+        let pipeline = TranslationPipeline(translator: fake, source: .german, target: .french)
+        _ = await pipeline.translate("hallo welt")
+        #expect(await fake.receivedSources.last == .german)
+    }
+
+    /// 变异④的守卫：闸门收到的必须是构造时的源语言，不是硬写的中文。
+    ///
+    /// 样本是挑出来能区分的那一对：源 .english 无句末标点、译文 "Ok" 短而
+    /// 非空——真源语言下长度比判据不启用（只对中文源标定过，见
+    /// `TranslationGate.check` 末尾），应当放行；硬写 .chinese 时
+    /// ratio ≈ 0.08 < 1.1，被 tooShort 拦下退回原文。
+    /// 首轮同值样本（译文空）抓不到：真源语言走「无内容兜底」reject，
+    /// 硬写 .chinese 也 reject，分不出来。
+    @Test("闸门收到的是构造时的源语言")
+    func gateReceivesTheConstructedSource() async {
+        let fake = FakeTranslator(.succeed("Ok"))
+        let pipeline = TranslationPipeline(translator: fake, source: .english, target: .spanish)
+        let result = await pipeline.translate("Reserve the conference room")
+        #expect(result.text == "Ok")
+        #expect(result.annotation == nil)
+    }
+
+    /// 防御：协调器不该建出这种管线，但建出来也必须是恒等。
+    @Test("源与目标相同的管线是恒等")
+    func sameSourceAndTargetPassesThrough() async {
+        let fake = FakeTranslator(.succeed("SHOULD NOT BE CALLED"))
+        let pipeline = TranslationPipeline(translator: fake, source: .english, target: .english)
+        let result = await pipeline.translate("hello")
+        #expect(result.text == "hello")
+        #expect(await fake.receivedTexts.isEmpty)
     }
 }
 

@@ -73,15 +73,6 @@ final class DictationSession {
     /// 翻译流水线。可为 nil——不翻译时摘掉，注入路径上就少一次 actor 跳转。
     /// 是 `var` 的理由与 `correctionPipeline` 一字不差。
     private var translationPipeline: TranslationPipeline?
-    /// 当前输出语言。
-    ///
-    /// **与流水线分开存，两者都要判。** `AppModel` 在目标是中文时会把流水线
-    /// 直接摘掉（见 `TranslationAttachment.detach`），但那是它的策略，不是本
-    /// 类型能假设的事——只判流水线在不在的话，谁哪天挂着流水线传了 `.chinese`
-    /// 进来，中文就会被送去「翻译成中文」，而 `TranslationPipeline` 里的同款
-    /// guard 会让这件事在行为上完全看不出来（返回值一模一样），只是白付一次
-    /// actor 跳转和一次状态迁移。
-    private var translationTarget: Language = .chinese
     /// 注入失败时的兜底：写剪贴板 + 发通知。可为 nil——缺席时行为与从前
     /// 完全一致（报错、回 idle），只是文字又会蒸发。
     private let rescue: TextRescuing?
@@ -246,10 +237,9 @@ final class DictationSession {
     ///    的标注——白担一次「规则中途变了」的风险，换一句解释。
     ///
     /// 守着这条语义的是 `DictationTranslationTests.attachMidSessionAppliesNextRound`。
-    func attachTranslation(_ pipeline: TranslationPipeline?, target: Language = .chinese) {
+    func attachTranslation(_ pipeline: TranslationPipeline?) {
         guard state == .idle else { return }
         translationPipeline = pipeline
-        translationTarget = target
     }
 
     /// 用上一次失败时保留的音频重新走一遍。
@@ -323,9 +313,9 @@ final class DictationSession {
         // 「上线」而转写成「上限」，译过去就是 upper limit，译文里看不出这是个
         // 同音错字，而中文原文里校正层本来能修掉它。
         var textToInject = finalText
-        if let translationPipeline, translationTarget.requiresTranslation {
+        if let translationPipeline {
             transition(to: .translating)
-            let result = await translationPipeline.translate(finalText, to: translationTarget)
+            let result = await translationPipeline.translate(finalText)
             textToInject = result.text
             onTranslation?(result.annotation)
         }

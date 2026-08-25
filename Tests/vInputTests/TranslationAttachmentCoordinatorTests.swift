@@ -26,7 +26,8 @@ import Testing
 /// | `AppModel` 不再调 `sessionDidBecomeIdle()` | — | `AppModelWiringTests` 1 条红 |
 ///
 /// **`.detach` 那条最初是漏网的**：只断言「注入的是中文」时它照样绿——
-/// `attachTranslation` 同时带着 target，陈旧的流水线根本轮不到被调。
+/// 当时 `attachTranslation` 同时带着 target，陈旧的流水线根本轮不到被调
+/// （Task 6 起会话侧只认「有没有管线」，这个变异如今注入断言也抓得住）。
 /// 补上的断言与它真正的代价写在 `switchingBackToChineseDetaches` 里。
 ///
 /// # 为什么这些用例证明的是「实际跑的那条路径」
@@ -223,12 +224,15 @@ struct TranslationAttachmentCoordinatorTests {
             harness.sink.received == [Harness.translated, Harness.transcript],
             "切回中文之后还在出译文，说明流水线没被摘掉"
         )
-        // **注入结果看不见「摘没摘」，所以这一条必须单独断。**
+        // **这一条仍要单独断，守的是内存，不只是注入结果。**
         //
-        // 实测（变异③）：把 `.detach` 分支的 `pipeline = nil` 换成 `break`，
-        // 上面那条断言照样绿——`attachTranslation` 同时带着 target，而
-        // `DictationSession.process` 在调流水线之前先查
-        // `translationTarget.requiresTranslation`，陈旧的流水线根本轮不到被调。
+        // 2026-08-19 实测（变异③，Task 6 之前）：把 `.detach` 分支的
+        // `pipeline = nil` 换成 `break`，上面那条断言照样绿——当时
+        // `attachTranslation` 同时带着 target，`DictationSession.process`
+        // 在调流水线之前先查 `translationTarget.requiresTranslation`，
+        // 陈旧的流水线根本轮不到被调。Task 6 起会话侧只认「有没有管线」，
+        // 陈旧管线（target 定死在自己身上）会被真的调到，上面那条注入断言
+        // 如今也抓得住这个变异。
         //
         // 那还有什么可守的：**那条陈旧的流水线会一直被会话强引用**，
         // 而它握着 `MLXTranslator`，`MLXTranslator` 握着 `ModelContainer`
@@ -427,7 +431,7 @@ struct TranslationAttachmentCoordinatorTests {
 ///
 /// | 变异 | 结果 |
 /// |---|---|
-/// | `translationAttachment` 里语言判断与后端判断**对调** | **6 条红 / 8 处断言**（本文件 4：`CloudEgressTests` 2 + 「翻译层挂载协调器」2；`TranslationPreferenceTests` 1；`CloudBackendMenuTests` 1）。此前写的「3 条」是 2026-08-19 合并前 QA 复跑时发现的低估，已按当天实测订正。**注意请求数那条没红**——会话自己还有一道 `requiresTranslation`，挂上去也不会被调，抓住它的是「云端翻译器被造了几次」 |
+/// | `translationAttachment` 里语言判断与后端判断**对调** | **6 条红 / 8 处断言**（本文件 4：`CloudEgressTests` 2 + 「翻译层挂载协调器」2；`TranslationPreferenceTests` 1；`CloudBackendMenuTests` 1）。此前写的「3 条」是 2026-08-19 合并前 QA 复跑时发现的低估，已按当天实测订正。**注意请求数那条没红**——会话自己当时还有一道 `requiresTranslation`（Task 6 已移除），挂上去也不会被调，抓住它的是「云端翻译器被造了几次」 |
 /// | `.detach` 分支里偷偷 `makeCloudTranslator()` 并起一个 `Task` 去译 | 本文件 2 条红（都是构造计数）；请求数那条**没红**，那个 detached 任务没能在断言之前落地 |
 /// | 云端开着时把云端流水线挂上去、并谎报 target 为英文 | 本文件 2 条红，**请求数那条这次红了**，日志里印出了完整的出站请求（POST、端点、362 字节请求体） |
 /// | 协调器 `.cloud` 分支「没 key 就退回本地」 | `missingKeyIsLoudAndDoesNotFallBackToLocal` 一条里 5 处断言红——注入的成了本地模型的英文译文 |

@@ -11,7 +11,7 @@ import Foundation
 @MainActor
 protocol TranslationAttachTarget: AnyObject {
     var state: DictationSession.State { get }
-    func attachTranslation(_ pipeline: TranslationPipeline?, target: Language)
+    func attachTranslation(_ pipeline: TranslationPipeline?)
 }
 
 extension DictationSession: TranslationAttachTarget {}
@@ -227,7 +227,10 @@ final class TranslationAttachmentCoordinator {
                 // **闸门与超时都用默认值。** 两个数各自有实测支撑
                 // （闸门 1.1、超时 8 秒）且各自有测试守着，在调用点硬写一个
                 // 数等于绕过那两条守卫，而且不会有人发现。
-                translator: makeTranslator(directory)
+                translator: makeTranslator(directory),
+                // TEMP(Task 7 重写)：协调器还没带输入语言
+                source: .chinese,
+                target: current.target
             )
             pipeline = built
             log("翻译已启用：目标=\(current.target.rawValue) 模型目录=\(directory.path)")
@@ -239,6 +242,9 @@ final class TranslationAttachmentCoordinator {
             // 而本机那个 8 秒会把成功返回的云端译文也掐掉。
             let built = TranslationPipeline(
                 translator: makeCloudTranslator(current.cloudModel),
+                // TEMP(Task 7 重写)：协调器还没带输入语言
+                source: .chinese,
+                target: current.target,
                 timeout: TranslationBudget.cloudFloor
             )
             pipeline = built
@@ -287,7 +293,7 @@ final class TranslationAttachmentCoordinator {
         // 却还在出英文」——一句话被翻译过之后再也退不回来，用户只能重启。
         // 摘掉也是一次挂载：`pipeline` 在上面四格里已经各自置好，
         // 这里只负责把它送进会话。
-        session.attachTranslation(pipeline, target: current.target)
+        session.attachTranslation(pipeline)
         isPending = false
     }
 

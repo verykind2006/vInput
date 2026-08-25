@@ -114,6 +114,11 @@ struct TranslationPipeline: Sendable {
 
     private let translator: any Translator
     private let gate: TranslationGate
+    /// 源语言与目标语言在挂载那一刻定死——一次会话内规则不变
+    /// （`DictationSession.attachTranslation` 的既有语义），中途换设置
+    /// 走协调器重建管线，不改这两个值。
+    let source: Language
+    let target: Language
     /// 非 private：`TranslationPipelineTests` 要断言默认值真的被接到了构造器上。
     /// 只声明一个常量、构造器里却填别的数，是没有测试能从行为上分辨的
     /// （默认 8 秒与 30 秒在任何一条用例上都不会红）。
@@ -121,10 +126,14 @@ struct TranslationPipeline: Sendable {
 
     init(
         translator: any Translator,
+        source: Language,
+        target: Language,
         gate: TranslationGate = TranslationGate(),
         timeout: Duration = TranslationPipeline.defaultTimeout
     ) {
         self.translator = translator
+        self.source = source
+        self.target = target
         self.gate = gate
         self.timeout = timeout
     }
@@ -150,9 +159,10 @@ struct TranslationPipeline: Sendable {
     }
 
     /// 返回译文（或退回的中文原文）与给 HUD 的标注。**本函数不抛错。**
-    func translate(_ text: String, to target: Language) async -> TranslationResult {
-        // 目标是中文就是「不翻译」，连翻译器都不该碰——它可能还要加载模型。
-        guard target.requiresTranslation else { return TranslationResult(text: text, annotation: nil) }
+    func translate(_ text: String) async -> TranslationResult {
+        // 目标==源就是「不翻译」，连翻译器都不该碰——它可能还要加载模型。
+        // 协调器保证 source != target；万一建错，恒等是唯一无害的行为。
+        guard target != source else { return TranslationResult(text: text, annotation: nil) }
         // 用户没说话，没什么可译的，也没什么可提示的。
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return TranslationResult(text: text, annotation: nil)
@@ -169,8 +179,10 @@ struct TranslationPipeline: Sendable {
         // - **给翻译器与闸门的是改写后的**（那才是模型真实的输入）；
         //   **所有失败路径退回的仍是 `text` 原文**——用户要看到的是他说的话。
         // - 解析不出的形态（一个亿）原样进模型，行为与从前相同。
-        // - 目标是中文时上面已经原样返回，改写根本不会发生。
-        let rewritten = ChineseNumerals.rewriteAsDigits(text)
+        // - 源不是中文时改写不会发生。
+        //
+        // 中文数词改写只属于中文源——判据、实测、语料全是中文的。
+        let rewritten = source == .chinese ? ChineseNumerals.rewriteAsDigits(text) : text
         if rewritten != text {
             AppLogger.shared.log("翻译前数词改写：\(text.count) 字 → \(rewritten.count) 字")
         }
@@ -195,13 +207,12 @@ struct TranslationPipeline: Sendable {
         let output: String
         do {
             output = try await withTimeout(budget) {
-                // TEMP(Task 6 重写)：旧世界源恒为中文
-                try await translator.translate(rewritten, from: .chinese, to: target)
+                try await translator.translate(rewritten, from: source, to: target)
             }
         } catch is TimedOut {
             // 记耗时：只写「超时」看不出实际要多久，也就无从判断预算该调到多少。
             AppLogger.shared.log(
-                "翻译超时：目标=\(target.rawValue) 字数=\(rewritten.count) 预算=\(budget) 耗时 \(ContinuousClock.now - started)")
+                "翻译超时：源=\(source.rawValue) 目标=\(target.rawValue) 字数=\(rewritten.count) 预算=\(budget) 耗时 \(ContinuousClock.now - started)")
             return TranslationResult(text: text, annotation: .timedOut)
         } catch let error as TranslatorError {
             switch error {
@@ -218,7 +229,7 @@ struct TranslationPipeline: Sendable {
                 return TranslationResult(text: text, annotation: .modelLoading)
             case .timedOut:
                 // 引擎自己判的超时（云端请求超时）。与我们的预算判的是同一件事。
-                AppLogger.shared.log("翻译超时：引擎自报 目标=\(target.rawValue)")
+                AppLogger.shared.log("翻译超时：引擎自报 源=\(source.rawValue) 目标=\(target.rawValue)")
                 return TranslationResult(text: text, annotation: .timedOut)
             case .engineFailed(let message):
                 AppLogger.shared.log("翻译失败：\(message)")
@@ -234,15 +245,15 @@ struct TranslationPipeline: Sendable {
 
         // 闸门的 source 用改写后的：长度比比的是「模型的输入对输出」，
         // 拿改写前的原文去比会把改写本身的长度变化算到译文头上。
-        // TEMP(Task 6 重写)：旧世界源恒为中文
-        switch gate.check(source: rewritten, translation: output, from: .chinese, to: target) {
+        switch gate.check(source: rewritten, translation: output, from: source, to: target) {
         case .pass:
-            AppLogger.shared.log("翻译完成：目标=\(target.rawValue) 耗时 \(ContinuousClock.now - started)")
+            AppLogger.shared.log(
+                "翻译完成：源=\(source.rawValue) 目标=\(target.rawValue) 耗时 \(ContinuousClock.now - started)")
             return TranslationResult(text: output, annotation: nil)
         case .reject(let reason):
             // **记明是哪一条不过**——只说「被拦下」的话，
             // 调参时无从判断是模型的问题还是阈值的问题。
-            AppLogger.shared.log("翻译被闸门拦下：\(reason) 目标=\(target.rawValue)")
+            AppLogger.shared.log("翻译被闸门拦下：\(reason) 源=\(source.rawValue) 目标=\(target.rawValue)")
             return TranslationResult(text: text, annotation: .rejected(reason))
         }
     }

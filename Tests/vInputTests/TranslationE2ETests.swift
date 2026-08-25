@@ -67,13 +67,13 @@ struct TranslationE2ETests {
     /// ——计划正文写的 120 秒是照着「第一次推理有额外开销」拍的，实测没有
     /// 这回事：额外开销全在模型加载上，而加载已经在上一行的 `prepare()` 里
     /// 做完（实测 3.2 秒，有页缓存），不受这个预算约束。
-    private func makePipeline() async throws -> TranslationPipeline {
+    private func makePipeline(to target: Language) async throws -> TranslationPipeline {
         let translator = try #require(
             Self.translator,
             "模型不在标记文件指定的位置，见 TranslationE2EGate.modelDirectory"
         )
         try await translator.prepare()
-        return TranslationPipeline(translator: translator)
+        return TranslationPipeline(translator: translator, source: .chinese, target: target)
     }
 
     /// 把一条实测结果打到标准输出。
@@ -92,9 +92,9 @@ struct TranslationE2ETests {
     private func translate(
         _ source: String, to target: Language, label: String
     ) async throws -> TranslationResult {
-        let pipeline = try await makePipeline()
+        let pipeline = try await makePipeline(to: target)
         let started = ContinuousClock.now
-        let result = await pipeline.translate(source, to: target)
+        let result = await pipeline.translate(source)
         let elapsed = ContinuousClock.now - started
         let seconds = Double(elapsed.components.seconds)
             + Double(elapsed.components.attoseconds) / 1e18
@@ -256,10 +256,10 @@ struct TranslationE2ETests {
     @Test("目标是中文时原样返回")
     func chineseTargetReturnsSourceUntouched() async throws {
         let source = "这个方案的报价是 128000 元，含税，有效期到月底。"
-        let pipeline = try await makePipeline()
+        let pipeline = try await makePipeline(to: .chinese)
 
         let started = ContinuousClock.now
-        let result = await pipeline.translate(source, to: .chinese)
+        let result = await pipeline.translate(source)
         let elapsed = ContinuousClock.now - started
 
         #expect(result.text == source, "实际输出：\(result.text)")

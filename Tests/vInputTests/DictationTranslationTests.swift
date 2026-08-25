@@ -83,7 +83,9 @@ struct DictationTranslationTests {
         // 且各自有测试守着，在这里硬写一个数等于绕过那两条守卫，而且不会有人
         // 发现——计划正文里写的 `minimumLengthRatio: 0.3` / `timeout: .seconds(30)`
         // 正是那个形态。
-        TranslationPipeline(translator: FakeTranslator(.succeed(output), log: log))
+        TranslationPipeline(
+            translator: FakeTranslator(.succeed(output), log: log),
+            source: .chinese, target: .english)
     }
 
     // MARK: - 顺序：校正在前，翻译在后
@@ -103,7 +105,8 @@ struct DictationTranslationTests {
         let log = CallOrderLog()
         let translator = FakeTranslator(.succeed(Self.translated), log: log)
         let (session, source, sink) = makeSession(corrector: OrderRecordingCorrector(log: log))
-        session.attachTranslation(TranslationPipeline(translator: translator), target: .english)
+        session.attachTranslation(
+            TranslationPipeline(translator: translator, source: .chinese, target: .english))
 
         try await runSession(session, source)
 
@@ -122,7 +125,7 @@ struct DictationTranslationTests {
     @Test("实测状态序列与 allCasesInPipelineOrder 同序")
     func observedStatesFollowDeclaredOrder() async throws {
         let (session, source, _) = makeSession(corrector: OrderRecordingCorrector())
-        session.attachTranslation(pipeline(Self.translated), target: .english)
+        session.attachTranslation(pipeline(Self.translated))
         var observed: [DictationSession.State] = []
         session.onStateChange = { observed.append($0) }
 
@@ -138,11 +141,17 @@ struct DictationTranslationTests {
 
     // MARK: - 目标语言决定走不走翻译
 
-    @Test("目标是中文时不进 .translating，注入中文原文")
+    /// Task 6 起会话侧只认「有没有管线」：目标是中文＝协调器把管线摘掉
+    /// （`TranslationAttachment.detach`），会话拿到的是 nil。原先这条断言的
+    /// 「target 传进了会话、目标是中文就不翻译」，其意图改由「管线自带
+    /// (源, 目标)、中文那格压根不存在管线」承接——协调器侧由
+    /// `TranslationAttachmentCoordinatorTests` 的中文格与 `.detach` 用例守着，
+    /// 管线侧由 `TranslationPipelineTests.sameSourceAndTargetPassesThrough`
+    /// 兜底。
+    @Test("没有翻译管线时不进 .translating，注入中文原文")
     func chineseTargetSkipsTranslatingState() async throws {
-        let translator = FakeTranslator(.succeed(Self.translated))
         let (session, source, sink) = makeSession()
-        session.attachTranslation(TranslationPipeline(translator: translator), target: .chinese)
+        session.attachTranslation(nil)
         var observed: [DictationSession.State] = []
         session.onStateChange = { observed.append($0) }
         var annotationCalls = 0
@@ -155,14 +164,12 @@ struct DictationTranslationTests {
         // 用户没要翻译，屏幕上就不该冒出任何与翻译有关的字——与 `onCorrection`
         // 「校正关闭时一次都不回调」同一条规矩。
         #expect(annotationCalls == 0)
-        // 连翻译器都不该碰：它可能还要为此加载模型。
-        #expect(await translator.callCount == 0)
     }
 
     @Test("目标是外语时进 .translating，注入译文")
     func foreignTargetEntersTranslatingState() async throws {
         let (session, source, sink) = makeSession()
-        session.attachTranslation(pipeline(Self.translated), target: .english)
+        session.attachTranslation(pipeline(Self.translated))
         var observed: [DictationSession.State] = []
         session.onStateChange = { observed.append($0) }
         var annotations: [TranslationAnnotation?] = []
@@ -191,7 +198,7 @@ struct DictationTranslationTests {
         let rescue = SpyRescue()
         let (session, source, _) = makeSession(
             sinkError: TextSinkError.accessibilityDenied, rescue: rescue)
-        session.attachTranslation(pipeline(Self.translated), target: .english)
+        session.attachTranslation(pipeline(Self.translated))
 
         try await runSession(session, source)
 
@@ -208,7 +215,7 @@ struct DictationTranslationTests {
     @Test("翻译被闸门拦下时注入中文原文并带标注")
     func rejectedTranslationFallsBackToChinese() async throws {
         let (session, source, sink) = makeSession()
-        session.attachTranslation(pipeline(Self.transcript), target: .english)
+        session.attachTranslation(pipeline(Self.transcript))
         var annotations: [TranslationAnnotation?] = []
         session.onTranslation = { annotations.append($0) }
         var errors: [Error] = []
@@ -235,13 +242,13 @@ struct DictationTranslationTests {
         let (session, source, sink) = makeSession()
 
         try await session.start()
-        session.attachTranslation(pipeline(Self.translated), target: .english)
+        session.attachTranslation(pipeline(Self.translated))
         source.emit(Array(repeating: 0.1, count: 16_000))
         await session.finish()
         #expect(sink.received == [Self.transcript], "这一句是冲着中文说的，就该出中文")
 
         // 回到 idle 后补挂，下一轮生效。
-        session.attachTranslation(pipeline(Self.translated), target: .english)
+        session.attachTranslation(pipeline(Self.translated))
         try await runSession(session, source)
         #expect(sink.received == [Self.transcript, Self.translated], "补挂后应当生效")
     }
@@ -253,15 +260,15 @@ struct DictationTranslationTests {
     @Test("说话途中切回中文：本次仍出译文，下一轮才停")
     func detachMidSessionAppliesNextRound() async throws {
         let (session, source, sink) = makeSession()
-        session.attachTranslation(pipeline(Self.translated), target: .english)
+        session.attachTranslation(pipeline(Self.translated))
 
         try await session.start()
-        session.attachTranslation(nil, target: .chinese)
+        session.attachTranslation(nil)
         source.emit(Array(repeating: 0.1, count: 16_000))
         await session.finish()
         #expect(sink.received == [Self.translated], "这一句是冲着英文说的，就该出英文")
 
-        session.attachTranslation(nil, target: .chinese)
+        session.attachTranslation(nil)
         try await runSession(session, source)
         #expect(sink.received == [Self.translated, Self.transcript], "切回中文应当在下一轮生效")
     }
