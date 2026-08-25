@@ -821,6 +821,24 @@ struct MenuPanelViewWiringTests {
             """
         )
 
+        // 收起态的校正值不许在视图里手拼三元——那正是「非中文输入还显示
+        // 开」这条骗人值原来的写法；值必须走 MenuPanelModel.correctionRowValue。
+        let handRollsTernary = source.contains("model.correctionEnabled ? ")
+        #expect(
+            !handRollsTernary,
+            """
+            MenuPanelView 里又出现了 model.correctionEnabled ? … 的手拼三元。
+            收起态的校正值必须走 MenuPanelModel.correctionRowValue——
+            视图里的三元不知道语言门，非中文输入下会写「开」而行为是没开。
+            """
+        )
+        let usesRowValue = source.contains(
+            "MenuPanelModel.correctionRowValue(")
+        #expect(
+            usesRowValue,
+            "校正行的收起态值没有走 MenuPanelModel.correctionRowValue。"
+        )
+
         guard let correction = Self.functionBody(source, signature: "private var correctionSection")
         else {
             Issue.record("MenuPanelView 里找不到 correctionSection 的函数体。")

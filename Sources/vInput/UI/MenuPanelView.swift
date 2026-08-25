@@ -348,7 +348,11 @@ struct MenuPanelView: View {
         VStack(spacing: 0) {
             settingRow(.model, title: "模型", value: modelValueLabel) { modelSection }
             rowSeparator
-            settingRow(.correction, title: "校正", value: model.correctionEnabled ? "开" : "关") {
+            settingRow(
+                .correction, title: "校正",
+                value: MenuPanelModel.correctionRowValue(
+                    enabled: model.correctionEnabled, input: model.inputLanguage)
+            ) {
                 correctionSection
             }
             rowSeparator

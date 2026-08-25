@@ -126,6 +126,21 @@ struct MenuPanelModelTests {
         #expect(MenuPanelModel.correctionToggleTitle(enabled: false) == "开启校正")
     }
 
+    /// 收起态的校正值三态：非中文输入下**不许显示「开」**——管线已被语言门
+    /// 摘掉，偏好里的「开」一个字都不会生效——与「云端：开（其实没在译）」
+    /// 同构，显示与行为不一致就是在骗人。
+    @Test func correctionRowValueDoesNotLieForNonChineseInput() {
+        #expect(MenuPanelModel.correctionRowValue(enabled: true, input: .chinese) == "开")
+        #expect(MenuPanelModel.correctionRowValue(enabled: false, input: .chinese) == "关")
+        // enabled 与否都一样：偏好里的开关此时根本不参与行为。
+        #expect(
+            MenuPanelModel.correctionRowValue(enabled: true, input: .english)
+                == "不可用（非中文输入）")
+        #expect(
+            MenuPanelModel.correctionRowValue(enabled: false, input: .spanish)
+                == "不可用（非中文输入）")
+    }
+
     /// 校正模型那一行。未指定时**不许**说成「默认（首次使用时下载）」：
     /// 开启校正现在必须先有一个本地合法目录，那句话会让人以为不选也能用。
     @Test func correctionModelLineTellsWhenUnset() {

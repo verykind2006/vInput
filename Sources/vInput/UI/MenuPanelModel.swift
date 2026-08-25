@@ -91,9 +91,21 @@ enum MenuPanelModel {
     }
 
     /// 校正开关按钮。说的是**按下去会发生什么**，不是当前状态
-    /// （当前状态在设置行右侧的「开 / 关」上）。
+    /// （当前状态在设置行右侧的值上，见 `correctionRowValue`）。
     nonisolated static func correctionToggleTitle(enabled: Bool) -> String {
         enabled ? "关闭校正" : "开启校正"
+    }
+
+    /// 校正设置行右侧的当前值。
+    ///
+    /// **非中文输入下不许显示「开」**：那时管线已被 `makeCorrectionPipeline`
+    /// 的语言门摘掉，偏好里的「开」一个字都不会生效——收起态还写「开」
+    /// 与「云端：开（其实没在译）」同构，显示与行为不一致就是在骗人
+    /// （`AppModel.translationBackendStatus` 记着同一条原则）。展开区里的
+    /// 整句解释走 `AppModel.correctionUnavailableNote`，这里只给收起态的短值。
+    nonisolated static func correctionRowValue(enabled: Bool, input: Language) -> String {
+        guard input == .chinese else { return "不可用（非中文输入）" }
+        return enabled ? "开" : "关"
     }
 
     /// 校正模型那一行。
