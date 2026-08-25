@@ -297,6 +297,21 @@ struct TranslationGateTests {
         #expect(verdict == .reject(.residualHan(count: 2)))
     }
 
+    /// **M1 的守卫：非中文源 + 原文无句末标点（松手早）时，空译文不得静默放行。**
+    ///
+    /// 没有专门兜底的话，这条输入三条判据全部沉默：残留汉字 0、中文标点 0、
+    /// 截断判据因 `!looksTruncated(source)` 前置不成立而跳过、长度比因
+    /// 源非中文（未标定）不启用——`.pass` 意味着把一段空白静默注入。
+    /// 今天 TEMP 桥恒传 `.chinese` 还踩不到，Task 6 接上真源语言就会活。
+    @Test func emptyTranslationIsRejectedForLatinTargetFromLatinSource() {
+        let gate = TranslationGate()
+        let verdict = gate.check(
+            source: "Book tickets",
+            translation: "",
+            from: .english, to: .spanish)
+        #expect(verdict == .reject(.tooShort(ratio: 0)))
+    }
+
     /// 变异验证 ④ 补的用例：把中文目标分支里的截断判据删掉，此前没有任何
     /// 用例会红。前置条件与拉丁分支同款：源自己有句末标点、译文没有。
     @Test func chineseTargetCatchesTruncation() {

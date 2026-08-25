@@ -353,7 +353,7 @@ struct TranslationAnnotationLabelTests {
     /// （不再要求「中文原文」：源不恒为中文了，那四个字在英文输入下是错话，
     /// 见 `TranslationGateTests.rejectionLabelsSayOriginalNotChinese`。）
     @Test("每条文案都说清了「注入的是原文」")
-    func everyLabelExplainsTheChineseFallback() {
+    func everyLabelExplainsTheFallback() {
         Self.exhaustivenessGuard()
         for annotation in Self.annotations {
             #expect(

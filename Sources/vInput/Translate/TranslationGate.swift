@@ -53,6 +53,9 @@ enum TranslationVerdict: Equatable, Sendable {
 ///
 /// ## 已知会漏的那一类，是算过账之后决定放过的
 ///
+/// （下面这篇账只覆盖**拉丁目标分支**；X→中文那条弱闸门未实测，
+/// 它的边界写在 `TranslationRejection.noHan` 的注释里。）
+///
 /// 最难办的是**半截译文**：Task 8 实测（8/8）超时取消对 MLX 推理基本无效，
 /// `translate` 会**成功返回**半截译文；而半截译文往往是完全合法的目标语言
 /// 文本——「我想订三张下周五的机票」译到一半是 "I'd like to book three
@@ -122,6 +125,10 @@ struct TranslationGate: Sendable {
     ) -> TranslationVerdict {
         // X→中文：判据只有「须含汉字」与截断。不查拉丁残留（中文合法保留
         // 英文术语正是本项目的规则），不查长度比（未标定）。
+        //
+        // **必须排在下面的 usesLatinScript guard 之前**：`.chinese` 的
+        // `usesLatinScript` 是 false，落到那条 guard 会被静默 pass——
+        // 整个弱闸门等于没写。
         if target == .chinese {
             if TranslationMetrics.residualHanCount(translation) == 0 {
                 return .reject(.noHan)
@@ -171,6 +178,18 @@ struct TranslationGate: Sendable {
             TruncationSignal.looksTruncated(translation)
         {
             return .reject(.truncated)
+        }
+
+        // 「译文里根本没有内容」的兜底，对任何源语言启用。**这条不是长度比**
+        // ——不需要标定：零个显著字符在任何语言对上都不是合法译文。少了它，
+        // 非中文源 + 原文无句末标点（用户松手早）时，空译文（或只剩空白/
+        // 标点的退化译文）会三条判据全部沉默、被静默注入：残留汉字 0、
+        // 截断判据因前置条件不成立而跳过、长度比未标定不启用。
+        // 尺子与 `TranslationMetrics.lengthRatio` 的分子是同一把
+        // （`significantCharacters`）。中文目标分支的同类情形已由 `noHan`
+        // 兜住，所以只需要在拉丁分支加。
+        if BenchMetrics.significantCharacters(translation).isEmpty {
+            return .reject(.tooShort(ratio: 0))
         }
 
         // 辅助信号，排最后：它拦得住的多半上面已经拦了，留着是为了兜住
