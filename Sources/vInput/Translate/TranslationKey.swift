@@ -23,7 +23,7 @@ enum TranslationKey {
     /// Gemini 的服务名。**改它等于让每个用户已经存好的 key 凭空消失**，
     /// 而表现是「配了 key 却说没配」——用户无从判断是自己存错了还是程序
     /// 换了地方找。`TranslationKeyTests.serviceNameIsStable` 钉住这个字面量，
-    /// 与 `TranslationTarget` 的 rawValue 同一条理由：它是写进用户机器上的
+    /// 与 `Language` 的 rawValue 同一条理由：它是写进用户机器上的
     /// 标识符，不是内部命名。
     static let geminiService = "vinput-gemini-api-key"
 

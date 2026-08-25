@@ -111,14 +111,14 @@ struct TranslationGate: Sendable {
     }
 
     func check(
-        source: String, translation: String, target: TranslationTarget
+        source: String, translation: String, target: Language
     ) -> TranslationVerdict {
         // **查 usesLatinScript 而不是 requiresTranslation。**
         //
         // 两者今天等价，但语义不同：下面几条判据**只对拉丁字母书写系统
         // 成立**——日文本来就用汉字，拿「残留汉字」去判日语译文，正常的
         // 译文会被全部拦下。写成 requiresTranslation 的话，将来加日语时
-        // TranslationTarget 那几处 switch 会逼人把 usesLatinScript 填成
+        // Language 那几处 switch 会逼人把 usesLatinScript 填成
         // false（护栏有效），**而闸门仍会把这套判据套上去**——那个护栏就
         // 白设了。Task 1 的评审指出了这一点。
         guard target.usesLatinScript else { return .pass }

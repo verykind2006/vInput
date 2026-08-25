@@ -106,7 +106,7 @@ struct TranslationAttachmentTests {
     ///   `TranslationAttachmentCoordinatorTests` 里那条拿**真临时目录**跑的
     ///   用例守着。生产函数本身**不给**这个参数默认值，见它的注释。
     private func attachment(
-        target: TranslationTarget,
+        target: Language,
         cloud: Bool = false,
         translationDirectory: URL? = nil,
         correctionDirectory: URL? = nil,
@@ -148,7 +148,7 @@ struct TranslationAttachmentTests {
         )
         // 六种外语一格不漏地反过来验一次：语言是外语时云端开关**必须**被读到。
         // 只测中文那一格的话，「顺序对调」在外语侧不会被发现。
-        for target in TranslationTarget.allCases where target.requiresTranslation {
+        for target in Language.allCases where target.requiresTranslation {
             #expect(
                 attachment(target: target, cloud: true, correctionDirectory: correctionDir)
                     == .cloud,
@@ -215,7 +215,7 @@ struct TranslationAttachmentTests {
     /// `.unconfigured` 要记日志、要点亮菜单后缀、要弹 HUD。
     @Test("两个目录都没配时不许静默")
     func unconfiguredIsNotSilent() {
-        for target in TranslationTarget.allCases where target.requiresTranslation {
+        for target in Language.allCases where target.requiresTranslation {
             #expect(
                 attachment(target: target) == .unconfigured,
                 "\(target.rawValue) 缺目录时被静默摘掉了"
@@ -299,7 +299,7 @@ struct TranslationAttachmentTests {
 
     @Test("每种语言的标题都带自己的显示名")
     func menuTitleNamesEveryLanguage() {
-        for target in TranslationTarget.allCases {
+        for target in Language.allCases {
             #expect(
                 AppModel.outputLanguageMenuTitle(target: target, modelMissing: false)
                     .contains(target.displayName),
@@ -328,7 +328,7 @@ struct TranslationQualityTests {
     @Test("六种语言的实测值逐个钉死")
     func allSixAreMeasured() {
         var measured: [String: Double] = [:]
-        for target in TranslationTarget.allCases {
+        for target in Language.allCases {
             if case .measured(let retention) = target.quality {
                 measured[target.rawValue] = retention
             }
@@ -348,7 +348,7 @@ struct TranslationQualityTests {
     /// 更低而没有新的实测支撑，它就会红。
     @Test("六种都在可用区间内")
     func allSixAreUsable() {
-        for target in TranslationTarget.allCases where target.requiresTranslation {
+        for target in Language.allCases where target.requiresTranslation {
             guard case .measured(let retention) = target.quality else {
                 Issue.record("\(target.rawValue) 还没有实测数据")
                 continue
@@ -360,9 +360,9 @@ struct TranslationQualityTests {
     /// 中文单独一格：它是「不翻译」，谈不上质量。
     @Test("中文是 notApplicable，不是 unmeasured")
     func chineseIsNotApplicable() {
-        #expect(TranslationTarget.chinese.quality == .notApplicable)
+        #expect(Language.chinese.quality == .notApplicable)
         // 反过来钉住：任何需要翻译的语言都不该是 notApplicable。
-        for target in TranslationTarget.allCases where target.requiresTranslation {
+        for target in Language.allCases where target.requiresTranslation {
             #expect(
                 target.quality != .notApplicable,
                 "\(target.rawValue) 要翻译，却被标成「无所谓质量」"
@@ -372,13 +372,13 @@ struct TranslationQualityTests {
 
     /// **加一种语言却忘了定级，会被机械地抓到。**
     ///
-    /// 两道：`TranslationTarget.quality` 是穷尽 switch（加一格编译不过），
+    /// 两道：`Language.quality` 是穷尽 switch（加一格编译不过），
     /// 而「随手标成 `.unmeasured` 蒙过编译器」由本条拦——每种语言都必须在
     /// 菜单文案里露出自己的质量档位，`unmeasured` 那档写着「未实测」，
     /// 用户看得见，加语言的人也就赖不掉。
     @Test("每种语言的菜单文案都说清了自己的档位")
     func menuLabelStatesQuality() {
-        for target in TranslationTarget.allCases {
+        for target in Language.allCases {
             let label = target.menuLabel
             #expect(label.contains(target.displayName), "\(target.rawValue) 文案里没有语言名")
             switch target.quality {
@@ -400,14 +400,14 @@ struct TranslationQualityTests {
     /// 防的是「文案退化成同一句」：把 `menuLabel` 写成 `displayName` 就红。
     @Test("七种文案两两不同")
     func menuLabelsAreDistinct() {
-        let labels = TranslationTarget.allCases.map(\.menuLabel)
+        let labels = Language.allCases.map(\.menuLabel)
         #expect(Set(labels).count == labels.count)
     }
 
     /// **实测值不许高于 1.0。** 术语保留是个比例，超过 1 只能是打错。
     @Test("实测值落在合理区间")
     func measuredValuesAreRatios() {
-        for target in TranslationTarget.allCases {
+        for target in Language.allCases {
             if case .measured(let retention) = target.quality {
                 #expect(retention > 0 && retention <= 1.0, "\(target.rawValue) 的实测值不是比例")
             }

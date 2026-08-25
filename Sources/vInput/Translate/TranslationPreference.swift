@@ -34,18 +34,18 @@ struct TranslationPreference {
     /// 选之前不该承担这些成本——与 `CorrectionPreference.isEnabled` 默认关闭
     /// 同一条理由。
     ///
-    /// **存稳定字符串而不是枚举序号**：`TranslationTarget` 的 rawValue 由
-    /// `TranslationTargetTests.rawValuesAreStable` 逐个钉死，加一种语言不会
+    /// **存稳定字符串而不是枚举序号**：`Language` 的 rawValue 由
+    /// `LanguageTests.rawValuesAreStable` 逐个钉死，加一种语言不会
     /// 把用户已保存的设置挪到别的语言上；存序号的话在中间插一格就全错位了。
     ///
     /// 读到不认识的值时退回中文（应用降级回旧版本、或用户手改 plist）。
     /// **退回中文而不是崩掉或退回上一次的外语**：中文是「不翻译」，是唯一
     /// 不会把用户没要的语言注进输入框的取值。这条退回不必额外提示——
     /// 菜单栏当场就显示成「输出语言：中文」，用户看得见。
-    var outputLanguage: TranslationTarget {
+    var outputLanguage: Language {
         get {
             guard let raw = defaults.string(forKey: Key.outputLanguage) else { return .chinese }
-            return TranslationTarget(rawValue: raw) ?? .chinese
+            return Language(rawValue: raw) ?? .chinese
         }
         nonmutating set { defaults.set(newValue.rawValue, forKey: Key.outputLanguage) }
     }

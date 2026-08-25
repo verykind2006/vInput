@@ -354,7 +354,7 @@ final class BenchTranslationSection {
             case .unknownLanguage(let code):
                 """
                 标记文件里的 translateTo 是「\(code)」，不认识。
-                可用的：\(TranslationTarget.allCases.map(\.rawValue).joined(separator: " "))
+                可用的：\(Language.allCases.map(\.rawValue).joined(separator: " "))
                 **宁可整轮不跑也不退回默认语言**：报告头写着一种语言、跑的是另一种，
                 而这份报告会被拿去做决策。
                 """
@@ -368,14 +368,14 @@ final class BenchTranslationSection {
         }
     }
 
-    let target: TranslationTarget
+    let target: Language
     let modelFolder: String
     /// 真正加载在 `prepare()` 里做，构造只记路径：本类型的构造要能在普通
     /// 单元测试里跑（`BenchTranslationSectionTests`），而 MLX 在 SwiftPM
     /// 命令行下连初始化都会崩（没有 default.metallib，见 docs/dev-dependencies.md）。
     private var translator: (any Translator)?
 
-    private init(target: TranslationTarget, modelFolder: String) {
+    private init(target: Language, modelFolder: String) {
         self.target = target
         self.modelFolder = modelFolder
     }
@@ -383,7 +383,7 @@ final class BenchTranslationSection {
     /// 没有 `translateTo` 就返回 nil（不跑翻译段）；有但不合法就抛。
     static func make(config: BenchRunGate.Config) throws -> BenchTranslationSection? {
         guard let code = config.translateTo else { return nil }
-        guard let target = TranslationTarget(rawValue: code) else {
+        guard let target = Language(rawValue: code) else {
             throw Failure.unknownLanguage(code)
         }
         guard target.requiresTranslation else { throw Failure.chineseIsNotTranslation }
@@ -499,7 +499,7 @@ final class BenchTranslationSection {
     /// 数字都没有（2026-08-18 数过），于是这一列的分母恒为 0。印一个漂亮的
     /// 「0」会被读成「一个数字都没丢」，而真相是「这批素材根本考不到数字」
     /// ——一个看着很像通过了的数。
-    static func digitsSummaryLines(lost: Int, total: Int, target: TranslationTarget) -> [String] {
+    static func digitsSummaryLines(lost: Int, total: Int, target: Language) -> [String] {
         guard total > 0 else {
             return [
                 "  数字丢失      **原文共 0 个阿拉伯数字：分母为 0，这一列读不出任何东西**",

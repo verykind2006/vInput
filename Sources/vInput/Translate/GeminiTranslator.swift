@@ -118,7 +118,7 @@ struct GeminiTranslator: Translator {
         guard readKey() != nil else { throw TranslatorError.missingAPIKey }
     }
 
-    func translate(_ text: String, to target: TranslationTarget) async throws -> String {
+    func translate(_ text: String, to target: Language) async throws -> String {
         // **没 key 就在这里断掉，一个字节都不出站。** 带着空 key 发出去
         // 换回来的是一个用户看不懂的 401，而且那一次已经把他刚说的话送出
         // 去了——恰恰是最不该发生的顺序。

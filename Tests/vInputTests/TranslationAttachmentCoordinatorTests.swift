@@ -792,7 +792,7 @@ private final class Harness {
     ///   - cloudKey: 假的云端 API key。nil ＝ 用户开了云端却没配 key。
     ///   - cloudReply: 记录型 `URLSession` 回给云端翻译器的假响应。
     init(
-        target: TranslationTarget,
+        target: Language,
         cloud: Bool = false,
         cloudKey: String? = "not-a-real-key-0000",
         cloudReply: RequestRecorder.Reply = .status(

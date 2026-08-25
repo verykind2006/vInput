@@ -90,7 +90,7 @@ struct TranslationE2ETests {
     }
 
     private func translate(
-        _ source: String, to target: TranslationTarget, label: String
+        _ source: String, to target: Language, label: String
     ) async throws -> TranslationResult {
         let pipeline = try await makePipeline()
         let started = ContinuousClock.now

@@ -87,7 +87,7 @@ actor MLXTranslator: Translator {
         }
     }
 
-    func translate(_ text: String, to target: TranslationTarget) async throws -> String {
+    func translate(_ text: String, to target: Language) async throws -> String {
         // **不在这里等加载。** 加载要几十秒，而调用方带着秒级推理预算，
         // 等下去只会把注入一起拖住。未就绪就直说，由流水线退回中文原文
         // 并另行预热。

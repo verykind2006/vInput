@@ -273,7 +273,7 @@ struct MenuPanelViewWiringTests {
         let usesTargetLabel = source.contains("target.menuLabel")
         #expect(
             usesTargetLabel,
-            "六个输出语言选项的文案没有走 TranslationTarget.menuLabel（每项都带实测质量）。"
+            "六个输出语言选项的文案没有走 Language.menuLabel（每项都带实测质量）。"
         )
     }
 

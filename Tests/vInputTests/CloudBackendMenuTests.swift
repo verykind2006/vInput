@@ -48,7 +48,7 @@ struct CloudBackendMenuTests {
 
     /// 真值表的一格。**期望值是手写的。**
     private struct Cell {
-        let target: TranslationTarget
+        let target: Language
         let cloud: Bool
         let hasKey: Bool
         /// nil ＝ 连校正模型目录都没有（`translationAttachment` 会给
@@ -132,7 +132,7 @@ struct CloudBackendMenuTests {
     /// 六种外语一视同仁——没有哪一种会因为「实测过 / 没实测过」而走别的分支。
     @Test("每种外语在云端开着时的状态都一样")
     func everyForeignLanguageBehavesTheSame() {
-        for target in TranslationTarget.allCases where target.requiresTranslation {
+        for target in Language.allCases where target.requiresTranslation {
             let withKey = Cell(
                 target: target, cloud: true, hasKey: true,
                 directory: Self.correctionDirectory, expected: .cloudActive, why: "")
@@ -270,7 +270,7 @@ struct CloudBackendMenuTests {
         #expect(active.contains("报价"), "没提用户明确说过的那类机密内容：\(active)")
         #expect(active.contains("切回中文"), "没给用户一条立刻停止出站的路：\(active)")
         #expect(active.contains("转写与校正始终在本机"), "没说清哪些层不受影响，用户会以为整条链都上云了：\(active)")
-        #expect(active.contains(TranslationTarget.spanish.displayName), "没说清现在译成哪种语言：\(active)")
+        #expect(active.contains(Language.spanish.displayName), "没说清现在译成哪种语言：\(active)")
 
         for status in [
             AppModel.TranslationBackendStatus.local, .cloudIdleBecauseChinese, .cloudMissingKey,

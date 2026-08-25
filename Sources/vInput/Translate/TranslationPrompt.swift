@@ -10,7 +10,7 @@ import Foundation
 /// 校正层因此把规则并进了用户提示（见 `CorrectionPrompt.user`），这里照做。
 ///
 /// **规则用英文写、语言名也用英文名，这条尚未测量**——依据只是「模型对指令
-/// 语言的理解在英文上更稳」这个假设（同 `TranslationTarget.englishName` 的
+/// 语言的理解在英文上更稳」这个假设（同 `Language.englishName` 的
 /// 注记）。Task 3 的对照装置应当顺带验一次：同一套素材换成中文指令，看指标
 /// 差多少。
 enum TranslationPrompt {
@@ -29,7 +29,7 @@ enum TranslationPrompt {
         /// 对照用：`西班牙文`、`德文`。
         case chineseLanguageName = "chinese-language-name"
 
-        func languageName(for target: TranslationTarget) -> String {
+        func languageName(for target: Language) -> String {
             switch self {
             case .englishLanguageName: return target.englishName
             case .chineseLanguageName: return target.displayName
@@ -65,7 +65,7 @@ enum TranslationPrompt {
     /// Task 7 的 pipeline 落地时按这条来。
     static func user(
         for text: String,
-        target: TranslationTarget,
+        target: Language,
         variant: Variant = .englishLanguageName
     ) -> String {
         """

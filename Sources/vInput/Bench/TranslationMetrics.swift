@@ -187,7 +187,7 @@ enum TranslationMetrics {
     /// （`TranslatedNumbers`，倍词表按语言分，德语 Billion 是 10¹²），
     /// 值对不上才报。返回的是原文里那段数词，报告里逐字打印。
     static func lostNumerals(
-        source: String, translation: String, target: TranslationTarget
+        source: String, translation: String, target: Language
     ) -> [String] {
         let candidates = TranslatedNumbers.candidateValues(in: translation, target: target)
         return numeralsIn(source)

@@ -81,7 +81,7 @@ final class DictationSession {
     /// 进来，中文就会被送去「翻译成中文」，而 `TranslationPipeline` 里的同款
     /// guard 会让这件事在行为上完全看不出来（返回值一模一样），只是白付一次
     /// actor 跳转和一次状态迁移。
-    private var translationTarget: TranslationTarget = .chinese
+    private var translationTarget: Language = .chinese
     /// 注入失败时的兜底：写剪贴板 + 发通知。可为 nil——缺席时行为与从前
     /// 完全一致（报错、回 idle），只是文字又会蒸发。
     private let rescue: TextRescuing?
@@ -246,7 +246,7 @@ final class DictationSession {
     ///    的标注——白担一次「规则中途变了」的风险，换一句解释。
     ///
     /// 守着这条语义的是 `DictationTranslationTests.attachMidSessionAppliesNextRound`。
-    func attachTranslation(_ pipeline: TranslationPipeline?, target: TranslationTarget = .chinese) {
+    func attachTranslation(_ pipeline: TranslationPipeline?, target: Language = .chinese) {
         guard state == .idle else { return }
         translationPipeline = pipeline
         translationTarget = target

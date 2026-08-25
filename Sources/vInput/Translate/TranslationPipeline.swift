@@ -149,7 +149,7 @@ struct TranslationPipeline: Sendable {
     }
 
     /// 返回译文（或退回的中文原文）与给 HUD 的标注。**本函数不抛错。**
-    func translate(_ text: String, to target: TranslationTarget) async -> TranslationResult {
+    func translate(_ text: String, to target: Language) async -> TranslationResult {
         // 目标是中文就是「不翻译」，连翻译器都不该碰——它可能还要加载模型。
         guard target.requiresTranslation else { return TranslationResult(text: text, annotation: nil) }
         // 用户没说话，没什么可译的，也没什么可提示的。

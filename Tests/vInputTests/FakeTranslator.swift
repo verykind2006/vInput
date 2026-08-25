@@ -75,7 +75,7 @@ actor FakeTranslator: Translator {
         if let prepareError { throw prepareError }
     }
 
-    func translate(_ text: String, to target: TranslationTarget) async throws -> String {
+    func translate(_ text: String, to target: Language) async throws -> String {
         callCount += 1
         receivedTexts.append(text)
         await log?.record("translate")

@@ -298,7 +298,7 @@ struct AppModelWiringTests {
     func selectingOutputLanguageWarnsWhenModelMissing() throws {
         let body = try Self.memberBody(
             try Self.appModelSource(),
-            startingAt: "func selectOutputLanguage(_ target: TranslationTarget) {")
+            startingAt: "func selectOutputLanguage(_ target: Language) {")
         #expect(
             body.contains("if translationModelMissing"),
             """

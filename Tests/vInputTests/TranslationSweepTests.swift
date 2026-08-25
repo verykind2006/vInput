@@ -9,7 +9,7 @@ import Testing
 /// 只服务于扫描装置，不进生产目标。
 struct TranslationSweepConfig {
     let modelDirectory: URL
-    let targets: [TranslationTarget]
+    let targets: [Language]
     /// 每种语言只跑基准集的前几条。nil＝全跑。
     ///
     /// 26 条 × 6 种语言 = 156 次推理，一轮几十分钟。没有限流手段就没法先花
@@ -49,7 +49,7 @@ struct TranslationSweepConfig {
         // 未知语言码跳过而不是让整份配置作废：脚本传错一个字母不该让其余
         // 五种语言白跑。一个都不认识则作废——「零种语言」跑出来的报告只有
         // 表头，和「跑完了但全都没问题」长得太像。
-        let targets = raw.targets.compactMap(TranslationTarget.init(rawValue:))
+        let targets = raw.targets.compactMap(Language.init(rawValue:))
         guard !targets.isEmpty else { return nil }
 
         // **变体的处理与语言相反：认不出来就整份作废。** 退回默认值会写出
@@ -361,7 +361,7 @@ struct TranslationSweepTests {
         let entry: BenchEntry
         /// 数词按值比对要查目标语言的倍词表（billion 在英德两语差三个
         /// 数量级），所以 Row 必须知道自己是哪种语言的。
-        let target: TranslationTarget
+        let target: Language
         let output: String
         let elapsed: TimeInterval
         let error: String?
@@ -567,7 +567,7 @@ struct TranslationSweepTests {
 
     // MARK: - 汇总
 
-    private static func summarize(target: TranslationTarget, rows: [Row]) -> [String] {
+    private static func summarize(target: Language, rows: [Row]) -> [String] {
         let ok = rows.filter { $0.error == nil }
         guard !ok.isEmpty else {
             return ["【\(target.displayName)】\(rows.count) 条全部失败，无可汇总的数据"]

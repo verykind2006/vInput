@@ -48,7 +48,7 @@ protocol Translator: Sendable {
     ///
     /// 未就绪时应立即抛 `.modelNotReady`，而不是就地加载模型——
     /// 同上，注入路径不等加载。
-    func translate(_ text: String, to target: TranslationTarget) async throws -> String
+    func translate(_ text: String, to target: Language) async throws -> String
 }
 
 extension Translator {

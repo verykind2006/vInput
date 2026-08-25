@@ -55,7 +55,7 @@ struct GeminiE2ETests {
     }
 
     private func translate(
-        _ source: String, to target: TranslationTarget, label: String
+        _ source: String, to target: Language, label: String
     ) async -> TranslationResult {
         // **闸门与超时都用默认值。** 两个数各自有实测支撑且各自有测试守着，
         // 在这里硬写等于绕过那两道守卫，而且不会有人发现。

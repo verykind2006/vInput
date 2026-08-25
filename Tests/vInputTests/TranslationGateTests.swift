@@ -186,7 +186,7 @@ struct TranslationGateTests {
     @Test("非拉丁字母目标直接放行")
     func nonLatinTargetPasses() {
         // 元断言：闸门靠这个属性分流，它要是 true，下面那条 pass 就没有意义了。
-        #expect(TranslationTarget.chinese.usesLatinScript == false)
+        #expect(Language.chinese.usesLatinScript == false)
         // 一段汉字、中文标点、没句末标点、长度比 1.0 —— 四条判据全踩，仍须放行。
         #expect(
             gate.check(source: "今天开会，三点", translation: "今天开会，三点", target: .chinese)
@@ -206,7 +206,7 @@ struct TranslationGateTests {
     /// 去看闸门用的是哪一个——那一天两者的差别才开始要命。
     @Test("两个属性今天还等价——它们分家那天，回来看闸门用的是哪一个")
     func latinScriptAndRequiresTranslationStillAgree() {
-        for target in TranslationTarget.allCases {
+        for target in Language.allCases {
             #expect(
                 target.usesLatinScript == target.requiresTranslation,
                 "\(target.rawValue) 上两个属性分家了：请回去确认 TranslationGate.check 的分流依据仍然是 usesLatinScript")
@@ -215,7 +215,7 @@ struct TranslationGateTests {
 
     @Test("六种拉丁字母语言的判据一致")
     func allLatinTargetsShareTheSameCriteria() {
-        let latin = TranslationTarget.allCases.filter(\.usesLatinScript)
+        let latin = Language.allCases.filter(\.usesLatinScript)
         #expect(latin.count == 6, "少了语言的话下面的循环会静默地什么都不验")
 
         for target in latin {

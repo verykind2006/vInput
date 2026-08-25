@@ -167,7 +167,7 @@ struct TranslatedNumbersTests {
     /// 读出 4e10，判据才能发现它不等于 4e9。
     @Test("数字 + 倍词的各种形态")
     func multiplierForms() {
-        func has(_ v: Double, _ text: String, _ t: TranslationTarget) -> Bool {
+        func has(_ v: Double, _ text: String, _ t: Language) -> Bool {
             TranslatedNumbers.matches(v, anyOf: TranslatedNumbers.candidateValues(in: text, target: t))
         }
         #expect(has(4e9, "a 4 billion parameter model", .english))
@@ -195,7 +195,7 @@ struct TranslatedNumbersTests {
     /// 候选值，判据宽得没有意义。
     @Test("系数词 + 倍词（acht Millionen）")
     func spelledOutCoefficients() {
-        func has(_ v: Double, _ text: String, _ t: TranslationTarget) -> Bool {
+        func has(_ v: Double, _ text: String, _ t: Language) -> Bool {
             TranslatedNumbers.matches(v, anyOf: TranslatedNumbers.candidateValues(in: text, target: t))
         }
         #expect(has(8e6, "der tägliche Nutzerverkehr beträgt etwa acht Millionen", .german))

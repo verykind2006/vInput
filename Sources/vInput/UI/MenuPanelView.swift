@@ -527,11 +527,11 @@ struct MenuPanelView: View {
     ///
     /// 六种拉丁字母语种全列（用户 2026-08-19 的决定），但**每一项都带实测
     /// 质量**——第 0 步实测英文术语保留 1.00、西语 0.92、德语 0.89，葡/法/意
-    /// 没测过。文案由 `TranslationTarget.menuLabel` 算出，不在视图里拼：
+    /// 没测过。文案由 `Language.menuLabel` 算出，不在视图里拼：
     /// 拼在这里就没有任何测试守得住它（与 `HUDViewModel` 同一条分工）。
     @ViewBuilder
     private var outputLanguageSection: some View {
-        ForEach(TranslationTarget.allCases, id: \.rawValue) { target in
+        ForEach(Language.allCases, id: \.rawValue) { target in
             expandedButton(target.menuLabel, checked: target == model.outputLanguage) {
                 model.selectOutputLanguage(target)
             }

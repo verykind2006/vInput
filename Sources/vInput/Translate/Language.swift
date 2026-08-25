@@ -8,7 +8,7 @@ import Foundation
 /// 无从判断它是不是把「报价三百」翻成了「报价三千」。而这个工具会把文字
 /// **直接注进用户即将发出的窗口**。拉丁字母语种则相反：混语、漏译、
 /// 残留汉字肉眼可见。
-enum TranslationTarget: String, CaseIterable, Sendable, Equatable {
+enum Language: String, CaseIterable, Sendable, Equatable {
     /// 不翻译，保持转写原样。
     case chinese = "zh"
     case english = "en"
@@ -78,7 +78,7 @@ enum TranslationTarget: String, CaseIterable, Sendable, Equatable {
 ///
 /// 用户 2026-08-19 的决定是「六种全上，但要标出差异」，理由是让用户自己
 /// 判断什么场合用哪种。做成带值的枚举而不是一句写死的说明文字，是为了让
-/// 「加一种语言却没给它定级」被机械地抓到：`TranslationTarget.quality`
+/// 「加一种语言却没给它定级」被机械地抓到：`Language.quality`
 /// 是**穷尽 switch**，加一格编译不过。
 ///
 /// # 数字取的是「忽略大小写」那一版，这一点不是随便选的
@@ -121,7 +121,7 @@ enum TranslationQuality: Equatable, Sendable {
     case unmeasured
 }
 
-extension TranslationTarget {
+extension Language {
     /// 实测质量。**六种全部测过了**——2026-08-19 的六语对照
     /// （26 条 × 6 种 = 156 次推理，零失败、零残留汉字、零截断）。
     ///

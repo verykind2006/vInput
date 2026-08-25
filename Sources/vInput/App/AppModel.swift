@@ -56,7 +56,7 @@ final class AppModel {
     /// 真实存储在 UserDefaults（需跨启动保留），这里是它的可观察镜像：
     /// @Observable 只跟踪自身的存储属性，若菜单直接读 UserDefaults，
     /// 点完标题不会刷新（与 `correctionEnabled` 同一个坑）。
-    private(set) var outputLanguage: TranslationTarget = .chinese
+    private(set) var outputLanguage: Language = .chinese
 
     /// 选了外语，却一个可用的翻译模型目录都没有。
     ///
@@ -1238,7 +1238,7 @@ final class AppModel {
     /// 给了「永远为真」的默认值，新出现的调用点会静默绕过校验，而那正是本
     /// 缺陷的形状。
     nonisolated static func translationAttachment(
-        target: TranslationTarget,
+        target: Language,
         usesCloudBackend: Bool,
         translationModelDirectory: URL?,
         correctionModelDirectory: URL?,
@@ -1267,7 +1267,7 @@ final class AppModel {
     /// 缺目录时带后缀，因为那时选中的语言**根本没生效**，而标题只写语言名
     /// 的话它恰好在骗人——用户看到「输出语言：西班牙文」，得到的却是中文。
     nonisolated static func outputLanguageMenuTitle(
-        target: TranslationTarget,
+        target: Language,
         modelMissing: Bool
     ) -> String {
         let title = "输出语言：\(target.displayName)"
@@ -1377,10 +1377,10 @@ final class AppModel {
     /// 子菜单里的说明行。**每一格都要把「现在到底会发生什么」说完。**
     ///
     /// 做成一个纯函数而不是拼在 SwiftUI 视图里：拼在视图里就没有任何测试
-    /// 守得住它（与 `TranslationTarget.menuLabel`、`HUDViewModel` 同一条分工）。
+    /// 守得住它（与 `Language.menuLabel`、`HUDViewModel` 同一条分工）。
     nonisolated static func translationBackendDetailLines(
         status: TranslationBackendStatus,
-        target: TranslationTarget
+        target: Language
     ) -> [String] {
         switch status {
         case .local:
@@ -1673,7 +1673,7 @@ final class AppModel {
     }
 
     /// 切换输出语言。改动立即生效并跨启动保留。
-    func selectOutputLanguage(_ target: TranslationTarget) {
+    func selectOutputLanguage(_ target: Language) {
         translationPreference.outputLanguage = target
         applyTranslationPreference()
         // 菜单标题上的后缀是常驻提示，但用户刚点完菜单、菜单当场就关了，

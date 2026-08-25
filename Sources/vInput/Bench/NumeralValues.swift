@@ -353,7 +353,7 @@ enum ChineseNumerals {
 ///
 /// 「billion」在英文是 10⁹，在德文（Billion）是 10¹²；西语 billón 也是
 /// 10¹²。合成一张表就得二选一，选哪边都会把另一边的正确译文记成丢失、
-/// 或把差三个数量级的错译记成保住。表由 `TranslationTarget` 索引，
+/// 或把差三个数量级的错译记成保住。表由 `Language` 索引，
 /// 加语种忘了配表是编译错误（穷尽 switch，无 default）。
 ///
 /// # 候选是集合，比较带相对容差
@@ -367,7 +367,7 @@ enum TranslatedNumbers {
     /// 每语言的倍词 → 倍数。全部小写；带音标符的给出带与不带两个拼法
     /// （模型输出偶尔丢音标符）。缩写（Mio./Mrd.）刻意不收：
     /// 听写译文是行文不是表格，收了反而要处理「mio 是不是人名缩写」。
-    static func multiplierTable(for target: TranslationTarget) -> [String: Double] {
+    static func multiplierTable(for target: Language) -> [String: Double] {
         switch target {
         case .chinese:
             return [:]  // 不翻译，永远用不到
@@ -420,7 +420,7 @@ enum TranslatedNumbers {
     /// seiscientos mil 的 seiscientos）刻意不做——那要背六种语言的组合
     /// 语法，错一条就是新的误报源。没认出来的后果有界：至多把「保住」
     /// 记成「丢失」，报告里译文就在旁边，人过一眼即知。
-    static func smallWordTable(for target: TranslationTarget) -> [String: Double] {
+    static func smallWordTable(for target: Language) -> [String: Double] {
         switch target {
         case .chinese:
             return [:]
@@ -495,7 +495,7 @@ enum TranslatedNumbers {
     /// （`acht Millionen`），见 `smallWordTable`；**必须带倍词才算数**——
     /// 光一个 `eight` 不产生候选，否则译文里每个小词都会变成候选值，
     /// 判据就宽得没有意义了。
-    static func candidateValues(in text: String, target: TranslationTarget) -> [Double] {
+    static func candidateValues(in text: String, target: Language) -> [Double] {
         let table = multiplierTable(for: target)
         let smallWords = smallWordTable(for: target)
         var out: [Double] = []

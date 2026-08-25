@@ -77,7 +77,7 @@ struct TranslationKeyTests {
     /// `security add-generic-password -a vInput -s vinput-gemini-api-key -w`，
     /// 改了这个常量等于让每个人已经存好的 key 凭空消失，而程序说的是
     /// 「没配 API key」——用户会照着提示再存一遍，还是读不到。
-    /// 与 `TranslationTarget` 的 rawValue 同一条理由。
+    /// 与 `Language` 的 rawValue 同一条理由。
     @Test("服务名稳定")
     func serviceNameIsStable() {
         #expect(TranslationKey.geminiService == "vinput-gemini-api-key")

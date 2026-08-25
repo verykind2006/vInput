@@ -11,7 +11,7 @@ import Foundation
 @MainActor
 protocol TranslationAttachTarget: AnyObject {
     var state: DictationSession.State { get }
-    func attachTranslation(_ pipeline: TranslationPipeline?, target: TranslationTarget)
+    func attachTranslation(_ pipeline: TranslationPipeline?, target: Language)
 }
 
 extension DictationSession: TranslationAttachTarget {}
@@ -55,7 +55,7 @@ final class TranslationAttachmentCoordinator {
     /// 「每次 apply 都重新读一遍偏好」这件事有个明确的形状——补挂那次必须
     /// 读**当时**的偏好，而不是第一次被拒时的那份快照。
     struct Inputs: Equatable {
-        var target: TranslationTarget
+        var target: Language
         var usesCloudBackend: Bool
         var translationModelDirectory: URL?
         var correctionModelDirectory: URL?
@@ -96,7 +96,7 @@ final class TranslationAttachmentCoordinator {
     private(set) var pipeline: TranslationPipeline?
 
     /// 最近一次 `apply()` 读到的输出语言。`AppModel` 的可观察镜像从这里取。
-    private(set) var target: TranslationTarget = .chinese
+    private(set) var target: Language = .chinese
 
     /// 选了外语却一个可用的模型目录都没有。同上，供菜单后缀与 HUD 用。
     private(set) var modelMissing = false

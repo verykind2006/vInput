@@ -136,7 +136,7 @@ private struct StubTranslator: Translator {
 
     func prepare() async throws {}
 
-    func translate(_ text: String, to target: TranslationTarget) async throws -> String {
+    func translate(_ text: String, to target: Language) async throws -> String {
         if shouldFail { throw TranslatorError.modelNotReady }
         return "\(target.englishName): \(text)"
     }
