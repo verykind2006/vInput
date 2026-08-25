@@ -104,9 +104,10 @@ struct TranslationPromptTests {
     /// 特殊规则），正文一漂移，Task 3 那套对照就分不清差异来自语言名还是
     /// 来自正文。锚定 `.chinese` 再逐一比对，传递性上等价于两两比对。
     ///
-    /// 目标固定挑 `.spanish` 与源语言名不撞车的场合最多；`Spanish` 自己做
-    /// 源时（源=目标的废话形态）替换会把两个位置一起换掉，恰好也等于真实
-    /// 输出，不用单独排除。`prompt != baseline` 同款不是凑数的：忽略
+    /// 固定目标挑哪个都恰与一个源撞车（它自己），`.spanish` 不特殊。
+    /// `Spanish` 自己做源时（源=目标的废话形态），替换只换源位那一处
+    /// `Chinese`，结果两个位置都是 Spanish——恰好等于真实输出，
+    /// 不用单独排除。`prompt != baseline` 同款不是凑数的：忽略
     /// `source` 参数的实现会让替换空转、比对恒真。
     @Test("不同源语言的提示词只差源语言名")
     func sourcesDifferOnlyBySourceLanguageName() {

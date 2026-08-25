@@ -29,10 +29,10 @@ enum TranslationPrompt {
         /// 对照用：`西班牙文`、`德文`。
         case chineseLanguageName = "chinese-language-name"
 
-        func languageName(for target: Language) -> String {
+        func languageName(for language: Language) -> String {
             switch self {
-            case .englishLanguageName: return target.englishName
-            case .chineseLanguageName: return target.displayName
+            case .englishLanguageName: return language.englishName
+            case .chineseLanguageName: return language.displayName
             }
         }
     }

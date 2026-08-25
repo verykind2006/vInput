@@ -26,7 +26,7 @@ enum TranslatorError: Error, Equatable {
     case locationNotSupported
 }
 
-/// 把中文转写译成目标语言。
+/// 把 `source` 语言的转写译成目标语言。
 ///
 /// **实现只负责产出译文，不负责判断译文是否可用**——那是
 /// `TranslationGate` 的职责，且它位于本 protocol 之外，
