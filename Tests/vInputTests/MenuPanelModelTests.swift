@@ -141,6 +141,14 @@ struct MenuPanelModelTests {
                 == "不可用（非中文输入）")
     }
 
+    /// 「不翻译」那一格的括号里写的是**当前输入语言**——「保持中文原样」
+    /// 和「保持英文原样」是两句不同的承诺，写死一个就会在另一种输入下撒谎。
+    @Test func noTranslationLabelNamesTheInputLanguage() {
+        #expect(MenuPanelModel.noTranslationLabel(input: .chinese) == "不翻译（保持中文原样）")
+        #expect(MenuPanelModel.noTranslationLabel(input: .english) == "不翻译（保持英文原样）")
+        #expect(MenuPanelModel.noTranslationLabel(input: .spanish) == "不翻译（保持西班牙文原样）")
+    }
+
     /// 校正模型那一行。未指定时**不许**说成「默认（首次使用时下载）」：
     /// 开启校正现在必须先有一个本地合法目录，那句话会让人以为不选也能用。
     @Test func correctionModelLineTellsWhenUnset() {

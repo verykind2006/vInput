@@ -13,7 +13,7 @@
 # 给了它才多跑一段：每条转写输出再译一遍，逐条打印残留汉字 / 术语保留 /
 # 数字丢失 / 长度比，报告尾部给汇总。
 #
-# 语言码不在这里校验，**故意的**：可用语言在 TranslationTarget 里，脚本里
+# 语言码不在这里校验，**故意的**：可用语言在 Language 里，脚本里
 # 抄一份迟早对不上（同 scripts/default-model.sh 不抄 ModelPreference 的理由）。
 # 认不出来的语言码由 BenchTranslationSection.make 在跑转写**之前**抛掉。
 #

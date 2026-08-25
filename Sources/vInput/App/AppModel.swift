@@ -1432,7 +1432,7 @@ final class AppModel {
     /// 子菜单里的说明行。**每一格都要把「现在到底会发生什么」说完。**
     ///
     /// 做成一个纯函数而不是拼在 SwiftUI 视图里：拼在视图里就没有任何测试
-    /// 守得住它（与 `Language.menuLabel`、`HUDViewModel` 同一条分工）。
+    /// 守得住它（与 `Language.menuLabel(from:)`、`HUDViewModel` 同一条分工）。
     nonisolated static func translationBackendDetailLines(
         status: TranslationBackendStatus,
         target: Language

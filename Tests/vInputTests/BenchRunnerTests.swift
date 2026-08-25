@@ -386,7 +386,7 @@ final class BenchTranslationSection {
         guard let target = Language(rawValue: code) else {
             throw Failure.unknownLanguage(code)
         }
-        guard target.requiresTranslation else { throw Failure.chineseIsNotTranslation }
+        guard target != .chinese else { throw Failure.chineseIsNotTranslation }
         guard let folder = config.translationModelFolder else { throw Failure.missingModelFolder }
         var isDirectory: ObjCBool = false
         guard

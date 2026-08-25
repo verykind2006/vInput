@@ -17,8 +17,9 @@ import SwiftUI
 /// 丢失而全仓测试一条没红（`1a0989b` 才补回来）——两句话的文案留在视图里，
 /// 没有任何东西守得住它。
 ///
-/// **不随状态变的固定标签仍然写在这里**，约二十处：设置四行的行标题
-/// （「模型」「校正」「输出语言」「翻译后端」「开发工具」）、头部的
+/// **不随状态变的固定标签仍然写在这里**，约二十处：设置六行的行标题
+/// （「模型」「校正」「输入语言」「输出语言」「翻译后端」「高级」，
+/// 另有门控才出现的「开发工具」）、头部的
 /// 「vInput」、卡片标题「上次转写」、快捷键徽章「⌥D」，以及一批一次性的
 /// 按钮字面量（「其他目录…」「指定校正模型…」「指定模型…」「改回跟随校正
 /// 模型」「选择模型」「自定义…」「删除 API Key」「重新检查 API Key」
@@ -31,7 +32,7 @@ import SwiftUI
 /// 读到那句话的恰恰是手上一个模型都没有的新用户。现在它是
 /// `MenuPanelModel.emptyModelListLine`，由测试钉着。
 ///
-/// 设置四行的行标题是旧菜单标题里那半截前缀搬了个位置——值那侧因此去掉
+/// 设置行的行标题是旧菜单标题里那半截前缀搬了个位置——值那侧因此去掉
 /// 重复的前缀，见 `stripPrefix`。
 struct MenuPanelView: View {
     let model: AppModel
@@ -572,7 +573,7 @@ struct MenuPanelView: View {
     @ViewBuilder
     private var outputLanguageSection: some View {
         expandedButton(
-            "不翻译（保持\(model.inputLanguage.displayName)原样）",
+            MenuPanelModel.noTranslationLabel(input: model.inputLanguage),
             checked: model.translationChoice == .off
         ) { model.selectTranslationChoice(.off) }
         // 与输入相同的语种不列——选它等于不翻译，上面那格已经是它。

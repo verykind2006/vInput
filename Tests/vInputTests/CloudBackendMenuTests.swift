@@ -149,7 +149,7 @@ struct CloudBackendMenuTests {
     /// 六种外语一视同仁——没有哪一种会因为「实测过 / 没实测过」而走别的分支。
     @Test("每种外语在云端开着时的状态都一样")
     func everyForeignLanguageBehavesTheSame() {
-        for target in Language.allCases where target.requiresTranslation {
+        for target in Language.allCases where target != .chinese {
             let withKey = Cell(
                 input: .chinese, choice: .translate(to: target), cloud: true, hasKey: true,
                 directory: Self.correctionDirectory, expected: .cloudActive, why: "")

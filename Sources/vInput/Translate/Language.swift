@@ -21,13 +21,10 @@ enum Language: String, CaseIterable, Sendable, Equatable {
     case french = "fr"
     case italian = "it"
 
-    /// 选中它是否意味着要走翻译流水线。
-    var requiresTranslation: Bool { self != .chinese }
-
     /// 是否是拉丁字母书写系统。
     ///
-    /// **显式列举而不是 `requiresTranslation` 的别名。** 写成别名的话这个
-    /// 属性是同义反复，「所有可翻译语种都是拉丁字母」这条断言定义上必然
+    /// **显式列举而不是 `self != .chinese` 的简写。** 写成简写的话这个
+    /// 属性是同义反复，「所有非中文语种都是拉丁字母」这条断言定义上必然
     /// 成立、检查不到任何东西——而将来加日语时，只要有人顺手把测试里的
     /// `count == 6` 改成 7，日语就会被静默标成拉丁字母语种。
     ///

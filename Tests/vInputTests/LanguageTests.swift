@@ -5,20 +5,13 @@ import Testing
 
 @Suite("目标语言")
 struct LanguageTests {
-    /// 中文是「不翻译」，必须能表达，否则菜单栏没法回到原状态。
-    @Test("中文表示不翻译")
-    func chineseMeansNoTranslation() {
-        #expect(Language.chinese.requiresTranslation == false)
-        #expect(Language.english.requiresTranslation == true)
-    }
-
     /// 本轮只做拉丁字母语种——闸门「译文里不该有汉字」对日语完全失效
     /// （日文本来就用汉字），而日韩两种语言用户与实现方都读不了，
     /// 无从判断「报价三百」有没有被翻成「报价三千」。见 spec 第一节。
     @Test("本轮只有拉丁字母语种")
     func onlyLatinScriptForNow() {
-        // 逐个点名而不是遍历——遍历 requiresTranslation 的集合来断言
-        // usesLatinScript，在两者实现相同时是同义反复，检查不到东西。
+        // 逐个点名而不是遍历——用 `filter(\.usesLatinScript)` 的集合来断言
+        // usesLatinScript，是同义反复，检查不到东西。
         #expect(Language.chinese.usesLatinScript == false)
         #expect(Language.english.usesLatinScript)
         #expect(Language.spanish.usesLatinScript)
@@ -27,7 +20,7 @@ struct LanguageTests {
         #expect(Language.french.usesLatinScript)
         #expect(Language.italian.usesLatinScript)
         // 本轮的范围闸门：加语言时这条会先红，逼人回来想清楚闸门还成不成立。
-        #expect(Language.allCases.filter(\.requiresTranslation).count == 6)
+        #expect(Language.allCases.filter { $0 != .chinese }.count == 6)
     }
 
     /// englishName 直接插进 prompt（见 TranslationPrompt）。写错就是让模型

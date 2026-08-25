@@ -108,6 +108,14 @@ enum MenuPanelModel {
         return enabled ? "开" : "关"
     }
 
+    /// 输出语言区「不翻译」那一格的文案。括号里写**当前输入语言**——
+    /// 「保持中文原样」和「保持英文原样」是两句不同的承诺，写死一个就会
+    /// 在另一种输入下撒谎。随状态变的文案不在视图里拼（与本文件其余
+    /// 纯函数同一条分工），拼在视图里就没有任何测试守得住它。
+    nonisolated static func noTranslationLabel(input: Language) -> String {
+        "不翻译（保持\(input.displayName)原样）"
+    }
+
     /// 校正模型那一行。
     ///
     /// 让用户知道当前用的是哪个模型——校正效果好坏几乎全由它决定。

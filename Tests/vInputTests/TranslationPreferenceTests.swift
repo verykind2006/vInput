@@ -149,7 +149,7 @@ struct TranslationAttachmentTests {
         )
         // 六种外语一格不漏地反过来验一次：语言是外语时云端开关**必须**被读到。
         // 只测中文那一格的话，「顺序对调」在外语侧不会被发现。
-        for target in Language.allCases where target.requiresTranslation {
+        for target in Language.allCases where target != .chinese {
             #expect(
                 attachment(effectiveTarget: target, cloud: true, correctionDirectory: correctionDir)
                     == .cloud,
@@ -216,7 +216,7 @@ struct TranslationAttachmentTests {
     /// `.unconfigured` 要记日志、要点亮菜单后缀、要弹 HUD。
     @Test("两个目录都没配时不许静默")
     func unconfiguredIsNotSilent() {
-        for target in Language.allCases where target.requiresTranslation {
+        for target in Language.allCases where target != .chinese {
             #expect(
                 attachment(effectiveTarget: target) == .unconfigured,
                 "\(target.rawValue) 缺目录时被静默摘掉了"
@@ -386,7 +386,7 @@ struct TranslationQualityTests {
     /// 更低而没有新的实测支撑，它就会红。
     @Test("六种都在可用区间内")
     func allSixAreUsable() {
-        for target in Language.allCases where target.requiresTranslation {
+        for target in Language.allCases where target != .chinese {
             guard case .measured(let retention) = target.quality(from: .chinese) else {
                 Issue.record("\(target.rawValue) 还没有实测数据")
                 continue
@@ -400,7 +400,7 @@ struct TranslationQualityTests {
     func chineseIsNotApplicable() {
         #expect(Language.chinese.quality(from: .chinese) == .notApplicable)
         // 反过来钉住：任何需要翻译的语言都不该是 notApplicable。
-        for target in Language.allCases where target.requiresTranslation {
+        for target in Language.allCases where target != .chinese {
             #expect(
                 target.quality(from: .chinese) != .notApplicable,
                 "\(target.rawValue) 要翻译，却被标成「无所谓质量」"

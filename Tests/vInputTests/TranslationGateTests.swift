@@ -195,26 +195,6 @@ struct TranslationGateTests {
                 == .pass)
     }
 
-    /// **今天这条断言恒真，而这正是它存在的理由——不假装它抓到了什么。**
-    ///
-    /// 闸门用 `usesLatinScript` 分流而不是 `requiresTranslation`，理由写在
-    /// `check` 里。但两个属性今天在全部 7 个 case 上取值相同，也就是说
-    /// 「把闸门里的 `usesLatinScript` 换成 `requiresTranslation`」这个变异
-    /// **现在没有任何用例抓得到**（M8 Task 1 那条循环断言正是同款形态，
-    /// 这里不重复那个错误）。
-    ///
-    /// 这条用例是根绊线：将来加日语（`usesLatinScript` = false、
-    /// `requiresTranslation` = true）时它会变红，读到这段注释的人才会想起
-    /// 去看闸门用的是哪一个——那一天两者的差别才开始要命。
-    @Test("两个属性今天还等价——它们分家那天，回来看闸门用的是哪一个")
-    func latinScriptAndRequiresTranslationStillAgree() {
-        for target in Language.allCases {
-            #expect(
-                target.usesLatinScript == target.requiresTranslation,
-                "\(target.rawValue) 上两个属性分家了：请回去确认 TranslationGate.check 的分流依据仍然是 usesLatinScript")
-        }
-    }
-
     @Test("六种拉丁字母语言的判据一致")
     func allLatinTargetsShareTheSameCriteria() {
         let latin = Language.allCases.filter(\.usesLatinScript)
