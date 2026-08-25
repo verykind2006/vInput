@@ -1347,8 +1347,9 @@ final class AppModel {
     enum TranslationBackendStatus: Equatable {
         /// 云端关。要不要翻译由输出语言决定，但**无论翻不翻，都在本机跑**。
         case local
-        /// 云端开着，但输出语言是中文＝不翻译，因此仍然零出站。
-        case cloudIdleBecauseChinese
+        /// 云端开着，但没有有效翻译目标（不翻译，或目标==输入）＝不翻译，
+        /// 因此仍然零出站。
+        case cloudIdleBecauseNoTarget
         /// 云端开 + 外语，但 Keychain 里没有 API key：每次听写退回中文原文。
         ///
         /// **不出站**：`GeminiTranslator` 读不到 key 就抛，请求根本不发
@@ -1390,9 +1391,9 @@ final class AppModel {
         hasAPIKey: Bool
     ) -> TranslationBackendStatus {
         guard attachment == .cloud else {
-            // 走不到云端却开着云端开关，只可能是「输出语言是中文」——
-            // 外语无论有没有本地模型目录都会落到 `.cloud`。
-            return usesCloudBackend ? .cloudIdleBecauseChinese : .local
+            // 走不到云端却开着云端开关，只可能是「没有有效翻译目标」——
+            // 有目标时无论有没有本地模型目录都会落到 `.cloud`。
+            return usesCloudBackend ? .cloudIdleBecauseNoTarget : .local
         }
         return hasAPIKey ? .cloudActive : .cloudMissingKey
     }
@@ -1407,8 +1408,8 @@ final class AppModel {
         switch status {
         case .local:
             "翻译后端：本机（文字不出这台电脑）"
-        case .cloudIdleBecauseChinese:
-            "翻译后端：云端 Google（当前输出中文，未出站）"
+        case .cloudIdleBecauseNoTarget:
+            "翻译后端：云端 Google（当前无翻译目标，未出站）"
         case .cloudMissingKey:
             "翻译后端：云端 Google（缺 API key，未生效）"
         case .cloudActive:
@@ -1442,11 +1443,11 @@ final class AppModel {
                 "翻译在本机跑，说的话不出这台电脑。",
                 "「输出语言」决定译成什么，这里决定谁来译——两件事。",
             ]
-        case .cloudIdleBecauseChinese:
+        case .cloudIdleBecauseNoTarget:
             [
                 // **这一格是用户最容易误解的**：开着开关不等于正在往外发。
-                "云端开着，但输出语言是「中文」＝不翻译：现在一个字节都不会离开本机。",
-                "把输出语言换成外语之后，每句话才会发到 Google。",
+                "云端开着，但当前没有有效翻译目标（不翻译，或目标与输入相同）：一个字节都不会离开本机。",
+                "选一个不同于输入语言的目标之后，每句话才会发到 Google。",
             ]
         case .cloudMissingKey:
             [
@@ -1760,8 +1761,11 @@ final class AppModel {
     /// 与 `correctionApplyPending` 同一个模式。
     private var inputLanguageRebuildPending = false
 
-    /// 输入语言变了就重建转写器（语言是构造参数）。会话忙时记账，
-    /// 回到 idle 补做——与校正/翻译/模型换用三条补挂同一个模式。
+    /// 输入语言变了就重建转写器（语言是构造参数）。忙时记账，闲下来补做
+    /// ——与校正/翻译/模型换用三条补挂同一个模式，但偿还点有**两处**：
+    /// `canSwitchModel` 除会话状态外还含 `loadingModelName == nil` 这个
+    /// 非会话条件，只挂在 .idle 分支的话，「加载途中切语言」记的账没有
+    /// 任何会话事件来偿还——两个加载 Task 的末尾各自再补一次。
     private func rebuildTranscriberForInputLanguage() {
         guard let transcriber else {
             inputLanguageRebuildPending = true
@@ -1769,7 +1773,9 @@ final class AppModel {
         }
         guard canSwitchModel else {
             inputLanguageRebuildPending = true
-            AppLogger.shared.log("输入语言本次会话不生效（会话进行中），会话结束后重建转写器")
+            // 挡路的可能是会话（录音/转写中），也可能是正在飞的模型加载
+            // ——两种成因都要说到，只说「会话进行中」在后一种情形下是错话。
+            AppLogger.shared.log("输入语言暂不生效（正在加载模型或会话进行中），空闲后自动重建转写器")
             return
         }
         inputLanguageRebuildPending = false
@@ -1782,10 +1788,20 @@ final class AppModel {
                 AppLogger.shared.log("转写器已按输入语言重建")
             } catch {
                 // 失败时旧转写器仍可用（rebuild 的保证），只是语言还是旧的
-                // ——必须说出来，不然用户以为已经切过去了。
+                // ——必须说出来，不然用户以为已经切过去了。可见性对齐
+                // selectModel 的失败路：日志之外还要写 modelLoadFailure
+                // （向导第五步读它）并置 phase（菜单栏图标转红字）——
+                // 「菜单显示新语言、引擎还在旧语言」正是本仓最忌讳的静默骗人。
                 AppLogger.shared.log("按输入语言重建转写器失败，转写仍用旧语言：\(error)")
+                let message = "按输入语言重建转写器失败：\(error)"
+                self?.modelLoadFailure = message
+                self?.phase = .error(message)
             }
             self?.loadingModelName = nil
+            // 重建途中又换了一次输入语言：那次被 canSwitchModel 挡下记了账，
+            // 而 loadingModelName 不是会话状态、清掉时没有会话事件跟来——
+            // 只能在这里自己补做。
+            if self?.inputLanguageRebuildPending == true { self?.rebuildTranscriberForInputLanguage() }
         }
     }
 
@@ -1871,6 +1887,10 @@ final class AppModel {
             // 无论成败都必须解除加载态，否则 toggle() 会被永久挡住。
             self?.loadingModelName = nil
             log.log("加载态已解除，当前模型 \(self?.activeModelName ?? "?")")
+            // 换模型途中切了输入语言时在此补做：记账那一刻 canSwitchModel
+            // 因 loadingModelName 非空而为 false，而这不是会话条件，
+            // .idle 分支等不到偿还事件。
+            if self?.inputLanguageRebuildPending == true { self?.rebuildTranscriberForInputLanguage() }
         }
     }
 

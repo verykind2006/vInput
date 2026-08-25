@@ -793,11 +793,13 @@ struct AppModelWiringTests {
     @Test("会话回到 idle 时补做被推迟的输入语言重建")
     func idleBranchRepaysPendingInputLanguageRebuild() throws {
         let body = try Self.idleCaseBody()
+        // 断言的是**调用**在分支里，不是记账变量的名字——只查名字的话，
+        // `if pending { }` 这种空 if 体照样绿（正是「看着在检查其实什么都
+        // 没检查」的形状）。
         #expect(
-            body.contains("rebuildTranscriberForInputLanguage")
-                || body.contains("inputLanguageRebuildPending"),
+            body.contains("rebuildTranscriberForInputLanguage()"),
             """
-            onStateChange 的 .idle 分支里没有输入语言重建的补做。
+            onStateChange 的 .idle 分支里没有 rebuildTranscriberForInputLanguage() 调用。
             录音途中换的输入语言会被 canSwitchModel 挡下（挡是对的），
             但此后再也没有人重试——转写永远停在旧语言。
             """
@@ -822,14 +824,58 @@ struct AppModelWiringTests {
 
     /// 旧键 `translation.outputLanguage` 的 "zh" 含义是「不翻译」，
     /// 迁移写好了却没人调的话，老用户升级后偏好静默丢失。
-    @Test("旧偏好迁移在 init 里接上了")
+    @Test("旧偏好迁移接上了，且排在构造协调器之前")
     func legacyPreferenceMigrationIsWiredAtInit() throws {
-        #expect(
-            try Self.appModelSource().contains("migrateLegacyOutputLanguageIfNeeded()"),
+        let source = try Self.appModelSource()
+        let migration = try #require(
+            source.range(of: "migrateLegacyOutputLanguageIfNeeded()"),
             """
             AppModel 里没有 migrateLegacyOutputLanguageIfNeeded() 的调用。
             迁移函数写好了但没人调等于没写——老用户的输出语言设置会被
             静默丢弃（幸好新键的默认值恰是「不翻译」，但那是运气不是设计）。
+            """
+        )
+        let coordinator = try #require(
+            source.range(of: "TranslationAttachmentCoordinator("),
+            "找不到 TranslationAttachmentCoordinator( 构造，锚点失效了")
+        // 位置断言：协调器构造那一刻读的必须已经是迁移后的新键。
+        // 只查「调用存在」的话，把迁移挪到协调器之后照样绿——那一轮启动
+        // 协调器会按默认值挂载，老用户的偏好等到下次启动才生效。
+        #expect(
+            migration.lowerBound < coordinator.lowerBound,
+            "迁移调用排在了构造协调器之后——协调器第一次 apply() 读到的是没迁移的键。")
+    }
+
+    /// 补做不能只挂在「会话回到 idle」上：`canSwitchModel` 除会话状态外还含
+    /// `loadingModelName == nil` 这个**非会话**条件。切 zh→en 起飞 rebuild
+    /// （prepare 实测 14–125 秒），窗口内再切 en→es 被闸挡下记账；加载结束
+    /// 只清 loadingModelName、没有任何会话事件——.idle 分支永远等不到偿还，
+    /// 菜单 es、引擎 en，下一次听写整段按英文转写。两个加载 Task（重建自身
+    /// 与 selectModel）的末尾必须各自补做一次。
+    @Test("两个加载 Task 的末尾都补做被推迟的输入语言重建")
+    func loadingTasksRepayPendingInputLanguageRebuild() throws {
+        let source = try Self.appModelSource()
+        let repay =
+            "if self?.inputLanguageRebuildPending == true { self?.rebuildTranscriberForInputLanguage() }"
+        let rebuild = try Self.functionBody(
+            named: "rebuildTranscriberForInputLanguage", in: source)
+        #expect(
+            rebuild.contains(repay),
+            """
+            rebuildTranscriberForInputLanguage 的 Task 末尾没有补做。
+            重建途中又换一次语言的那笔账只有这里能偿还——loadingModelName
+            清掉时没有会话事件跟来。
+            """
+        )
+        let select = try Self.functionBody(
+            named: "selectModel(_ model: ModelDescriptor)", in: source)
+        #expect(
+            select.contains(repay),
+            """
+            selectModel 的 Task 末尾没有补做。
+            换模型途中切了输入语言的那笔账在这里偿还：记账那一刻
+            canSwitchModel 因 loadingModelName 非空而为 false，
+            而这不是会话条件，.idle 分支等不到偿还事件。
             """
         )
     }

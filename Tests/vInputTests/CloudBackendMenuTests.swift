@@ -28,8 +28,8 @@ import Testing
 /// | 变异 | 结果 |
 /// |---|---|
 /// | `translationBackendStatus` 不看挂载结论，直接照抄 `usesCloudBackend` | 1 条红：`statusTable` |
-/// | 把 `.cloudIdleBecauseChinese` 与 `.cloudActive` 的标题对调 | 1 条红：`menuTitlesArePinned` |
-/// | `.cloudIdleBecauseChinese` 的说明行删掉「一个字节都不会离开本机」 | 1 条红：`quietStatesSayTheyAreQuiet` |
+/// | 把 `.cloudIdleBecauseNoTarget` 与 `.cloudActive` 的标题对调 | 1 条红：`menuTitlesArePinned` |
+/// | `.cloudIdleBecauseNoTarget` 的说明行删掉「一个字节都不会离开本机」 | 1 条红：`quietStatesSayTheyAreQuiet` |
 /// | `syncTranslationMirrors` 不再喂挂载结论（写死 `.detach`） | 1 条红：`statusComesFromTheAttachmentDecision` |
 /// | `useCloudBackend` 去掉确认直接开 | 1 条红：`enablingRequiresConfirmation` |
 /// | 菜单里加一句 `TranslationKey.read` | 1 条红：`menuNeverReadsKeychain` |
@@ -90,17 +90,17 @@ struct CloudBackendMenuTests {
         Cell(
             input: .chinese, choice: .off, cloud: true, hasKey: true,
             directory: correctionDirectory,
-            expected: .cloudIdleBecauseChinese,
+            expected: .cloudIdleBecauseNoTarget,
             why: "开关开着，但选了不翻译，一个字节都不出站——这一格最容易被显示成「正在往外发」"),
         Cell(
             input: .chinese, choice: .off, cloud: true, hasKey: false,
             directory: correctionDirectory,
-            expected: .cloudIdleBecauseChinese,
+            expected: .cloudIdleBecauseNoTarget,
             why: "不翻译时，有没有 key 都无关紧要，菜单不该去提 key"),
         Cell(
             input: .english, choice: .translate(to: .english), cloud: true, hasKey: true,
             directory: correctionDirectory,
-            expected: .cloudIdleBecauseChinese,
+            expected: .cloudIdleBecauseNoTarget,
             why: "存的目标恰好等于输入语言＝不翻译：云端开着也一个字节都不出站"),
         Cell(
             input: .chinese, choice: .translate(to: .english), cloud: false, hasKey: true,
@@ -166,7 +166,7 @@ struct CloudBackendMenuTests {
     @Test("四格里只有「云端开 + 外语 + 有 key」那格会出站")
     func onlyOneStatusSendsAnything() {
         #expect(AppModel.TranslationBackendStatus.local.sendsTextOffDevice == false)
-        #expect(AppModel.TranslationBackendStatus.cloudIdleBecauseChinese.sendsTextOffDevice == false)
+        #expect(AppModel.TranslationBackendStatus.cloudIdleBecauseNoTarget.sendsTextOffDevice == false)
         // 缺 key 时 GeminiTranslator 在发请求之前就抛，一个字节都不出站
         // （`CloudEgressTests.missingKeyIsLoudAndDoesNotFallBackToLocal` 观测过）。
         #expect(AppModel.TranslationBackendStatus.cloudMissingKey.sendsTextOffDevice == false)
@@ -185,8 +185,8 @@ struct CloudBackendMenuTests {
             AppModel.translationBackendMenuTitle(.local)
                 == "翻译后端：本机（文字不出这台电脑）")
         #expect(
-            AppModel.translationBackendMenuTitle(.cloudIdleBecauseChinese)
-                == "翻译后端：云端 Google（当前输出中文，未出站）")
+            AppModel.translationBackendMenuTitle(.cloudIdleBecauseNoTarget)
+                == "翻译后端：云端 Google（当前无翻译目标，未出站）")
         #expect(
             AppModel.translationBackendMenuTitle(.cloudMissingKey)
                 == "翻译后端：云端 Google（缺 API key，未生效）")
@@ -256,12 +256,12 @@ struct CloudBackendMenuTests {
         #expect(local.contains("译成什么") && local.contains("谁来译"), "没说清两个开关是两件事：\(local)")
 
         let idle = AppModel.translationBackendDetailLines(
-            status: .cloudIdleBecauseChinese, target: .chinese
+            status: .cloudIdleBecauseNoTarget, target: .chinese
         ).joined(separator: "\n")
         #expect(
             idle.contains("一个字节都不会离开本机"),
-            "云端开着但输出中文的那格没说清此刻零出站，用户会以为正在往外发：\(idle)")
-        #expect(idle.contains("换成外语"), "没说清什么时候才会开始出站：\(idle)")
+            "云端开着但无有效目标的那格没说清此刻零出站，用户会以为正在往外发：\(idle)")
+        #expect(idle.contains("不同于输入语言"), "没说清什么时候才会开始出站：\(idle)")
 
         let missing = AppModel.translationBackendDetailLines(
             status: .cloudMissingKey, target: .english
@@ -276,7 +276,7 @@ struct CloudBackendMenuTests {
     /// **会出站的那一格要把话说完**，而且这句话只出现在这一格。
     ///
     /// 「现在每说一句话」是现在时的断言，不是「将来会怎样」——另外三格里
-    /// 一次都不许出现（`cloudIdleBecauseChinese` 那格提到「换成外语之后
+    /// 一次都不许出现（`cloudIdleBecauseNoTarget` 那格提到「选好目标之后
     /// 才会发到 Google」是将来时，不是这一句）。
     @Test("会出站的那格说清发生什么，且这句话只在这一格出现")
     func activeStateSpellsOutTheEgress() {
@@ -290,7 +290,7 @@ struct CloudBackendMenuTests {
         #expect(active.contains(Language.spanish.displayName), "没说清现在译成哪种语言：\(active)")
 
         for status in [
-            AppModel.TranslationBackendStatus.local, .cloudIdleBecauseChinese, .cloudMissingKey,
+            AppModel.TranslationBackendStatus.local, .cloudIdleBecauseNoTarget, .cloudMissingKey,
         ] {
             let text = AppModel.translationBackendDetailLines(status: status, target: .english)
                 .joined(separator: "\n")
@@ -304,7 +304,7 @@ struct CloudBackendMenuTests {
     @Test("四格的说明行两两不同")
     func detailLinesAreDistinct() {
         let texts = [
-            AppModel.TranslationBackendStatus.local, .cloudIdleBecauseChinese, .cloudMissingKey,
+            AppModel.TranslationBackendStatus.local, .cloudIdleBecauseNoTarget, .cloudMissingKey,
             .cloudActive,
         ].map {
             AppModel.translationBackendDetailLines(status: $0, target: .english).joined(separator: "\n")
