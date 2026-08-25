@@ -233,7 +233,7 @@ struct MenuPanelHeightTests {
         let base = height(MenuPanelView(model: model))
         let advanced = height(MenuPanelView(model: model, initiallyOpen: .advanced))
         let others = [
-            MenuPanelView.SettingRow.model, .correction, .outputLanguage, .backend,
+            MenuPanelView.SettingRow.model, .correction, .inputLanguage, .outputLanguage, .backend,
         ].map { height(MenuPanelView(model: model, initiallyOpen: $0)) }
 
         let deepest = others.allSatisfy { advanced >= $0 }

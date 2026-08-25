@@ -76,7 +76,7 @@ final class AppModel {
 
     /// 翻译**由谁来做**：本机，还是云端 Google。菜单据此显示。
     ///
-    /// 与 `outputLanguage` 是两件事：那个决定「译成什么」，这个决定「谁来译」。
+    /// 与 `translationChoice` 是两件事：那个决定「译成什么」，这个决定「谁来译」。
     /// 用户 2026-08-19 专门强调过别把这两个开关搅在一起。
     ///
     /// 取值由 `translationBackendStatus` 从**协调器真正算出来的那个挂载结论**
@@ -1780,6 +1780,11 @@ final class AppModel {
         }
         inputLanguageRebuildPending = false
         loadingModelName = activeModelName  // 复用「加载中」的界面态与 toggle 闸
+        // 入口清场对齐 selectModel：上一次失败留下的 modelLoadFailure（向导
+        // 第五步读它）与 .error 相位（菜单栏红字）不该在新一轮尝试起飞后
+        // 还挂着——挂着的话这一轮成功了，界面上仍是上一轮的失败。
+        modelLoadFailure = nil
+        phase = .idle
         Task { [weak self] in
             do {
                 try await transcriber.rebuild()

@@ -270,10 +270,14 @@ struct MenuPanelViewWiringTests {
             !handWritesSuffix,
             "MenuPanelView 里出现了手写的缺目录后缀——它只能由 AppModel 算出。"
         )
-        let usesTargetLabel = source.contains("target.menuLabel")
+        let usesTargetLabel = source.contains("target.menuLabel(from: model.inputLanguage)")
         #expect(
             usesTargetLabel,
-            "六个输出语言选项的文案没有走 Language.menuLabel（每项都带实测质量）。"
+            """
+            输出语言选项的文案没有走 Language.menuLabel(from: model.inputLanguage)。
+            不带输入参数的话，非中文输入下会把 zh→X 的实测数字虚标给没测过的
+            组合——分级数字只在中文输入下成立。
+            """
         )
     }
 
@@ -358,7 +362,9 @@ struct MenuPanelViewWiringTests {
             "model.toggleCorrection()",  // 开启/关闭校正
             "presentCorrectionModelFolderPanel()",  // 指定校正模型…
             "model.selectCorrectionModel(directory: url)",
-            "model.selectTranslationChoice(.translate(to: target))",  // 六个输出语言
+            "model.selectInputLanguage(language)",  // 输入语言七档
+            "model.selectTranslationChoice(.off)",  // 显式的「不翻译」
+            "model.selectTranslationChoice(.translate(to: target))",  // 六个目标档
             "model.useLocalBackend()",  // 后端二选一：本机
             "model.useCloudBackend()",  // 后端二选一：云端（幂等，守卫在 AppModel）
             "model.chooseTranslationModelFolder?()",  // 本机档：指定模型…
@@ -773,6 +779,67 @@ struct MenuPanelViewWiringTests {
         #expect(
             stillMentionsVendor == false,
             "面板代码里还写着 vendor/models——那是开发机上的仓库路径。")
+    }
+
+    /// 输入语言 × 翻译目标的矩阵接线（Task 11）。
+    ///
+    /// 三件事各有一个「删掉也全绿」的静默坏法，逐条钉住：
+    ///
+    /// - **目标区必须排除输入语言。** 去掉 `.filter` 的话「西班牙文输入 +
+    ///   目标西班牙文」会出现在列表里——选它等于不翻译，而上面那格已经是
+    ///   它；两格同义但勾选状态各走各的（`.off` 与 `.translate(to:)`），
+    ///   用户会看到「明明选了却没勾上」。
+    /// - **校正置灰的文案必须来自 `AppModel.correctionUnavailableNote`**，
+    ///   且输入语言区与校正区共用同一处——「为什么点不了」只该有一处措辞。
+    /// - **非中文输入下校正区不许出现可点的开关**：管线已被
+    ///   `makeCorrectionPipeline` 的语言门摘掉，能点的开关就是「点了没反应」。
+    ///   判据是 correctionSection 里置灰行的判断先于开关按钮（if/else 的
+    ///   形状），整份 contains 分不出这个先后。
+    @Test("输入语言矩阵：目标区排除输入语言，校正按输入语言置灰")
+    func inputLanguageMatrixWiring() throws {
+        let source = Self.codeOnly(try Self.panelSource())
+
+        let filtersInput = source.contains(".filter { $0 != model.inputLanguage }")
+        #expect(
+            filtersInput,
+            """
+            目标语言列表没有排除输入语言（.filter { $0 != model.inputLanguage }）。
+            「目标==输入」那一格与「不翻译」同义，两格并存会让勾选状态
+            与用户的选择对不上。
+            """
+        )
+
+        let noteCalls = source.components(
+            separatedBy: "AppModel.correctionUnavailableNote(input: model.inputLanguage)"
+        ).count - 1
+        #expect(
+            noteCalls == 2,
+            """
+            AppModel.correctionUnavailableNote(input: model.inputLanguage) 在面板里
+            出现 \(noteCalls) 次，不是 2 次（输入语言区的后果说明 + 校正区的置灰行）。
+            少一处就意味着那一处在自己拼文案，或干脆没说。
+            """
+        )
+
+        guard let correction = Self.functionBody(source, signature: "private var correctionSection")
+        else {
+            Issue.record("MenuPanelView 里找不到 correctionSection 的函数体。")
+            return
+        }
+        guard
+            let noteAt = correction.range(of: "AppModel.correctionUnavailableNote"),
+            let toggleAt = correction.range(of: "model.toggleCorrection()")
+        else {
+            Issue.record("correctionSection 里缺了置灰判断或开关本体。")
+            return
+        }
+        #expect(
+            noteAt.lowerBound < toggleAt.lowerBound,
+            """
+            correctionSection 里开关按钮排在语言门之前——非中文输入下会出现
+            一个可点却没反应的校正开关。
+            """
+        )
     }
 
     /// 向导第五步的「可以听写了」必须**同时**判有没有模型。

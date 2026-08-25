@@ -72,7 +72,7 @@ struct MenuPanelView: View {
     /// internal 而不是 private：`init(model:initiallyOpen:)` 要拿它当参数
     /// （量高度用，见那边的注释）。
     enum SettingRow: Hashable {
-        case model, correction, outputLanguage, backend, advanced, devTools
+        case model, correction, inputLanguage, outputLanguage, backend, advanced, devTools
     }
 
     /// 面板宽度。
@@ -352,29 +352,36 @@ struct MenuPanelView: View {
                 correctionSection
             }
             rowSeparator
+            // 「输入语言」摆在「输出语言」上面：先说「我说什么」，再说「出什么」。
+            settingRow(.inputLanguage, title: "输入语言", value: model.inputLanguage.displayName) {
+                inputLanguageSection
+            }
+            rowSeparator
             settingRow(.outputLanguage, title: "输出语言", value: outputLanguageValueLabel) {
                 outputLanguageSection
             }
             rowSeparator
             settingRow(.backend, title: "翻译后端", value: backendValueLabel) { backendSection }
             rowSeparator
-            // 第五行。**高度是量出来的，不是估的**（`MenuPanelHeightTests`，
-            // 2026-08-22 离屏 `fittingSize` 实测）：
+            // 第六行。**高度是量出来的，不是估的**（`MenuPanelHeightTests`，
+            // 2026-08-25 加「输入语言」行后离屏 `fittingSize` 重测）：
             //
-            //     收起 310 / 模型 363 / 校正 339 / 输出语言 459
-            //     翻译后端（本机）476 / **高级 511**
+            //     收起 345 / 模型 398 / 校正 374 / 输入语言 494 / 输出语言 494
+            //     翻译后端（本机）511 / **高级 546**
             //
-            // 也就是说本批把「最深一档」从 476 抬到了 511——多的不只是一个
-            // 行高：高级展开有 11 行（3 条说明 + 6 个按钮 + 3 条分隔线）。
-            // 再叠上本批新增的两行在飞状态（+74pt）是 585pt，那是测试进程里
-            // 能摆出来的最坏情形。
+            // 「输入语言」这一行的代价是收起态 +35pt（310 → 345），最深一档
+            // 从 511 抬到 546。再叠上两行在飞状态（+74pt）是 620pt，那是
+            // 测试进程里能摆出来的最坏情形（预算 640，见 MenuPanelHeightTests）。
             //
             // 摆不出来、只能在真机上叠加的还有四样（设备卡、上次转写、
             // 模型列表条目、云端后端展开+嵌套「选择模型」）。按 R-3 实测的
             // 719pt（那一档含云端嵌套+设备卡+上次转写）推算，最坏组合约
-            // 719 + 35（多这一行收起态）+ 74（两行在飞状态）≈ 828pt，
-            // 而 13 寸可用约 850pt——**只剩约 22pt**。Task 9 真机目检要核的
-            // 就是这个数字；再往面板里加东西之前先重量一次。
+            // 719 + 35（高级收起行）+ 35（本批的输入语言收起行）+ 74（两行
+            // 在飞状态）≈ 863pt，而 13 寸可用约 850pt——**账面上已经透支约
+            // 13pt**。这个组合要同时满足云端嵌套展开、双设备卡、上次转写、
+            // 两行在飞下载五个条件，日常撞不上，但它已经从「留 22pt」变成
+            // 「欠 13pt」：真机验收要在 13 寸上摆一次这个组合核实；
+            // 再往面板里加任何东西之前必须先给面板做减法或加滚动。
             settingRow(.advanced, title: "高级", value: "") { advancedSection }
         }
         .background(VITheme.contentBackground, in: RoundedRectangle(cornerRadius: 9))
@@ -399,7 +406,6 @@ struct MenuPanelView: View {
     /// 区别——写进注释就等于把那条守卫废掉。
     private var outputLanguageValueLabel: String {
         stripPrefix(
-            // TEMP(Task 11 菜单重做)：仅机械适配新签名，UI 形态不变。
             AppModel.outputLanguageMenuTitle(
                 choice: model.translationChoice,
                 input: model.inputLanguage,
@@ -456,10 +462,34 @@ struct MenuPanelView: View {
     /// 两项没有拆成两处（模型行留这里、按钮搬走）——那行字存在的理由就是
     /// 「按下按钮之前先知道现在用的是哪个」，拆开之后两边都不完整，
     /// 而重复写一份迟早各走各的。
+    ///
+    /// **非中文输入下不许出现可点的开关**：校正的机制是拼音同音字，对拉丁
+    /// 语种不适用（`makeCorrectionPipeline` 那道语言门已经把管线摘了），
+    /// 留一个能点的开关就是「点了没反应」。换成置灰说明行，文案与输入语言
+    /// 那格用同一处 `AppModel.correctionUnavailableNote`——「为什么点不了」
+    /// 只该有一处措辞。
     @ViewBuilder
     private var correctionSection: some View {
-        expandedButton(MenuPanelModel.correctionToggleTitle(enabled: model.correctionEnabled)) {
-            model.toggleCorrection()
+        if let note = AppModel.correctionUnavailableNote(input: model.inputLanguage) {
+            infoLine(note)
+        } else {
+            expandedButton(MenuPanelModel.correctionToggleTitle(enabled: model.correctionEnabled)) {
+                model.toggleCorrection()
+            }
+        }
+    }
+
+    /// 输入语言七档。非中文时下面缀一行后果说明——校正停用、质量未实测，
+    /// 在用户选的那一刻就说清，不等他事后纳闷。
+    @ViewBuilder
+    private var inputLanguageSection: some View {
+        ForEach(Language.allCases, id: \.rawValue) { language in
+            expandedButton(language.displayName, checked: language == model.inputLanguage) {
+                model.selectInputLanguage(language)
+            }
+        }
+        if let note = AppModel.correctionUnavailableNote(input: model.inputLanguage) {
+            infoLine(note)
         }
     }
 
@@ -525,23 +555,28 @@ struct MenuPanelView: View {
         }
     }
 
-    /// 输出语言（旧 `outputLanguageMenu`）。
+    /// 输出语言（旧 `outputLanguageMenu`）：显式的「不翻译」+ 六个目标档。
     ///
-    /// 六种拉丁字母语种全列（用户 2026-08-19 的决定），但**每一项都带实测
-    /// 质量**——第 0 步实测英文术语保留 1.00、西语 0.92、德语 0.89，葡/法/意
-    /// 没测过。文案由 `Language.menuLabel` 算出，不在视图里拼：
-    /// 拼在这里就没有任何测试守得住它（与 `HUDViewModel` 同一条分工）。
+    /// 「不翻译」单列一格而不是借「目标=中文」表示——输入语言放开后
+    /// 「译成中文」成了真实存在的方向，两个含义必须劈开
+    /// （`TranslationChoice` 的类型注释记着这段历史）。
+    ///
+    /// 目标档**每一项都带实测质量**，文案由 `Language.menuLabel(from:)`
+    /// 算出，不在视图里拼：拼在这里就没有任何测试守得住它
+    /// （与 `HUDViewModel` 同一条分工）。质量分级只在中文输入下有实测数
+    /// （2026-08-19 六语对照），其他输入语种标「未实测」——不许虚标。
     @ViewBuilder
     private var outputLanguageSection: some View {
-        // TEMP(Task 11 菜单重做)：仅机械适配两态 choice。旧「中文」项此中间态
-        // 下点击＝选 .translate(to: .chinese)，输入中文时等效不翻译且标题会
-        // 明说——可接受；显式的「不翻译」项与输入语言选择归 Task 11。
-        ForEach(Language.allCases, id: \.rawValue) { target in
+        expandedButton(
+            "不翻译（保持\(model.inputLanguage.displayName)原样）",
+            checked: model.translationChoice == .off
+        ) { model.selectTranslationChoice(.off) }
+        // 与输入相同的语种不列——选它等于不翻译，上面那格已经是它。
+        ForEach(Language.allCases.filter { $0 != model.inputLanguage }, id: \.rawValue) { target in
             expandedButton(
-                target.menuLabel, checked: model.translationChoice == .translate(to: target)
-            ) {
-                model.selectTranslationChoice(.translate(to: target))
-            }
+                target.menuLabel(from: model.inputLanguage),
+                checked: model.translationChoice == .translate(to: target)
+            ) { model.selectTranslationChoice(.translate(to: target)) }
         }
     }
 
@@ -584,8 +619,8 @@ struct MenuPanelView: View {
         ForEach(
             AppModel.translationBackendDetailLines(
                 status: model.translationBackend,
-                // TEMP(Task 11 菜单重做)：detailLines 只在 cloudActive 那格用
-                // target；没有有效目标时给输入语言占位（那格不会走到）。
+                // detailLines 只在 cloudActive 那格读 target，而 cloudActive
+                // 必有有效目标——`??` 只为类型收口，右侧走不到。
                 target: model.translationChoice.effectiveTarget(input: model.inputLanguage)
                     ?? model.inputLanguage
             ),

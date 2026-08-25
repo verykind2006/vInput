@@ -1,6 +1,8 @@
 import Foundation
 
-/// 听写输出的目标语言。
+/// 语种表，一张表两个角色：既是**输入语言**（用户说的是哪种话，转写、
+/// 校正、翻译三层都按它配置），也是**翻译目标**（`TranslationChoice`
+/// 选中的那一格）。同一枚举两处用，加语言时两侧一起长。
 ///
 /// **本轮只收拉丁字母语种。** 日语、韩语不是技术做不到，是没有判断质量的
 /// 手段：闸门「译文里不该有汉字」对日语完全失效（日文本来就用汉字），
@@ -9,7 +11,8 @@ import Foundation
 /// **直接注进用户即将发出的窗口**。拉丁字母语种则相反：混语、漏译、
 /// 残留汉字肉眼可见。
 enum Language: String, CaseIterable, Sendable, Equatable {
-    /// 不翻译，保持转写原样。
+    /// 作为输入语言是默认档；作为翻译目标只是七档之一——「不翻译」
+    /// 已是 `TranslationChoice.off` 的职责，不再借「目标=中文」表达。
     case chinese = "zh"
     case english = "en"
     case spanish = "es"
@@ -78,7 +81,7 @@ enum Language: String, CaseIterable, Sendable, Equatable {
 ///
 /// 用户 2026-08-19 的决定是「六种全上，但要标出差异」，理由是让用户自己
 /// 判断什么场合用哪种。做成带值的枚举而不是一句写死的说明文字，是为了让
-/// 「加一种语言却没给它定级」被机械地抓到：`Language.quality`
+/// 「加一种语言却没给它定级」被机械地抓到：`Language.quality(from:)`
 /// 是**穷尽 switch**，加一格编译不过。
 ///
 /// # 数字取的是「忽略大小写」那一版，这一点不是随便选的
@@ -112,7 +115,7 @@ enum Language: String, CaseIterable, Sendable, Equatable {
 /// 0.02**。所以 0.94 与 0.98 之间的差不到两个术语，落在噪声里；
 /// 真正读得出来的只有「六种都在 0.94 以上」这一句。
 enum TranslationQuality: Equatable, Sendable {
-    /// 中文＝不翻译，无所谓质量。
+    /// 与输入相同＝不翻译，无所谓质量。
     case notApplicable
     /// 实测过。`termRetention` 是**技术术语与代码标识符原样保留的比例**，
     /// 1.0 表示一个都没被译走。
@@ -122,26 +125,31 @@ enum TranslationQuality: Equatable, Sendable {
 }
 
 extension Language {
-    /// 实测质量。**六种全部测过了**——2026-08-19 的六语对照
-    /// （26 条 × 6 种 = 156 次推理，零失败、零残留汉字、零截断）。
+    /// 从给定输入语种译到本语种的实测质量。**中文输入的六种全部测过了**
+    /// ——2026-08-19 的六语对照（26 条 × 6 种 = 156 次推理，零失败、
+    /// 零残留汉字、零截断）。
     ///
     /// 此前葡/法/意标的是 `unmeasured`，德语标的是 0.89（只跑了 10 条的
     /// 小样本）。全量跑完之后德语的逐字值反而降到 0.84，而**忽略大小写是
     /// 1.00**——小样本乐观与判据选错，两个问题同时暴露。详见类型注释。
-    var quality: TranslationQuality {
+    func quality(from input: Language) -> TranslationQuality {
+        if self == input { return .notApplicable }
+        // 实测表只覆盖 zh→X（2026-08-19 六语对照）。其他输入语种的组合
+        // 一律 unmeasured——不许编一个数糊上去。
+        guard input == .chinese else { return .unmeasured }
         switch self {
-        case .chinese: .notApplicable
+        case .chinese: return .notApplicable   // input==.chinese 时到不了这里，穷尽 switch 需要它
         // 2026-08-19 六语对照，忽略大小写那一版。理由见类型注释。
-        case .english: .measured(termRetention: 1.00)
-        case .german: .measured(termRetention: 1.00)
-        case .italian: .measured(termRetention: 1.00)
-        case .french: .measured(termRetention: 0.98)
-        case .portuguese: .measured(termRetention: 0.96)
-        case .spanish: .measured(termRetention: 0.94)
+        case .english: return .measured(termRetention: 1.00)
+        case .german: return .measured(termRetention: 1.00)
+        case .italian: return .measured(termRetention: 1.00)
+        case .french: return .measured(termRetention: 0.98)
+        case .portuguese: return .measured(termRetention: 0.96)
+        case .spanish: return .measured(termRetention: 0.94)
         }
     }
 
-    /// 菜单项上的那一行字。
+    /// 菜单项上的那一行字（本语种作为目标、从 `input` 译过来时）。
     ///
     /// **提示做在每一个菜单项上，而不是一次性弹窗**：弹窗切走再切回来就
     /// 看不到了，而用户挑语言的那一刻正是他需要这个差异的时刻。
@@ -149,13 +157,13 @@ extension Language {
     /// 计算放在这里而不是拼在 SwiftUI 视图里，是本仓库既有的分工
     /// （见 `HUDViewModel`：「全部计算做成纯函数，视图只负责画」）——
     /// 拼在视图里就没有任何测试守得住它。
-    var menuLabel: String {
-        switch quality {
+    func menuLabel(from input: Language) -> String {
+        switch quality(from: input) {
         case .notApplicable:
-            // 「中文」单看是个语言名，看不出选它等于关掉翻译。
-            "\(displayName)（不翻译）"
+            // 语言名单看是个语言名，看不出「选它等于不翻译」。
+            "\(displayName)（与输入相同，不翻译）"
         case .measured(let retention):
-            // 两位小数：实测值本身就是两位（1.00 / 0.92 / 0.89），
+            // 两位小数：实测值本身就是两位（1.00 / 0.94），
             // 多印几位是在假装精度。
             "\(displayName) · 术语保留 \(String(format: "%.2f", retention))"
         case .unmeasured:

@@ -69,4 +69,19 @@ struct LanguageTests {
                 == ["zh", "en", "es", "de", "pt", "fr", "it"]
         )
     }
+
+    @Test func qualityIsMeasuredOnlyFromChineseInput() {
+        // 分级数字是 zh→X 的实测（2026-08-19 六语对照），别的输入语种没测过
+        // ——菜单不许虚标。
+        #expect(Language.spanish.quality(from: .chinese) == .measured(termRetention: 0.94))
+        #expect(Language.spanish.quality(from: .english) == .unmeasured)
+        #expect(Language.chinese.quality(from: .english) == .unmeasured)   // X→中文同样未实测
+        #expect(Language.english.quality(from: .english) == .notApplicable) // 与输入相同
+    }
+
+    @Test func menuLabelSpellsOutTheThreeStates() {
+        #expect(Language.spanish.menuLabel(from: .chinese) == "西班牙文 · 术语保留 0.94")
+        #expect(Language.spanish.menuLabel(from: .english) == "西班牙文 · 未实测")
+        #expect(Language.english.menuLabel(from: .english) == "英文（与输入相同，不翻译）")
+    }
 }
