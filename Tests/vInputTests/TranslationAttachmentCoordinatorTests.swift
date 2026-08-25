@@ -160,7 +160,7 @@ struct TranslationAttachmentCoordinatorTests {
     /// 挂上去的后果不是「少翻译一次」：`OneShotLoader` 失败不缓存值、
     /// `detachedWarmUp` 用 `try?` 吞掉异常且只调一次，于是每次听写都撞
     /// `guard await translator.isReady`，HUD 每句话都打「翻译模型还在加载，
-    /// 本次注入中文原文」——**用户会等一个永远不会完成的加载**，而输出语言
+    /// 本次注入原文」——**用户会等一个永远不会完成的加载**，而输出语言
     /// 菜单一个字警告都没有。那行字在这里是错的：不是「慢」，是「没有」。
     ///
     /// 所以这一格必须与「一个目录都没配」收敛到同一处：`.unconfigured`

@@ -15,18 +15,24 @@ enum TranslationRejection: Equatable, Sendable {
     case truncated
     /// 译文整段太短。`ratio` 是实测到的长度比，进日志用。
     case tooShort(ratio: Double)
+    /// 目标是中文而译文一个汉字都没有——多半整段没译。X→中文方向的
+    /// 弱闸门，未实测（设计定稿「不装作验过」一节）。
+    case noHan
 
     /// HUD 上显示的一行字。
     ///
-    /// **四种成因都说了「已退回中文」**：闸门拦下之后注入的是中文原文，
-    /// 用户看到的是中文，不说清楚的话他会以为翻译开关没生效。
+    /// **五种成因都说了「已退回原文」**：闸门拦下之后注入的是原文，而用户
+    /// 选了别的语言——屏幕上出现他说的原话本身就是要解释的那件事，
+    /// 不说清楚的话他会以为翻译开关没生效。源不再恒为中文（英文输入下
+    /// 说「已退回中文原文」是错话），所以只说「原文」。
     /// 与 `CorrectionAnnotation.hudLabel` 同一个取向——不许静默。
     var hudLabel: String {
         switch self {
-        case .residualHan: "译文里还有中文，已退回中文原文"
-        case .chinesePunctuation: "译文里还有中文标点，已退回中文原文"
-        case .truncated: "译文没说完，已退回中文原文"
-        case .tooShort: "译文太短，已退回中文原文"
+        case .residualHan: "译文里还有中文，已退回原文"
+        case .chinesePunctuation: "译文里还有中文标点，已退回原文"
+        case .truncated: "译文没说完，已退回原文"
+        case .tooShort: "译文太短，已退回原文"
+        case .noHan: "译文不像中文，已退回原文"
         }
     }
 }
@@ -111,8 +117,23 @@ struct TranslationGate: Sendable {
     }
 
     func check(
-        source: String, translation: String, target: Language
+        source: String, translation: String,
+        from sourceLanguage: Language, to target: Language
     ) -> TranslationVerdict {
+        // X→中文：判据只有「须含汉字」与截断。不查拉丁残留（中文合法保留
+        // 英文术语正是本项目的规则），不查长度比（未标定）。
+        if target == .chinese {
+            if TranslationMetrics.residualHanCount(translation) == 0 {
+                return .reject(.noHan)
+            }
+            if !TruncationSignal.looksTruncated(source),
+                TruncationSignal.looksTruncated(translation)
+            {
+                return .reject(.truncated)
+            }
+            return .pass
+        }
+
         // **查 usesLatinScript 而不是 requiresTranslation。**
         //
         // 两者今天等价，但语义不同：下面几条判据**只对拉丁字母书写系统
@@ -154,9 +175,14 @@ struct TranslationGate: Sendable {
 
         // 辅助信号，排最后：它拦得住的多半上面已经拦了，留着是为了兜住
         // 「译文以句末标点收尾但短得离谱」那一类。
-        let ratio = TranslationMetrics.lengthRatio(source: source, translation: translation)
-        if ratio < minimumLengthRatio { return .reject(.tooShort(ratio: ratio)) }
-
+        //
+        // 长度比阈值 1.1 是 zh→拉丁 的 86 条语料标定的（见 defaultMinimumLengthRatio
+        // 注释）；拉丁→拉丁的自然长度比就在 1.0 附近，沿用会误杀正常译文。
+        // 未标定的判据不启用——这是「不装作验过」，不是漏。
+        if sourceLanguage == .chinese {
+            let ratio = TranslationMetrics.lengthRatio(source: source, translation: translation)
+            if ratio < minimumLengthRatio { return .reject(.tooShort(ratio: ratio)) }
+        }
         return .pass
     }
 }

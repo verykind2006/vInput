@@ -567,8 +567,8 @@ struct CloudLocationNotSupportedTests {
         let failed = TranslationAnnotation.failed("boom").hudLabel
         #expect(located != failed, "地域受限与翻译失败共用了同一句话")
         #expect(located.contains("网络"), "没说清问题出在网络位置：\(located)")
-        // 与其余每一格一样，要说清注入的是中文原文。
-        #expect(located.contains("中文原文"))
+        // 与其余每一格一样，要说清注入的是原文（源不恒为中文了，不说「中文原文」）。
+        #expect(located.contains("已注入原文"))
     }
 
     /// 它是一个独立的错误值，不是 `engineFailed` 的某个字符串。

@@ -317,6 +317,7 @@ struct TranslationAnnotationLabelTests {
         .chinesePunctuation(count: 1),
         .truncated,
         .tooShort(ratio: 0.4),
+        .noHan,
     ]
 
     /// 非 private：`TranslationAnnotationTests` 复用同一份样本表。
@@ -332,7 +333,7 @@ struct TranslationAnnotationLabelTests {
     private static func exhaustivenessGuard() {
         for rejection in rejections {
             switch rejection {
-            case .residualHan, .chinesePunctuation, .truncated, .tooShort: break
+            case .residualHan, .chinesePunctuation, .truncated, .tooShort, .noHan: break
             }
         }
         for annotation in annotations {
@@ -344,22 +345,27 @@ struct TranslationAnnotationLabelTests {
         }
     }
 
-    /// ③ 文案不能退化：**每一条都得说清「注入的是中文原文」**。
+    /// ③ 文案不能退化：**每一条都得说清「注入的是原文」**。
     ///
-    /// 这五条路径注入的都是中文，而用户选的是外语——屏幕上出现中文本身
-    /// 就是要解释的那件事。把文案改成 `"x"`、或者改成一句含糊的
-    /// 「翻译失败」，这条就红。
-    @Test("每条文案都说清了「注入的是中文原文」")
+    /// 这些失败路径注入的都是**原文**，而用户选了别的语言——屏幕上出现
+    /// 他说的原话本身就是要解释的那件事。把文案改成 `"x"`、或者改成一句
+    /// 含糊的「翻译失败」，这条就红。
+    /// （不再要求「中文原文」：源不恒为中文了，那四个字在英文输入下是错话，
+    /// 见 `TranslationGateTests.rejectionLabelsSayOriginalNotChinese`。）
+    @Test("每条文案都说清了「注入的是原文」")
     func everyLabelExplainsTheChineseFallback() {
         Self.exhaustivenessGuard()
         for annotation in Self.annotations {
             #expect(
-                annotation.hudLabel.contains("中文原文"),
-                "\(annotation) 的文案没说清注入的是中文：\(annotation.hudLabel)")
+                annotation.hudLabel.contains("原文"),
+                "\(annotation) 的文案没说清注入的是原文：\(annotation.hudLabel)")
+            #expect(
+                !annotation.hudLabel.contains("中文原文"),
+                "\(annotation) 的文案还在说「中文原文」：\(annotation.hudLabel)")
         }
     }
 
-    /// ③ 之二：八条文案两两不同。
+    /// ③ 之二：九条文案两两不同。
     ///
     /// 「都改成 x」「新格子随手抄了隔壁那句」都会在这里撞上。
     @Test("每条文案互不相同")

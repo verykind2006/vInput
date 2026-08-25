@@ -47,20 +47,21 @@ enum TranslationAnnotation: Equatable, Sendable {
     /// （`TranslationAnnotationLabelTests` 的样本表同样靠一个穷尽 switch
     /// 守着，加一格时那边也编译不过，逼人把新格子放进覆盖列表。）
     ///
-    /// **每一种文案都说了「中文原文」**：这些路径注入的都是中文，而用户
-    /// 选的是外语，屏幕上出现中文本身就是他要解释的那件事。不说清楚的话
-    /// 他只会以为翻译开关没生效。
+    /// **每一种文案都说了「原文」**：这些失败路径注入的是**原文**——
+    /// 用户怎么说的就注入什么，而他选了别的语言，屏幕上出现原话本身就是
+    /// 要解释的那件事。不说清楚的话他只会以为翻译开关没生效。
+    /// （源不再恒为中文，所以不说「中文原文」——英文输入下那是错话。）
     var hudLabel: String {
         switch self {
-        case .modelLoading: "翻译模型还在加载，本次注入中文原文"
-        case .timedOut: "翻译超时，已注入中文原文"
-        case .failed: "翻译失败，已注入中文原文"
-        case .missingAPIKey: "云端翻译未配置 API key，已注入中文原文"
+        case .modelLoading: "翻译模型还在加载，本次注入原文"
+        case .timedOut: "翻译超时，已注入原文"
+        case .failed: "翻译失败，已注入原文"
+        case .missingAPIKey: "云端翻译未配置 API key，已注入原文"
         // 说清「不是翻译坏了，是这个网络位置用不了云端」，并给出两条出路。
-        case .locationNotSupported: "当前网络位置无法使用云端翻译，已注入中文原文"
+        case .locationNotSupported: "当前网络位置无法使用云端翻译，已注入原文"
         // 用「将」不用「已」：这一条在用户点菜单选语言的那一刻就说出来，
         // 那时还没有哪一次听写发生过。
-        case .missingLocalModel: "没有可用的翻译模型目录，将注入中文原文"
+        case .missingLocalModel: "没有可用的翻译模型目录，将注入原文"
         // **委托给 `TranslationRejection.hudLabel`，不另写一套。**
         // 闸门那边已经按四种成因各写了一句（「译文里还有中文」「译文没说完」
         // …），这里再写一套的话，改一处忘另一处是迟早的事，而表现是
@@ -233,7 +234,8 @@ struct TranslationPipeline: Sendable {
 
         // 闸门的 source 用改写后的：长度比比的是「模型的输入对输出」，
         // 拿改写前的原文去比会把改写本身的长度变化算到译文头上。
-        switch gate.check(source: rewritten, translation: output, target: target) {
+        // TEMP(Task 6 重写)：旧世界源恒为中文
+        switch gate.check(source: rewritten, translation: output, from: .chinese, to: target) {
         case .pass:
             AppLogger.shared.log("翻译完成：目标=\(target.rawValue) 耗时 \(ContinuousClock.now - started)")
             return TranslationResult(text: output, annotation: nil)

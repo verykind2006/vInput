@@ -800,7 +800,8 @@ struct BenchTranslationSectionTests {
     func metricsSeeTheRawTranslationNotTheGatedOne() {
         let source = "我们下午三点上线新版本。"
         let bad = "We 下午三点 ship."  // 残留汉字，闸门必拦
-        let verdict = TranslationGate().check(source: source, translation: bad, target: .english)
+        let verdict = TranslationGate().check(
+            source: source, translation: bad, from: .chinese, to: .english)
         #expect(verdict != .pass, "这条样本得先真的会被闸门拦下，否则本条什么都没证明")
 
         let row = BenchTranslationSection.Row(

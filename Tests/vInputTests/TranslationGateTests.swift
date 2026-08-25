@@ -20,7 +20,7 @@ struct TranslationGateTests {
             gate.check(
                 source: "今天下午三点开会。",
                 translation: "Meeting at 3pm today.",
-                target: .english) == .pass)
+                from: .chinese, to: .english) == .pass)
     }
 
     /// 隔离：译文以句点收尾（截断判据不亮）、无中文标点、长度比正常。
@@ -31,7 +31,7 @@ struct TranslationGateTests {
             gate.check(
                 source: "今天下午三点开会。",
                 translation: "Meeting at 三点 today.",
-                target: .english) == .reject(.residualHan(count: 2)))
+                from: .chinese, to: .english) == .reject(.residualHan(count: 2)))
     }
 
     /// 整段没译回来是残留汉字的极端形态：译文就是原文。
@@ -39,7 +39,7 @@ struct TranslationGateTests {
     func untranslatedPassthroughIsRejected() {
         let source = "今天下午三点开会。"
         #expect(
-            gate.check(source: source, translation: source, target: .english)
+            gate.check(source: source, translation: source, from: .chinese, to: .english)
                 == .reject(.residualHan(count: 8)))
     }
 
@@ -50,7 +50,7 @@ struct TranslationGateTests {
             gate.check(
                 source: "行，没问题。",
                 translation: "Sure，no problem.",
-                target: .english) == .reject(.chinesePunctuation(count: 1)))
+                from: .chinese, to: .english) == .reject(.chinesePunctuation(count: 1)))
     }
 
     /// **主信号的守卫。** 这条用例的全部意义是「长度比拦不住它，只有截断
@@ -74,7 +74,7 @@ struct TranslationGateTests {
                 >= gate.minimumLengthRatio,
             "这条半截译文的长度比是合格的，长度比判据碰不到它——本用例验的是截断判据")
         #expect(
-            gate.check(source: source, translation: halfway, target: .english)
+            gate.check(source: source, translation: halfway, from: .chinese, to: .english)
                 == .reject(.truncated))
     }
 
@@ -90,7 +90,7 @@ struct TranslationGateTests {
         let stub = "We discussed three topics in today's meeting."
 
         guard case .reject(.tooShort(let ratio)) = gate.check(
-            source: source, translation: stub, target: .english)
+            source: source, translation: stub, from: .chinese, to: .english)
         else {
             Issue.record("过短的译文应当被 tooShort 拦下")
             return
@@ -100,7 +100,7 @@ struct TranslationGateTests {
         // 阈值放到 0.3 就放行——证明拦下它的是阈值这个数，不是别的判据。
         #expect(
             TranslationGate(minimumLengthRatio: 0.3)
-                .check(source: source, translation: stub, target: .english) == .pass)
+                .check(source: source, translation: stub, from: .chinese, to: .english) == .pass)
     }
 
     // MARK: - 阈值的两条边界
@@ -117,7 +117,7 @@ struct TranslationGateTests {
             gate.check(
                 source: Self.shortestSource,
                 translation: Self.shortestTranslation,
-                target: .english) == .pass)
+                from: .chinese, to: .english) == .pass)
         #expect(
             TranslationMetrics.lengthRatio(
                 source: Self.shortestSource, translation: Self.shortestTranslation)
@@ -142,7 +142,7 @@ struct TranslationGateTests {
                 == BenchMetrics.significantCharacters(Self.shortestTranslation).count - 1,
             "辅助函数必须恰好少掉一个显著字符，否则这条用例验的不是它声称的东西")
         #expect(
-            gate.check(source: Self.shortestSource, translation: shorter, target: .english)
+            gate.check(source: Self.shortestSource, translation: shorter, from: .chinese, to: .english)
                 == .pass)
     }
 
@@ -160,7 +160,7 @@ struct TranslationGateTests {
             gate.check(
                 source: "我想订三张下周五的机票",
                 translation: "I'd like to book three tickets for next Friday",
-                target: .english) == .pass)
+                from: .chinese, to: .english) == .pass)
     }
 
     /// 空译文也是「成功返回但没说完」，落进 `truncated`
@@ -168,7 +168,7 @@ struct TranslationGateTests {
     @Test("空译文被拦下")
     func emptyTranslationIsRejected() {
         #expect(
-            gate.check(source: "今天下午三点开会。", translation: "", target: .english)
+            gate.check(source: "今天下午三点开会。", translation: "", from: .chinese, to: .english)
                 == .reject(.truncated))
     }
 
@@ -177,19 +177,21 @@ struct TranslationGateTests {
     @Test("原文没有句末标点时，空译文由长度比兜住")
     func emptyTranslationWithUnterminatedSourceFallsToLengthRatio() {
         #expect(
-            gate.check(source: "我想订三张下周五的机票", translation: "", target: .english)
+            gate.check(source: "我想订三张下周五的机票", translation: "", from: .chinese, to: .english)
                 == .reject(.tooShort(ratio: 0)))
     }
 
     // MARK: - 分流
 
-    @Test("非拉丁字母目标直接放行")
+    @Test("中文目标不套拉丁判据")
     func nonLatinTargetPasses() {
         // 元断言：闸门靠这个属性分流，它要是 true，下面那条 pass 就没有意义了。
         #expect(Language.chinese.usesLatinScript == false)
-        // 一段汉字、中文标点、没句末标点、长度比 1.0 —— 四条判据全踩，仍须放行。
+        // 中文目标走自己的弱闸门（含汉字＋截断，见 chineseTargetRequiresHan 等），
+        // 拉丁那四条判据一条都不套：这段译文中文标点、没句末标点（源同样没有，
+        // 截断判据的前置条件不成立）、长度比 1.0，仍须放行。
         #expect(
-            gate.check(source: "今天开会，三点", translation: "今天开会，三点", target: .chinese)
+            gate.check(source: "今天开会，三点", translation: "今天开会，三点", from: .chinese, to: .chinese)
                 == .pass)
     }
 
@@ -223,13 +225,13 @@ struct TranslationGateTests {
                 gate.check(
                     source: "今天下午三点开会。",
                     translation: "Meeting at 3pm today.",
-                    target: target) == .pass,
+                    from: .chinese, to: target) == .pass,
                 "\(target.rawValue)")
             #expect(
                 gate.check(
                     source: "今天下午三点开会。",
                     translation: "Meeting at 三点 today.",
-                    target: target) == .reject(.residualHan(count: 2)),
+                    from: .chinese, to: target) == .reject(.residualHan(count: 2)),
                 "\(target.rawValue)")
         }
     }
@@ -237,18 +239,84 @@ struct TranslationGateTests {
     // MARK: - HUD 文案
 
     /// 「没说完」与「整段太短」是两种失败形态，Task 11 的 HUD 要分别说话。
-    /// 四种成因的文案两两不同，且都说明了「已退回中文」——否则用户会以为
-    /// 翻译开关没生效。
-    @Test("四种拒绝理由的 HUD 文案两两不同")
+    /// 五种成因的文案两两不同，且都说明了「已退回原文」——否则用户会以为
+    /// 翻译开关没生效。（措辞不再说「中文原文」：源不恒为中文了，
+    /// 见 `rejectionLabelsSayOriginalNotChinese`。）
+    @Test("五种拒绝理由的 HUD 文案两两不同")
     func hudLabelsAreDistinct() {
         let labels = [
             TranslationRejection.residualHan(count: 1).hudLabel,
             TranslationRejection.chinesePunctuation(count: 1).hudLabel,
             TranslationRejection.truncated.hudLabel,
             TranslationRejection.tooShort(ratio: 0.5).hudLabel,
+            TranslationRejection.noHan.hudLabel,
         ]
         #expect(Set(labels).count == labels.count)
-        for label in labels { #expect(label.contains("退回中文")) }
+        for label in labels { #expect(label.contains("退回原文")) }
+    }
+
+    // MARK: - 按 (源, 目标) 分流
+
+    @Test func chineseTargetRequiresHan() {
+        let gate = TranslationGate()
+        // 整段没译（模型把英文原样吐回来）必须拦下。
+        let verdict = gate.check(
+            source: "Please review the fallback logic.",
+            translation: "Please review the fallback logic.",
+            from: .english, to: .chinese)
+        #expect(verdict == .reject(.noHan))
+    }
+
+    @Test func chineseTargetPassesNormalTranslationWithTerms() {
+        let gate = TranslationGate()
+        // 中文译文合法保留英文术语——不查拉丁残留正是我们自己的规则。
+        let verdict = gate.check(
+            source: "Please review the fallback logic.",
+            translation: "请检查一下 fallback 逻辑。",
+            from: .english, to: .chinese)
+        #expect(verdict == .pass)
+    }
+
+    @Test func latinToLatinSkipsLengthRatio() {
+        let gate = TranslationGate(minimumLengthRatio: 99)  // 极端阈值：只要读了就必拦
+        // 英→西的长度比天然在 1.0 附近，1.1 阈值是 zh→拉丁语料标定的，
+        // 源非中文时不启用——否则正常译文大面积误杀。
+        let verdict = gate.check(
+            source: "Book three tickets for Friday.",
+            translation: "Reserva tres billetes para el viernes.",
+            from: .english, to: .spanish)
+        #expect(verdict == .pass)
+    }
+
+    @Test func residualHanStillFiresForLatinTargetRegardlessOfSource() {
+        let gate = TranslationGate()
+        let verdict = gate.check(
+            source: "Confirm the deployment.",
+            translation: "Confirma el despliegue 部署.",
+            from: .english, to: .spanish)
+        #expect(verdict == .reject(.residualHan(count: 2)))
+    }
+
+    /// 变异验证 ④ 补的用例：把中文目标分支里的截断判据删掉，此前没有任何
+    /// 用例会红。前置条件与拉丁分支同款：源自己有句末标点、译文没有。
+    @Test func chineseTargetCatchesTruncation() {
+        let gate = TranslationGate()
+        let verdict = gate.check(
+            source: "Confirm it.",
+            translation: "请确认",
+            from: .english, to: .chinese)
+        #expect(verdict == .reject(.truncated))
+    }
+
+    @Test func rejectionLabelsSayOriginalNotChinese() {
+        // 源不再恒为中文，「已退回中文原文」在英文输入下是错话。
+        for rejection: TranslationRejection in [
+            .residualHan(count: 1), .chinesePunctuation(count: 1),
+            .truncated, .tooShort(ratio: 0.5), .noHan,
+        ] {
+            #expect(rejection.hudLabel.contains("已退回原文"))
+            #expect(!rejection.hudLabel.contains("中文原文"))
+        }
     }
 
     // MARK: - 素材
