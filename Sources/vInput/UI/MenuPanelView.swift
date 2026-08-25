@@ -574,7 +574,10 @@ struct MenuPanelView: View {
     private var outputLanguageSection: some View {
         expandedButton(
             MenuPanelModel.noTranslationLabel(input: model.inputLanguage),
-            checked: model.translationChoice == .off
+            // off 与「目标==输入」都落这格：choice=translate(to:X) 且输入也是 X
+            // 时实际不建管线，与收起态标题的口径（effectiveTarget）一致——
+            // 只比 `== .off` 的话那种状态下七格无一打勾（QA F3）。
+            checked: model.translationChoice.effectiveTarget(input: model.inputLanguage) == nil
         ) { model.selectTranslationChoice(.off) }
         // 与输入相同的语种不列——选它等于不翻译，上面那格已经是它。
         ForEach(Language.allCases.filter { $0 != model.inputLanguage }, id: \.rawValue) { target in

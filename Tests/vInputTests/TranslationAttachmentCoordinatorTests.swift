@@ -432,6 +432,19 @@ struct TranslationAttachmentCoordinatorTests {
         #expect(harness.coordinator.pipeline?.target == .spanish)
     }
 
+    /// 上一条只走 `.local` 分支——`.cloud` 分支另建一条管线，`source:` 在
+    /// 那里是第二次独立传参（收尾 QA 独立变异 V3 实测：把 `.cloud` 分支的
+    /// `source:` 硬写 `.chinese`，全绿）。硬写的代价：英文输入下云端 prompt
+    /// 写着「从中文译成西语」，译文质量随缘劣化且无声。
+    @Test("云端分支建出的管线也带着当时的 (输入, 目标)")
+    func cloudPipelineCarriesInputAndTarget() {
+        let harness = Harness(input: .english, choice: .translate(to: .spanish), cloud: true)
+        harness.coordinator.apply()
+
+        #expect(harness.coordinator.pipeline?.source == .english)
+        #expect(harness.coordinator.pipeline?.target == .spanish)
+    }
+
     /// 上一条的纯函数版之外，协调器侧也要有用例抓「无视输入语言」的写法：
     /// `apply()` 里有效目标的计算若直接从 choice 取语言（无视 input），
     /// 这条会挂上一条英→英的管线。

@@ -285,7 +285,10 @@ struct CloudBackendMenuTests {
         #expect(active.contains("现在每说一句话"), "没说清是每一句而不是偶尔：\(active)")
         #expect(active.contains("Google 的服务器"), "没说清发给谁：\(active)")
         #expect(active.contains("报价"), "没提用户明确说过的那类机密内容：\(active)")
-        #expect(active.contains("切回中文"), "没给用户一条立刻停止出站的路：\(active)")
+        #expect(active.contains("不翻译"), "没给用户一条立刻停止出站的路：\(active)")
+        // 旧口径防回潮：「切回中文」在全矩阵下是错话——输入=英文时切中文
+        // 是 en→zh 真云端方向，照样出站（QA F1）。
+        #expect(!active.contains("切回中文"), "旧口径「切回中文」回潮了：\(active)")
         #expect(active.contains("转写与校正始终在本机"), "没说清哪些层不受影响，用户会以为整条链都上云了：\(active)")
         #expect(active.contains(Language.spanish.displayName), "没说清现在译成哪种语言：\(active)")
 
@@ -314,7 +317,8 @@ struct CloudBackendMenuTests {
 
     /// 确认框的文案：**三件事缺一不可。**
     ///
-    /// 发生什么（每句话发到 Google）、什么时候不发生（输出中文时零出站）、
+    /// 发生什么（每句话发到 Google）、什么时候不发生（没有有效翻译目标时
+    /// 零出站——不能写成「输出中文时」，en→zh 是真云端方向，QA F2）、
     /// 什么不受影响（转写与校正始终在本机）。少任何一件，用户都会做出错的
     /// 判断——尤其是第二件：不说的话，用户会以为开了就再也停不下来。
     @Test("开启云端的确认框把三件事都说清了")
@@ -325,7 +329,10 @@ struct CloudBackendMenuTests {
         #expect(all.contains("Google"), "没说发给谁：\(all)")
         #expect(all.contains("每一句话") || all.contains("每句话"), "没说是每一句：\(all)")
         #expect(all.contains("报价"), "没提用户明确说过的那类机密内容：\(all)")
-        #expect(all.contains("不会有任何文字离开本机"), "没说清输出中文时零出站：\(all)")
+        #expect(all.contains("不会有任何文字离开本机"), "没说清零出站的那一格：\(all)")
+        // 零出站的条件必须按全矩阵口径说：「有效翻译目标」（off 或目标==输入）。
+        // 写成「输出中文时」的话，输入=英文的用户会以为 en→zh 也不出站（QA F2）。
+        #expect(all.contains("有效翻译目标"), "零出站的条件没按全矩阵口径说：\(all)")
         #expect(all.contains("转写与校正始终在本机"), "没说清哪些层不受影响：\(all)")
         #expect(all.contains("随时可以在同一处关掉"), "没说清怎么反悔：\(all)")
 

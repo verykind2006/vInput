@@ -292,6 +292,21 @@ struct TranslationGateTests {
         #expect(verdict == .reject(.tooShort(ratio: 0)))
     }
 
+    /// 上一条的非空孪生：只剩空白和标点的退化译文（收尾 QA 独立变异 V5
+    /// 实测：把兜底判据改成 `translation.isEmpty`，全绿——空串两条用例都
+    /// 抓不住这个弱化）。判据的尺子必须是 `significantCharacters`：
+    /// 它把标点 / 空白全滤掉，`"  .  "` 的显著字符数是 0，与空串同罪。
+    @Test func whitespaceAndPunctuationOnlyTranslationIsRejected() {
+        let gate = TranslationGate()
+        // 元断言：这条素材确实一个显著字符都不剩，否则下面测的就是别的判据。
+        #expect(BenchMetrics.significantCharacters("  .  ").isEmpty)
+        let verdict = gate.check(
+            source: "Book tickets",  // 无句末标点：截断判据的前置条件不成立
+            translation: "  .  ",
+            from: .english, to: .spanish)
+        #expect(verdict == .reject(.tooShort(ratio: 0)))
+    }
+
     /// 变异验证 ④ 补的用例：把中文目标分支里的截断判据删掉，此前没有任何
     /// 用例会红。前置条件与拉丁分支同款：源自己有句末标点、译文没有。
     @Test func chineseTargetCatchesTruncation() {
@@ -301,6 +316,24 @@ struct TranslationGateTests {
             translation: "请确认",
             from: .english, to: .chinese)
         #expect(verdict == .reject(.truncated))
+    }
+
+    /// 中文目标分支截断判据的**前置条件**专属用例：源自身没说完（无句末
+    /// 标点，用户松手早）时，译文没句末标点是照实译出，不算截断。
+    /// 拉丁分支的同款前置已有 `unterminatedSourceDoesNotTriggerTruncation`
+    /// 钉着；中文分支此前只被别的用例**偶然**兜住（收尾 QA 独立变异 V4：
+    /// 删掉 `!looksTruncated(source)` 前置，红的是断言别件事的用例）——
+    /// 偶然的守卫会随那条用例改素材而失效。
+    @Test func chineseTargetDoesNotCallUnterminatedSourceTruncation() {
+        let gate = TranslationGate()
+        // 元断言：两边都「没说完」，缺前置条件时截断判据会误拦。
+        #expect(TruncationSignal.looksTruncated("Confirm"))
+        #expect(TruncationSignal.looksTruncated("确认一下"))
+        let verdict = gate.check(
+            source: "Confirm",
+            translation: "确认一下",
+            from: .english, to: .chinese)
+        #expect(verdict == .pass)
     }
 
     @Test func rejectionLabelsSayOriginalNotChinese() {

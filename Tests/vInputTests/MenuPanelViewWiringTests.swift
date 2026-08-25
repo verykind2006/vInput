@@ -281,6 +281,25 @@ struct MenuPanelViewWiringTests {
         )
     }
 
+    /// 「不翻译」格的勾选判据必须是 effectiveTarget，不是 `== .off`。
+    ///
+    /// choice=translate(to:X) 且输入也是 X 时实际不建管线（收起态标题也写着
+    /// 「与输入相同，不翻译」），只比 `== .off` 的话这个状态下七格无一打勾
+    /// ——用户看到的是「哪个都没选中」的自相矛盾面板（QA F3）。
+    @Test("「不翻译」格按 effectiveTarget 打勾，off 与目标==输入都落这格")
+    func noTranslationRowChecksByEffectiveTarget() throws {
+        let source = try Self.panelSource()
+        #expect(
+            source.contains(
+                "model.translationChoice.effectiveTarget(input: model.inputLanguage) == nil"),
+            """
+            「不翻译」格的 checked 不是 effectiveTarget == nil。
+            退回 `translationChoice == .off` 的话，「目标==输入」这个实际
+            不翻译的状态在展开区七格里无一打勾。
+            """
+        )
+    }
+
     /// 随状态变的五处文案必须走 `MenuPanelModel`。
     ///
     /// 这条是那次真事故的守卫：迁移时「重试上次转写（没有可重试的）」在视图

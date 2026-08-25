@@ -785,6 +785,53 @@ struct AppModelWiringTests {
         #expect(
             body.contains("rebuildTranscriberForInputLanguage()"),
             "selectInputLanguage 里没有 rebuildTranscriberForInputLanguage()——语言是转写器的构造参数，不重建等于没换。")
+        // 可观察镜像那一行（收尾 QA 独立变异 V8 实测：删掉它全绿）。
+        // @Observable 只跟踪 AppModel 自身的存储属性，漏抄的表现是
+        // 「偏好已写入、引擎已重建，菜单永远停在旧语言」。
+        #expect(
+            body.contains("inputLanguage = language"),
+            "selectInputLanguage 里没有镜像行 inputLanguage = language——菜单标题与勾选永远停在旧语言。")
+    }
+
+    /// 零模型（`MissingModelTranscriber` 占位）时 rebuild 必须短路——
+    /// 收尾 QA F4：不短路的话 rebuild 以 modelNotReady 失败，把「没有模型」
+    /// 误报成「按输入语言重建转写器失败」红字，向导第五步也跟着写错话。
+    @Test("零模型时按输入语言重建被短路，不误报红字")
+    func zeroModelShortCircuitsInputLanguageRebuild() throws {
+        let body = try Self.functionBody(
+            named: "rebuildTranscriberForInputLanguage", in: try Self.appModelSource())
+        #expect(
+            body.contains("guard hasModel else { return }"),
+            """
+            rebuildTranscriberForInputLanguage 里没有 hasModel 短路。
+            零模型时没有可重建的东西（语言偏好已写入，将来模型换用时构造
+            闭包自然读到新值），不短路的话「没有模型」会被误报成红字。
+            """
+        )
+    }
+
+    /// 转写器构造闭包必须现读 `InputLanguagePreference().language`——
+    /// 这是「换语言 → rebuild 拿到新值」的唯一接线点（收尾 QA 独立变异 V1
+    /// 实测：闭包硬写 `.chinese` 全绿，此前没有任何东西钉它）。
+    @Test("转写器构造闭包现读输入语言偏好，且全文件只此一处")
+    func transcriberFactoryReadsInputLanguagePreference() throws {
+        let source = try Self.appModelSource()
+        let body = try Self.functionBody(named: "bootstrap", in: source)
+        #expect(
+            body.contains("InputLanguagePreference().language"),
+            """
+            bootstrap 的转写器构造闭包里没有现读 InputLanguagePreference().language。
+            硬写某种语言的话，rebuild() 重建出来的永远是那种语言——
+            菜单显示新语言、引擎跑旧语言，正是本仓最忌讳的静默骗人。
+            """
+        )
+        // 「唯一」也要钉：第二处读点意味着两条可能不一致的取值路径。
+        let occurrences = source.components(
+            separatedBy: "InputLanguagePreference().language"
+        ).count - 1
+        #expect(
+            occurrences == 1,
+            "InputLanguagePreference().language 在 AppModel 里出现 \(occurrences) 处，应当正好一处（构造闭包）。")
     }
 
     /// onStateChange 的 .idle 分支必须补做被推迟的转写器重建——
