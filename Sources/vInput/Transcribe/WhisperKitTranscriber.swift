@@ -354,8 +354,11 @@ actor WhisperKitTranscriber: Transcriber, PreviewCapable {
             }
             let loaded = try await WhisperKit(config)
             pipe = loaded
-            // 空 prompt 不编码成空 token 数组——promptTokens 传 [] 与传 nil 在
-            // WhisperKit 的 prefill 路径上不是一回事，nil 才是「没有条件前缀」。
+            // v1.1.0 的 TextDecoder 对 trimmed 后为空的 prompt 会整个跳过
+            // （TextDecoder.swift:198-207），传 [] 与 nil 当前等价；仍显式传
+            // nil 是为了明确表达「没有条件前缀」、不把行为押在上游那道守卫上。
+            // 这条守卫自身测试够不到（在 prepare() 真加载路径里），行为上是
+            // no-op，防的是上游将来改判。
             promptTokens = promptText.isEmpty
                 ? nil
                 : loaded.tokenizer.map { Self.encodePrompt(promptText, with: $0) }

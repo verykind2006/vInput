@@ -111,6 +111,49 @@ struct WhisperKitTranscriberTests {
             Issue.record("预期 TranscribeError，实际 \(error)")
         }
     }
+
+    // MARK: - 按输入语言构造
+
+    /// 三个中文专属构造参数（解码语言、繁→简、标点 prompt）必须按输入
+    /// 语言分流：英文等语种带着中文标点 prompt 与繁→简只有坏处。
+    @Test func transcriberIsBuiltPerInputLanguage() async {
+        let zh = AppModel.makeTranscriber(
+            ModelDescriptor(name: "m", folder: "/tmp/m"), language: .chinese)
+        let en = AppModel.makeTranscriber(
+            ModelDescriptor(name: "m", folder: "/tmp/m"), language: .english)
+        guard let zh = zh as? WhisperKitTranscriber, let en = en as? WhisperKitTranscriber else {
+            Issue.record("非空目录应当构造 WhisperKitTranscriber"); return
+        }
+        await #expect(zh.language == "zh")
+        await #expect(zh.normalizeToSimplified)
+        await #expect(zh.promptText == WhisperKitTranscriber.punctuationPrompt)
+        await #expect(en.language == "en")
+        // 繁→简与中文标点 prompt 都是中文专属，英文解码带着它们只有坏处。
+        await #expect(!en.normalizeToSimplified)
+        await #expect(en.promptText.isEmpty)
+    }
+
+    /// 与 `MissingModelTranscriberTests.emptyFolderYieldsTheNonDownloadingTranscriber`
+    /// 分工：那边守「返回的是不联网的类型」，这边守「加 language 参数后守卫不丢」。
+    @Test func emptyModelFolderStillMeansMissingModel() {
+        // 原守卫不因加参数而丢：空目录绝不联网。
+        let transcriber = AppModel.makeTranscriber(
+            ModelDescriptor(name: "m", folder: ""), language: .english)
+        #expect(transcriber is MissingModelTranscriber)
+    }
+
+    /// 七语种全查语言码，防止将来某语种被硬编码遮住。
+    @Test func everyLanguageMapsToItsWhisperCode() async {
+        for language in Language.allCases {
+            guard let transcriber = AppModel.makeTranscriber(
+                ModelDescriptor(name: "m", folder: "/tmp/m"), language: language) as? WhisperKitTranscriber else {
+                Issue.record("\(language) 未构造出 WhisperKitTranscriber"); return
+            }
+            await #expect(transcriber.language == language.rawValue)
+            await #expect(transcriber.normalizeToSimplified == (language == .chinese))
+            await #expect(transcriber.promptText.isEmpty == (language != .chinese))
+        }
+    }
 }
 
 @Suite("WhisperKitTranscriber 预览能力")
@@ -286,46 +329,5 @@ struct TrailingNonSpeechFilterTests {
     @Test("空分段安全")
     func emptySegmentsAreSafe() {
         #expect(WhisperKitTranscriber.textDroppingTrailingNonSpeech([]).isEmpty)
-    }
-
-    // MARK: - 按输入语言构造
-
-    /// 三个中文专属构造参数（解码语言、繁→简、标点 prompt）必须按输入
-    /// 语言分流：英文等语种带着中文标点 prompt 与繁→简只有坏处。
-    @Test func transcriberIsBuiltPerInputLanguage() async {
-        let zh = AppModel.makeTranscriber(
-            ModelDescriptor(name: "m", folder: "/tmp/m"), language: .chinese)
-        let en = AppModel.makeTranscriber(
-            ModelDescriptor(name: "m", folder: "/tmp/m"), language: .english)
-        guard let zh = zh as? WhisperKitTranscriber, let en = en as? WhisperKitTranscriber else {
-            Issue.record("非空目录应当构造 WhisperKitTranscriber"); return
-        }
-        await #expect(zh.language == "zh")
-        await #expect(zh.normalizeToSimplified)
-        await #expect(zh.promptText == WhisperKitTranscriber.punctuationPrompt)
-        await #expect(en.language == "en")
-        // 繁→简与中文标点 prompt 都是中文专属，英文解码带着它们只有坏处。
-        await #expect(!en.normalizeToSimplified)
-        await #expect(en.promptText.isEmpty)
-    }
-
-    @Test func emptyModelFolderStillMeansMissingModel() {
-        // 原守卫不因加参数而丢：空目录绝不联网。
-        let transcriber = AppModel.makeTranscriber(
-            ModelDescriptor(name: "m", folder: ""), language: .english)
-        #expect(transcriber is MissingModelTranscriber)
-    }
-
-    /// 七语种全查语言码，防止将来某语种被硬编码遮住。
-    @Test func everyLanguageMapsToItsWhisperCode() async {
-        for language in Language.allCases {
-            guard let transcriber = AppModel.makeTranscriber(
-                ModelDescriptor(name: "m", folder: "/tmp/m"), language: language) as? WhisperKitTranscriber else {
-                Issue.record("\(language) 未构造出 WhisperKitTranscriber"); return
-            }
-            await #expect(transcriber.language == language.rawValue)
-            await #expect(transcriber.normalizeToSimplified == (language == .chinese))
-            await #expect(transcriber.promptText.isEmpty == (language != .chinese))
-        }
     }
 }

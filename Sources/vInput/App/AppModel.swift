@@ -535,7 +535,7 @@ final class AppModel {
             modelFolder: model.folder,
             language: language.rawValue,   // Language 的 rawValue 就是 Whisper 语言码
             // 繁→简与标点 prompt 都是中文专属。英文等语种裸解码的标点表现
-            // 未实测——记录在 Roadmap 未验证清单，不在这里假装有依据。
+            // 未实测——记录在 Roadmap 未验证清单（M10 收尾时落账），不在这里假装有依据。
             normalizeToSimplified: language == .chinese,
             prompt: language == .chinese ? WhisperKitTranscriber.punctuationPrompt : ""
         )
