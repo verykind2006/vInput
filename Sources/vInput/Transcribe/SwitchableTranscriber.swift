@@ -40,6 +40,18 @@ actor SwitchableTranscriber: Transcriber {
         descriptor = next
     }
 
+    /// 用同一个模型描述符重建底层转写器。
+    ///
+    /// 存在的理由：输入语言是 `makeTranscriber` 的构造期参数，换语言不换
+    /// 模型时 `switchTo` 的 `next != descriptor` guard 会直接返回、什么都
+    /// 不发生。语义与 `switchTo` 相同：先建新的、`prepare()` 成功才替换，
+    /// 失败时旧转写器原样可用。
+    func rebuild() async throws {
+        let candidate = makeTranscriber(descriptor)
+        try await candidate.prepare()
+        current = candidate
+    }
+
     func prepare() async throws {
         try await current.prepare()
     }

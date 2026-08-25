@@ -114,4 +114,73 @@ struct SwitchableTranscriberTests {
 
         #expect(factory.fakes["base"]?.prepareCallCount == 1)
     }
+
+    /// 按调用顺序发放预置替身，并记录每次收到的 descriptor。
+    ///
+    /// 与 `Factory` 不同：同名 descriptor 也发新实例——rebuild 的测试
+    /// 需要区分「重建前后是不是同一个底层转写器」。
+    private final class SequencedFactory: @unchecked Sendable {
+        private let queue: [FakeTranscriber]
+        private(set) var received: [ModelDescriptor] = []
+        private let lock = NSLock()
+
+        init(_ fakes: [FakeTranscriber]) { self.queue = fakes }
+
+        func make(_ d: ModelDescriptor) -> Transcriber {
+            lock.lock(); defer { lock.unlock() }
+            received.append(d)
+            return queue[received.count - 1]
+        }
+
+        var buildCount: Int {
+            lock.lock(); defer { lock.unlock() }
+            return received.count
+        }
+
+        var lastDescriptor: ModelDescriptor? {
+            lock.lock(); defer { lock.unlock() }
+            return received.last
+        }
+    }
+
+    @Test("rebuild 用同一个 descriptor 无条件重建")
+    func rebuildReconstructsWithSameDescriptor() async throws {
+        // 输入语言是构造参数——换语言不换模型时 switchTo 的同名 guard
+        // 直接返回，rebuild 必须无条件重建。
+        let first = FakeTranscriber()
+        first.result = "旧实例"
+        let second = FakeTranscriber()
+        second.result = "新实例"
+        let factory = SequencedFactory([first, second])
+        let initial = descriptor("base")
+        let sut = SwitchableTranscriber(initial: initial, makeTranscriber: { @Sendable in factory.make($0) })
+
+        try await sut.rebuild()
+
+        // init 一次 + rebuild 一次，且第二次收到的 descriptor 与初始相同
+        #expect(factory.buildCount == 2)
+        #expect(factory.lastDescriptor == initial)
+        // 关键：转写必须走新实例——只数构造次数抓不住「建了却没接上」
+        let text = try await sut.transcribe([0.1])
+        #expect(text == "新实例")
+        #expect(await sut.descriptor == initial)
+    }
+
+    @Test("rebuild 失败时保持原转写器可用")
+    func rebuildKeepsOldTranscriberWhenPrepareFails() async {
+        // 与 switchTo 同一条保证：先建新的、prepare() 成功才替换。
+        let first = FakeTranscriber()
+        first.result = "老的还在"
+        let broken = FakeTranscriber()
+        broken.prepareError = TranscribeError.modelNotReady
+        let factory = SequencedFactory([first, broken])
+        let sut = SwitchableTranscriber(initial: descriptor("base"), makeTranscriber: { @Sendable in factory.make($0) })
+
+        await #expect(throws: TranscribeError.modelNotReady) {
+            try await sut.rebuild()
+        }
+
+        let text = try? await sut.transcribe([0.1])
+        #expect(text == "老的还在")
+    }
 }
