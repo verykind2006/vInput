@@ -45,7 +45,7 @@ extension DictationSession: TranslationAttachTarget {}
 ///
 /// # 行为与搬家前一字不差
 ///
-/// 搬家的目的是可测，不是改行为。逐条对照：镜像（`target` / `modelMissing`）
+/// 搬家的目的是可测，不是改行为。逐条对照：镜像（`choice` / `input` / `modelMissing`）
 /// 在会话 guard **之前**更新（菜单标题当场就对）；会话不在 idle 时记 pending
 /// 并写日志；四种挂载各自的日志；`attachTranslation` 写在 switch **外面**
 /// 四格共用；预热用 detached 任务不占主线程。
@@ -109,7 +109,8 @@ final class TranslationAttachmentCoordinator {
     /// 最近一次 `apply()` 算出来的挂载结论。菜单的「翻译后端：…」由它推出。
     ///
     /// **菜单必须读这个，不能读偏好里的那个布尔值。** 「云端开关开着」与
-    /// 「这次真的会走云端」是两回事——输出语言是中文时结论是 `.detach`，
+    /// 「这次真的会走云端」是两回事——无有效目标（off 或 目标==输入）时
+    /// 结论是 `.detach`，
     /// 一个字节都不出站，而菜单若直接印开关状态就会说成正在往外发。
     private(set) var attachment: AppModel.TranslationAttachment = .detach
 
@@ -121,7 +122,7 @@ final class TranslationAttachmentCoordinator {
     ///
     /// - 菜单**不去读 Keychain**，只读这个镜像——否则每打开一次菜单就可能
     ///   弹一次框，而菜单是用户每天点很多次的东西；
-    /// - 中文（＝不翻译）那一格一次都不读：那一格本来就零出站，
+    /// - 无有效目标那一格一次都不读：那一格本来就零出站，
     ///   key 在不在与它无关，为了「状态更准」去弹一个框是纯赔本。
     ///
     /// 代价是：用户在挂载之后才把 key 存进 Keychain 时，菜单会继续写着

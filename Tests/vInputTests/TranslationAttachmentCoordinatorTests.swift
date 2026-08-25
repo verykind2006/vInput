@@ -381,9 +381,15 @@ struct TranslationAttachmentCoordinatorTests {
         try await harness.session.start()
 
         harness.inputs.choice = .translate(to: .english)
+        // 输入语言也一起换：不能选 .english——那会与目标同语言、落成
+        // 「无有效目标」，下面 modelMissing 的断言就没得测了。
+        harness.inputs.input = .spanish
         harness.coordinator.apply()
 
         #expect(harness.coordinator.choice == .translate(to: .english), "菜单标题会停在旧语言")
+        // input 的镜像也要先行：把 `input = current.input` 挪到会话 guard
+        // 之后，只有这条会红——choice 那条抓不到它。
+        #expect(harness.coordinator.input == .spanish, "输入语言的镜像会停在旧值")
         #expect(harness.coordinator.modelMissing, "缺目录的提示会等到会话结束才出现")
 
         harness.source.emit(Harness.samples)

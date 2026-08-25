@@ -743,7 +743,7 @@ final class AppModel {
             AppModel.applyTranslationAnnotation(annotation, to: self.hudModel)
         }
         self.session = session
-        // 协调器要等会话建好才能构造。捕获的是两个偏好结构体本身而不是
+        // 协调器要等会话建好才能构造。捕获的是三个偏好结构体本身而不是
         // `self`：它们只是 UserDefaults 的取值器（`nonmutating set`），
         // 每次 `apply()` 都会重新读一遍——补挂那次必须读**当时**的偏好，
         // 而不是第一次被拒时的快照。
