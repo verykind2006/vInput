@@ -1250,7 +1250,7 @@ final class AppModel {
     ) -> TranslationAttachment {
         // 先判「有没有有效目标」。nil = 不翻译（off 或 目标==输入），
         // **云端开关在这一行之后才允许被读到**。
-        guard let target = effectiveTarget else { return .detach }
+        guard effectiveTarget != nil else { return .detach }
         // 到这里才轮到后端选择。**这是插入，不是重排**——两行对调时
         // `TranslationAttachmentTests.offWithCloudStillDetaches` 会红，
         // 那条的期望值（`.detach`）不该被迁就。
@@ -1681,7 +1681,7 @@ final class AppModel {
 
     /// 切换输出语言。改动立即生效并跨启动保留。
     func selectOutputLanguage(_ target: Language) {
-        // TEMP(Task 7/10 重写)：旧语义等价桥
+        // TEMP(Task 10 重写)：旧语义等价桥
         translationPreference.choice = (target == .chinese ? .off : .translate(to: target))
         applyTranslationPreference()
         // 菜单标题上的后缀是常驻提示，但用户刚点完菜单、菜单当场就关了，

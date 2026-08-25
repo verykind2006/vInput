@@ -16,11 +16,11 @@ struct TranslationPreferenceTests {
     @Test("默认是中文，即不翻译")
     func defaultsToChinese() {
         let preference = TranslationPreference(defaults: makeDefaults())
-        // TEMP(Task 7/10 重写)：旧语义等价桥
+        // TEMP(Task 10 重写)：旧语义等价桥
         #expect((preference.choice.effectiveTarget(input: .chinese) ?? .chinese) == .chinese)
         // 顺带把「中文就是不翻译」这条语义钉住：默认值换成任何
         // requiresTranslation == true 的语言，本行都会红。
-        // TEMP(Task 7/10 重写)：旧语义等价桥
+        // TEMP(Task 10 重写)：旧语义等价桥
         #expect(
             (preference.choice.effectiveTarget(input: .chinese) ?? .chinese)
                 .requiresTranslation == false)
@@ -29,9 +29,9 @@ struct TranslationPreferenceTests {
     @Test("设置后能读回")
     func roundTrips() {
         let preference = TranslationPreference(defaults: makeDefaults())
-        // TEMP(Task 7/10 重写)：旧语义等价桥
+        // TEMP(Task 10 重写)：旧语义等价桥
         preference.choice = .translate(to: .spanish)
-        // TEMP(Task 7/10 重写)：旧语义等价桥
+        // TEMP(Task 10 重写)：旧语义等价桥
         #expect((preference.choice.effectiveTarget(input: .chinese) ?? .chinese) == .spanish)
     }
 
@@ -41,7 +41,7 @@ struct TranslationPreferenceTests {
     func storesStableIdentifier() {
         let defaults = makeDefaults()
         let preference = TranslationPreference(defaults: defaults)
-        // TEMP(Task 7/10 重写)：旧语义等价桥（键随 outputLanguage → choice 迁移）
+        // TEMP(Task 10 重写)：旧语义等价桥（键随 outputLanguage → choice 迁移）
         preference.choice = .translate(to: .german)
         #expect(defaults.string(forKey: "translation.choice") == "de")
     }
@@ -53,7 +53,7 @@ struct TranslationPreferenceTests {
     @Test("无法识别的值退回中文")
     func fallsBackOnUnknownValue() {
         let defaults = makeDefaults()
-        // TEMP(Task 7/10 重写)：旧语义等价桥（键随 outputLanguage → choice 迁移）
+        // TEMP(Task 10 重写)：旧语义等价桥（键随 outputLanguage → choice 迁移）
         defaults.set("klingon", forKey: "translation.choice")
         let choice = TranslationPreference(defaults: defaults).choice
         #expect((choice.effectiveTarget(input: .chinese) ?? .chinese) == .chinese)
@@ -77,17 +77,17 @@ struct TranslationPreferenceTests {
         let preference = TranslationPreference(defaults: defaults)
 
         preference.usesCloudBackend = true
-        // TEMP(Task 7/10 重写)：旧语义等价桥
+        // TEMP(Task 10 重写)：旧语义等价桥
         #expect(
             (preference.choice.effectiveTarget(input: .chinese) ?? .chinese) == .chinese,
             "开云端不该顺手改了输出语言")
 
-        // TEMP(Task 7/10 重写)：旧语义等价桥
+        // TEMP(Task 10 重写)：旧语义等价桥
         preference.choice = .translate(to: .spanish)
         #expect(preference.usesCloudBackend, "改语言不该顺手关了云端")
 
         preference.usesCloudBackend = false
-        // TEMP(Task 7/10 重写)：旧语义等价桥
+        // TEMP(Task 10 重写)：旧语义等价桥
         #expect(
             (preference.choice.effectiveTarget(input: .chinese) ?? .chinese) == .spanish,
             "关云端不该顺手改了输出语言")

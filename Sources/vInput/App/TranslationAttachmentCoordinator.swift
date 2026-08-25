@@ -230,9 +230,15 @@ final class TranslationAttachmentCoordinator {
         case .detach:
             pipeline = nil
         case .local(let directory):
-            // `.local`/`.cloud` 两格的有效目标必非 nil：nil 在
-            // `translationAttachment` 首行就落成了 `.detach`。
-            let target = effectiveTarget!
+            guard let target = effectiveTarget else {
+                // `.local`/`.cloud` 两格的有效目标必非 nil：nil 在
+                // `translationAttachment` 首行就落成了 `.detach`。走到这里
+                // 只可能是那条不变式被将来改坏——debug 下当场炸出来，
+                // release 下退化为摘管线（最无害）。
+                assertionFailure("attachment=\(attachment) 但 effectiveTarget 为 nil")
+                pipeline = nil
+                break
+            }
             let built = TranslationPipeline(
                 // **闸门与超时都用默认值。** 两个数各自有实测支撑
                 // （闸门 1.1、超时 8 秒）且各自有测试守着，在调用点硬写一个
@@ -246,8 +252,12 @@ final class TranslationAttachmentCoordinator {
             // 与校正同一个道理：加载一次要几十秒，注入路径上一秒都不能等。
             warmUp(built)
         case .cloud:
-            // 同 `.local`：这一格的有效目标必非 nil。
-            let target = effectiveTarget!
+            guard let target = effectiveTarget else {
+                // 同 `.local`：不变式被将来改坏才会走到这里。
+                assertionFailure("attachment=\(attachment) 但 effectiveTarget 为 nil")
+                pipeline = nil
+                break
+            }
             // **云端的超时下限比本机高得多**，理由见
             // `TranslationBudget.cloudFloor`：实测均 7.2 秒、最长 12.7 秒，
             // 而本机那个 8 秒会把成功返回的云端译文也掐掉。
