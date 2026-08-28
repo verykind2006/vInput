@@ -219,3 +219,18 @@ screencapture -x -R$((X-4)),0,44,26 /tmp/i.png && sips -Z 400 /tmp/i.png --out /
    能给出答案**（它报告状态项存在、有尺寸、有坐标），只是我一开始没去问。
 2. **切了系统外观做诊断，却没先记原值就「还原」**——用户原本是浅色，我按
    深色还回去了。要改用户机器上的全局设置时：先读、后改、按读到的值还原。
+
+## 强制弹出首次启动向导
+
+向导的判据从 2026-08-28 起会看**环境实际状态**：模型齐 + 麦克风 + 辅助功能
+三样都有就不弹了（`OnboardingState.shouldPresent`）。开发机永远满足这个
+条件，于是向导再也弹不出来，而它本身还要被验收。
+
+```bash
+defaults write com.vinput.app onboarding.forcePresent -bool true   # 开
+defaults delete com.vinput.app onboarding.forcePresent             # 关
+```
+
+这个开关短路一切，`onboarding.complete` 为 true 也照弹。**别用撤权限、
+挪模型的办法去触发向导**——那是拿真实环境当测试夹具，撤了还得再授权一次，
+而 ad-hoc 签名下每次重新构建授权本来就会作废（见 `dev-signing.md`）。

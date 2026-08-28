@@ -63,11 +63,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// （`adoptModelFolder`），而 `selectModelFromFolder` 依赖 bootstrap 建好的
     /// transcriber；反过来的话手动导入与下载完成两条路都会静默无效。
     ///
-    /// 完成过就不再弹，判据是 `OnboardingState.shouldPresent(isComplete:)`
-    /// ——这一条是本批存在的全部理由，没有它向导永远不会出现。
+    /// 判据是 `OnboardingState.shouldPresent`：完成过、**或者环境本来就
+    /// 全绿**（模型齐 + 两项权限都有）就不弹。
+    ///
+    /// 后半条是 2026-08-28 加的。重装系统后 UserDefaults 被清空，
+    /// `onboarding.complete` 键直接消失，而模型和权限一应俱全——向导
+    /// 却每次启动都糊在脸上。判据只认一个布尔标记、不认环境实际状态，
+    /// 换机和重装的人就会被反复问一遍他早就答完的问题。
     private func presentOnboardingIfNeeded() {
         let state = OnboardingState()
-        guard OnboardingState.shouldPresent(isComplete: state.isComplete) else { return }
+        let permissions = Permissions()
+        guard
+            OnboardingState.shouldPresent(
+                isComplete: state.isComplete,
+                hasModel: model.hasModel,
+                microphone: permissions.microphoneAuthorized(),
+                accessibility: permissions.accessibilityTrusted(),
+                forcePresent: OnboardingState.forcePresent())
+        else { return }
 
         var wiring = OnboardingCoordinator.Wiring()
         // 与 AppModel 用同一个模型根目录。各算各的就会「下载 1.5GB 然后
@@ -106,6 +119,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 不经 TypingSink，因此不可能打进别的应用。见 RedirectableTextSink。
         wiring.setTranscriptRedirect = { [weak self] handler in
             self?.model.setTranscriptRedirect(handler)
+        }
+        // 语言页读写都走 AppModel，不直接碰 `InputLanguagePreference`：
+        // 后者只存值，校正的摘挂、翻译矩阵、转写器重建都不会发生，
+        // 紧接着的「试说一句」就会仍按旧语言解码。
+        wiring.inputLanguage = { [weak self] in self?.model.inputLanguage ?? .chinese }
+        wiring.selectInputLanguage = { [weak self] language in
+            self?.model.selectInputLanguage(language)
         }
 
         let coordinator = OnboardingCoordinator(state: state, wiring: wiring)

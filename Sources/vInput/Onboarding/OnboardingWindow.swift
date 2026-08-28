@@ -246,6 +246,13 @@ final class OnboardingCoordinator {
         /// 「这次听写是不是向导发起的」。nil 表示问窗口自己（真判据）。
         /// 注入点只为测试而存在，理由见 `wizardOwnsThisDictation`。
         var wizardOwnsDictation: (() -> Bool)?
+        /// 当前输入语言。语言页据此显示选中项——写死中文的话，一个先在
+        /// 面板里改成英文又回头走向导的人，会被告知「你选的是中文」。
+        var inputLanguage: () -> Language = { InputLanguagePreference().language }
+        /// 改输入语言。**必须走 `AppModel.selectInputLanguage`**，不能直接写
+        /// `InputLanguagePreference`：后者只存值，校正的摘挂、翻译矩阵、
+        /// 转写器重建都不会发生，紧接着的「试说一句」仍按旧语言解码。
+        var selectInputLanguage: (Language) -> Void = { _ in }
     }
 
     let state: OnboardingState
@@ -271,6 +278,21 @@ final class OnboardingCoordinator {
     /// 试说出来的那句话。它就是向导输入框里的内容——**没有任何 CGEvent
     /// 被投递到任何应用**，见 `RedirectableTextSink`。
     var dictationText: String = ""
+
+    // MARK: - ⑤ 输入语言
+
+    /// 语言页上此刻选中的那一档。开窗时从当前偏好取，用户点一下就跟着变。
+    private(set) var selectedInputLanguage: Language = .chinese
+
+    /// 用户在语言页上点了某一档。
+    ///
+    /// 立刻生效、不等「下一步」：紧接着的「试说一句」要用它解码，
+    /// 攒到翻页时才提交的话，用户选完英文、当场试说，出来的还是中文。
+    func selectInputLanguage(_ language: Language) {
+        selectedInputLanguage = language
+        wiring.selectInputLanguage(language)
+        AppLogger.shared.log("向导：输入语言选为 \(language.displayName)")
+    }
 
     init(state: OnboardingState, wiring: Wiring = Wiring()) {
         self.state = state
@@ -407,6 +429,9 @@ final class OnboardingCoordinator {
             startAccessibilityPolling()
         case .testDictation:
             setRedirect { [weak self] text in self?.handleDictation(text) ?? false }
+        case .inputLanguage:
+            // 每次进这一页都重新取：用户可能在向导开着的时候去面板改过。
+            selectedInputLanguage = wiring.inputLanguage()
         case .welcome, .microphone, .downloadModel:
             break
         }

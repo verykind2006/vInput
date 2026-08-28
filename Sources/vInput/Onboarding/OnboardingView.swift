@@ -88,6 +88,7 @@ struct OnboardingView: View {
         case .microphone: microphoneStep
         case .accessibility: accessibilityStep
         case .downloadModel: downloadStep
+        case .inputLanguage: inputLanguageStep
         case .testDictation: testDictationStep
         }
     }
@@ -188,7 +189,61 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - ⑤ 试说一句
+    // MARK: - ⑤ 输入语言
+
+    /// 选「你说话用什么语言」。**默认中文，不选也能过。**
+    ///
+    /// 这一步不是关卡：语言有合理默认，读不到值就是中文，做成必选项等于
+    /// 拦住每一个本来就说中文的人。摆在这个位置是因为模型下载在
+    /// `present()` 那一刻就在后台跑了（见 `downloadStep` 上方的注释），
+    /// 靠前面几步吸收那十几分钟，语言选择再吸收一段；而紧接着的
+    /// 「试说一句」正好用上刚选的语言，选完立刻验证。
+    ///
+    /// 七档直接复用菜单面板那一套（`Language.allCases` + `displayName`），
+    /// 不另立一张表：两处各写一份，加语言时迟早对不上。
+    private var inputLanguageStep: some View {
+        stepScaffold(
+            title: "你说话用什么语言？",
+            body: [
+                "选错也不要紧，随时可以在菜单里改。",
+                "说中文的话直接下一步就行。",
+            ]
+        ) {
+            ForEach(Language.allCases, id: \.rawValue) { language in
+                languageChoice(language)
+            }
+            primaryButton("下一步") { coordinator.advance() }
+                .padding(.top, 4)
+        }
+    }
+
+    /// 一档语言。选中的那一档打勾，勾是唯一的区分手段之外还有底色——
+    /// 只靠颜色区分的话，色觉障碍的人看不出选中了哪个。
+    private func languageChoice(_ language: Language) -> some View {
+        let isSelected = language == coordinator.selectedInputLanguage
+        return Button {
+            coordinator.selectInputLanguage(language)
+        } label: {
+            HStack(spacing: 8) {
+                Text(isSelected ? "✓" : " ")
+                    .font(.system(size: TypeScale.body, weight: .semibold))
+                    .foregroundStyle(VITheme.accent)
+                    .frame(width: 14, alignment: .leading)
+                Text(language.displayName)
+                    .font(.system(size: TypeScale.body))
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(
+                isSelected ? Color(nsColor: .controlBackgroundColor) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - ⑥ 试说一句
 
     /// 试说出来的字落进**下面这个输入框**，不会进任何别的应用。
     ///

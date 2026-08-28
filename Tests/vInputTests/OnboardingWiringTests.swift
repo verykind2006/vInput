@@ -369,7 +369,9 @@ struct OnboardingWiringTests {
         onRedirect: @escaping (((String) -> Bool)?) -> Void = { _ in },
         forcedSource: DownloadSource? = nil,
         onProgress: @escaping (Double?) -> Void = { _ in },
-        onResolvedSource: @escaping (DownloadSource) -> Void = { _ in }
+        onResolvedSource: @escaping (DownloadSource) -> Void = { _ in },
+        currentInputLanguage: Language = .chinese,
+        onSelectInputLanguage: @escaping (Language) -> Void = { _ in }
     ) -> (OnboardingCoordinator, OnboardingState) {
         // 默认参数表达式在 nonisolated 上下文里求值，而 FakeDownloadBackend
         // 是 @MainActor 的——只能在这里造。
@@ -401,6 +403,8 @@ struct OnboardingWiringTests {
         wiring.forcedDownloadSource = { forcedSource }
         wiring.onDownloadProgress = onProgress
         wiring.recordResolvedSource = onResolvedSource
+        wiring.inputLanguage = { currentInputLanguage }
+        wiring.selectInputLanguage = onSelectInputLanguage
         return (OnboardingCoordinator(state: state, wiring: wiring), state)
     }
 
@@ -648,7 +652,8 @@ struct OnboardingWiringTests {
         #expect(state.step == .downloadModel)
         coordinator.importExistingModel()
         #expect(adopted == [folder.path])
-        #expect(state.step == .testDictation)
+        // 2026-08-28 起下载/导入完成后的下一步是「输入语言」，不再直达试说。
+        #expect(state.step == .inputLanguage)
         coordinator.close()
     }
 
@@ -762,6 +767,68 @@ struct OnboardingWiringTests {
     ///
     /// 忘了摘的后果最难查：此后每一次听写的文字都被送进一个已经关掉的窗口，
     /// 而日志里还写着「注入成功」。
+    // MARK: - ⑤ 输入语言（2026-08-28）
+
+    /// 选语言走的是 **AppModel 那条路**，不是直接写偏好。
+    ///
+    /// 直接写 `InputLanguagePreference` 的话，值是存下了，但校正的摘挂、
+    /// 翻译矩阵、以及转写器重建全都不会发生——用户在向导里选了英文，
+    /// 紧接着「试说一句」用的还是中文解码。`AppModel.selectInputLanguage`
+    /// 才是把这三件事串起来的地方。
+    @Test("向导选语言走 AppModel，不是直接写偏好")
+    func selectingLanguageGoesThroughAppModel() {
+        var selected: [Language] = []
+        let (coordinator, state) = makeCoordinator(
+            alreadyPresent: true,
+            onSelectInputLanguage: { selected.append($0) })
+
+        coordinator.present()
+        coordinator.advance()  // → downloadModel
+        coordinator.advance()  // → inputLanguage
+        #expect(state.step == .inputLanguage)
+
+        coordinator.selectInputLanguage(.english)
+        #expect(
+            selected == [.english],
+            "选了语言却没走 AppModel：值存下了，但转写器不会重建，试说一句仍按中文解码。")
+    }
+
+    /// 语言页开着的时候，选中项跟着当前偏好走。
+    ///
+    /// 写死中文的话，一个先在面板里改成英文、又回头走向导的人，
+    /// 会看到向导告诉他「你选的是中文」——而那是假的。
+    @Test("语言页反映当前偏好，不是写死中文")
+    func languageStepReflectsCurrentPreference() {
+        let (coordinator, _) = makeCoordinator(
+            alreadyPresent: true, currentInputLanguage: .spanish)
+
+        coordinator.present()
+        coordinator.advance()
+        coordinator.advance()
+        #expect(coordinator.selectedInputLanguage == .spanish)
+    }
+
+    /// 不选也能过：默认中文是发布以来的行为基线。
+    ///
+    /// 这一步不是关卡。语言有合理默认，读不到值就是中文——把它做成
+    /// 必选项，等于拦住每一个本来就说中文的人。
+    @Test("语言页不选也能翻页")
+    func languageStepIsNotAGate() {
+        var selected: [Language] = []
+        let (coordinator, state) = makeCoordinator(
+            alreadyPresent: true,
+            onSelectInputLanguage: { selected.append($0) })
+
+        coordinator.present()
+        coordinator.advance()
+        coordinator.advance()
+        #expect(state.step == .inputLanguage)
+
+        coordinator.advance()
+        #expect(state.step == .testDictation, "什么都没选就翻不了页，等于拦住所有说中文的人。")
+        #expect(selected.isEmpty, "用户没碰选择器，不该替他写一次偏好。")
+    }
+
     @Test("试说一句挂改道，关窗摘掉")
     func redirectIsAttachedOnTestStepAndDetachedOnClose() {
         var attached: [Bool] = []
@@ -771,6 +838,7 @@ struct OnboardingWiringTests {
 
         coordinator.present()
         coordinator.advance()  // → downloadModel
+        coordinator.advance()  // → inputLanguage
         coordinator.advance()  // → testDictation
         #expect(state.step == .testDictation)
         #expect(attached.last == true, "进「试说一句」没有挂上改道，说出来的话无处可去。")
@@ -795,8 +863,9 @@ struct OnboardingWiringTests {
             onRedirect: { handler = $0 })
 
         coordinator.present()
-        coordinator.advance()
-        coordinator.advance()
+        coordinator.advance()  // → downloadModel
+        coordinator.advance()  // → inputLanguage
+        coordinator.advance()  // → testDictation
         #expect(state.step == .testDictation)
         #expect(coordinator.canFinish == false, "一个字都没说就能点「完成」。")
 
@@ -1086,22 +1155,30 @@ struct OnboardingWiringTests {
 
     // MARK: - 「一共几步」
 
-    /// 全新用户走满 5 步；两项权限都已给的（重装、或早就手动开过）只走 3 步。
+    /// 全新用户走满 6 步；两项权限都已给的（重装、或早就手动开过）只走 4 步。
     ///
-    /// 写死「一共 5 步」的话，第一屏那句话对后一种人就是错的。
-    @Test("步数按实际要走的算，不是写死 5")
+    /// 写死步数的话，第一屏那句话对后一种人就是错的。
+    ///
+    /// 2026-08-28：「输入语言」插进下载与试说之间，三种情形各多一步。
+    /// **它在每一条路径里都出现**——语言没有「已满足」状态可跳。
+    @Test("步数按实际要走的算，不是写死")
     func plannedStepsFollowGrantedPermissions() {
         let fresh = OnboardingCoordinator.plannedSteps(microphone: false, accessibility: false)
-        #expect(fresh == [.welcome, .microphone, .accessibility, .downloadModel, .testDictation])
+        #expect(
+            fresh == [
+                .welcome, .microphone, .accessibility, .downloadModel, .inputLanguage,
+                .testDictation,
+            ])
 
         let granted = OnboardingCoordinator.plannedSteps(microphone: true, accessibility: true)
         #expect(
-            granted == [.welcome, .downloadModel, .testDictation],
-            "权限都已给的人也被告知要走 5 步：第一句话就不准。"
+            granted == [.welcome, .downloadModel, .inputLanguage, .testDictation],
+            "权限都已给的人也被告知要走满 6 步：第一句话就不准。"
         )
 
         let micOnly = OnboardingCoordinator.plannedSteps(microphone: true, accessibility: false)
-        #expect(micOnly == [.welcome, .accessibility, .downloadModel, .testDictation])
+        #expect(
+            micOnly == [.welcome, .accessibility, .downloadModel, .inputLanguage, .testDictation])
     }
 
     @Test("步骤指示按计划里的位置算")
@@ -1240,11 +1317,11 @@ struct OnboardingWiringTests {
         #expect(adopted == [folder.path])
         #expect(
             coordinator.downloadFailure == nil,
-            "用户已经导入完走到第五步了，第四步还被补了一句红字：\(coordinator.downloadFailure ?? "")")
+            "用户已经导入完翻过页了，下载那一步还被补了一句红字：\(coordinator.downloadFailure ?? "")")
         #expect(
             backend.calls.count == 1,
             "用户已经导入了模型，还在为他换源重下一次：\(backend.calls)")
-        #expect(state.step == .testDictation)
+        #expect(state.step == .inputLanguage)
         coordinator.close()
     }
 
