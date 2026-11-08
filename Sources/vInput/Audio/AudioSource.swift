@@ -28,6 +28,8 @@ enum AudioSourceError: Error, Equatable {
     case microphonePermissionDenied
     /// 底层音频引擎启动失败。
     case engineFailedToStart(String)
+    /// 这台机器当前没有可用的输入设备（例如没接麦克风的 Mac mini）。
+    case noInputDevice
 }
 
 /// 音频采集源。实现者负责把任意来源的音频统一成 16 kHz 单声道 Float32。

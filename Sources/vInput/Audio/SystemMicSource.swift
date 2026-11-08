@@ -13,6 +13,13 @@ final class SystemMicSource: AudioSource {
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var isRunning = false
+    private let inputDeviceAvailable: () -> Bool
+
+    /// - Parameter inputDeviceAvailable: 探测有没有输入设备。注入是为了单测，
+    ///   测试机有没有麦克风不该影响结果。
+    init(inputDeviceAvailable: @escaping () -> Bool = SystemInputDevice.isAvailable) {
+        self.inputDeviceAvailable = inputDeviceAvailable
+    }
 
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -24,12 +31,19 @@ final class SystemMicSource: AudioSource {
     func start() throws {
         guard !isRunning else { return }
 
+        // **必须排在 `installTap` 之前。** 没有输入设备时 `installTap` 抛的是
+        // ObjC 异常，下面的 `do/catch` 接不住：它穿过 async 帧被 AppKit 吞掉，
+        // 进程还活着、没有任何提示，下一个键盘事件才在 event tap 回调里
+        // SIGSEGV（2026-11-08，Mac mini 上 ⌥D 必崩）。
+        guard inputDeviceAvailable() else { throw AudioSourceError.noInputDevice }
+
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0 else {
-            // 无可用输入设备时 AVAudioEngine 会返回采样率 0 的格式。
-            throw AudioSourceError.unsupportedInputFormat(sampleRate: inputFormat.sampleRate)
-        }
+        // 第二道：探测之后、取格式之前设备被拔掉时，格式才是最后的依据。
+        try Self.validateInputFormat(
+            sampleRate: inputFormat.sampleRate,
+            channelCount: inputFormat.channelCount
+        )
         guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
             throw AudioSourceError.unsupportedInputFormat(sampleRate: inputFormat.sampleRate)
         }
@@ -55,6 +69,19 @@ final class SystemMicSource: AudioSource {
             throw AudioSourceError.engineFailedToStart(error.localizedDescription)
         }
         isRunning = true
+    }
+
+    /// 采样率或声道数为 0，都意味着没有可用的输入设备。
+    ///
+    /// 只看采样率是不够的：Mac mini 上旧的 `sampleRate > 0` 守卫没有拦住，
+    /// `installTap` 照样抛了异常。
+    nonisolated static func validateInputFormat(
+        sampleRate: Double,
+        channelCount: UInt32
+    ) throws {
+        guard sampleRate > 0, channelCount > 0 else {
+            throw AudioSourceError.noInputDevice
+        }
     }
 
     func stop() {

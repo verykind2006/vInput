@@ -2053,7 +2053,10 @@ final class AppModel {
                     log.log("开始录音，模型=\(activeModelName)")
                 } catch {
                     log.log("录音启动失败：\(error)")
-                    phase = .error(String(describing: error))
+                    let message = Self.startFailureMessage(for: error)
+                    phase = .error(message)
+                    // 面板收起时 phase 只改菜单栏图标，按了 ⌥D 等于没反应。
+                    showHUDNotice(message)
                 }
             }
         case .listening:
@@ -2112,6 +2115,14 @@ final class AppModel {
         case .ready:
             break
         }
+    }
+
+    /// 录音启动失败时给用户看的那句话。
+    nonisolated static func startFailureMessage(for error: Error) -> String {
+        if let error = error as? AudioSourceError, error == .noInputDevice {
+            return "没有可用的麦克风。请用遥控器说话，或接一个麦克风"
+        }
+        return String(describing: error)
     }
 
     /// 该错误是否需要展示给用户。
