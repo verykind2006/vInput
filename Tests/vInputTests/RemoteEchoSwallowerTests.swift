@@ -297,10 +297,13 @@ struct RemoteEchoSwallowerTapTests {
     private func makeSwallower(
         tap: FakeTap? = nil, counter: InstallCounter? = nil
     ) -> RemoteEchoSwallower {
-        RemoteEchoSwallower(installer: { _ in
-            counter?.count += 1
-            return tap
-        })
+        // 看门狗用手动环境，理由同 `RemoteKeySuppressorTests.makeSuppressor`。
+        RemoteEchoSwallower(
+            installer: { _ in
+                counter?.count += 1
+                return tap
+            },
+            stallEnvironment: .manual(now: { 0 }, systemLastKeyDown: { 0 }))
     }
 
     /// 守的是上面那个 `makeSwallower`。谁把它改回默认构造都不会有人发现，

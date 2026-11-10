@@ -42,7 +42,11 @@ struct RemoteKeySuppressorTests {
     /// 授权，而临时签名每次构建都变、TCC 授权随之重置。**「一直没出事」
     /// 只是因为大部分时候授权不在，那是运气不是设计。**
     private func makeSuppressor(tap: FakeTap? = nil) -> RemoteKeySuppressor {
-        RemoteKeySuppressor(installer: { _ in tap })
+        // 看门狗也用手动环境：`.system` 会装真计时器、读真实的系统按键，
+        // 跑测试时用户一打字，假 tap 没见到按键就会被「判卡死」拆掉。
+        RemoteKeySuppressor(
+            installer: { _ in tap },
+            stallEnvironment: .manual(now: { 0 }, systemLastKeyDown: { 0 }))
     }
 
     /// 上面那条保护本身的守卫。

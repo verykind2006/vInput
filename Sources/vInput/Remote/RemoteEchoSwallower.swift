@@ -233,8 +233,19 @@ final class RemoteEchoSwallower {
 
     private let installer: TapInstaller
 
-    init(installer: @escaping TapInstaller = RemoteEchoSwallower.systemInstaller) {
+    /// 卡死看门狗。**这个 tap 是常开的、看得见每一次按键**，它卡死就是
+    /// 全系统键盘失灵——2026-11-10 的事故。理由见 `TapStallGuard`。
+    private(set) lazy var stallGuard = TapStallGuard(environment: stallEnvironment) { [weak self] in
+        self?.recoverFromStall()
+    }
+    private let stallEnvironment: TapStallGuard.Environment
+
+    init(
+        installer: @escaping TapInstaller = RemoteEchoSwallower.systemInstaller,
+        stallEnvironment: TapStallGuard.Environment = .system
+    ) {
         self.installer = installer
+        self.stallEnvironment = stallEnvironment
     }
 
     /// **tap 绝不能活得比宿主久。** 回调持的是 `passUnretained` 裸指针，
@@ -246,8 +257,11 @@ final class RemoteEchoSwallower {
 
     func start() {
         guard tapHandle == nil else { return }
+        // 预算用完就不再装，**键盘优先**；`stop()` 才清账。
+        guard !stallGuard.gaveUp else { return }
         guard let tap = installer(self) else { return }
         tapHandle = tap
+        stallGuard.tapInstalled()
         AppLogger.shared.log("遥控器回声吞键器已启动")
     }
 
@@ -255,6 +269,25 @@ final class RemoteEchoSwallower {
         tapHandle?.invalidate()
         tapHandle = nil
         state = State()
+        stallGuard.reset()
+    }
+
+    /// 看门狗判定 tap 卡死：先拆（键盘立刻回来），再看预算重不重建。
+    /// 同 `RemoteKeySuppressor.recoverFromStall`。
+    func recoverFromStall() {
+        tapHandle?.invalidate()
+        tapHandle = nil
+        state = State()
+        stallGuard.tapRemoved()
+        if stallGuard.recordRecovery() {
+            AppLogger.shared.log(
+                "遥控器回声吞键器卡死：系统收到了按键，回调超过 \(TapStallGuard.grace) 秒没看到，已拆掉重建")
+            start()
+        } else {
+            AppLogger.shared.log(
+                "遥控器回声吞键器卡死：\(Int(TapStallGuard.recoveryWindow)) 秒内已重建 "
+                    + "\(TapStallGuard.maxRecoveries) 次，不再重建；「·」键与菜单键会多出一次原始按键")
+        }
     }
 
     /// 系统级 tap 现在装着没有。存在的唯一理由是让「测试不装真 tap」可测。
@@ -335,8 +368,13 @@ final class RemoteEchoSwallower {
         // **这一条不能省**：被禁用后不重开，用户就会开始看到「·」漏出来。
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             tapHandle?.setEnabled(true)
+            AppLogger.shared.log(
+                "遥控器回声吞键器被系统停用（\(type == .tapDisabledByTimeout ? "回调超时" : "用户输入")），已重新启用")
             return Unmanaged.passUnretained(event)
         }
+
+        // 看门狗的对账依据。只记时间，不记键码（理由见类注释：不做键盘记录器）。
+        if type == .keyDown { stallGuard.sawKeyDown() }
 
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let decision = consume(keyCode: keyCode, isKeyDown: type == .keyDown)

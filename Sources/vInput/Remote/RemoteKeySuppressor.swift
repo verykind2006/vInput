@@ -170,8 +170,19 @@ final class RemoteKeySuppressor {
 
     private let installer: TapInstaller
 
-    init(installer: @escaping TapInstaller = RemoteKeySuppressor.systemInstaller) {
+    /// 卡死看门狗。理由见 `TapStallGuard`（2026-11-10 全系统键盘失灵事故）。
+    /// `lazy`：它的 `onStall` 要回调 `self`。
+    private(set) lazy var stallGuard = TapStallGuard(environment: stallEnvironment) { [weak self] in
+        self?.recoverFromStall()
+    }
+    private let stallEnvironment: TapStallGuard.Environment
+
+    init(
+        installer: @escaping TapInstaller = RemoteKeySuppressor.systemInstaller,
+        stallEnvironment: TapStallGuard.Environment = .system
+    ) {
         self.installer = installer
+        self.stallEnvironment = stallEnvironment
     }
 
     /// **tap 绝不能活得比宿主久。**
@@ -189,9 +200,32 @@ final class RemoteKeySuppressor {
 
     func start() {
         guard tapHandle == nil else { return }
+        // 看门狗判过几次卡死、预算用完之后不再装：**键盘优先**。
+        // 只有 `stop()`（遥控器整个停掉）才清账。
+        guard !stallGuard.gaveUp else { return }
         guard let tap = installer(self) else { return }
         tapHandle = tap
+        stallGuard.tapInstalled()
         AppLogger.shared.log("按键抑制器已启动")
+    }
+
+    /// 看门狗判定 tap 卡死：**先拆掉，键盘立刻回来**，再看预算决定重不重建。
+    ///
+    /// 拆这一步不看预算——卡死的拦截型 tap 留在系统里，用户整台机器就打不了字。
+    func recoverFromStall() {
+        tapHandle?.invalidate()
+        tapHandle = nil
+        stallGuard.tapRemoved()
+        if stallGuard.recordRecovery() {
+            AppLogger.shared.log(
+                "按键抑制器卡死：系统收到了按键，回调超过 \(TapStallGuard.grace) 秒没看到，已拆掉重建"
+                    + "（会话中=\(isActive)）")
+            start()
+        } else {
+            AppLogger.shared.log(
+                "按键抑制器卡死：\(Int(TapStallGuard.recoveryWindow)) 秒内已重建 "
+                    + "\(TapStallGuard.maxRecoveries) 次，不再重建；遥控器录音期间可能出现杂键")
+        }
     }
 
     /// 真的去系统里装一个 tap。失败返回 nil。
@@ -241,6 +275,7 @@ final class RemoteKeySuppressor {
         tapHandle?.invalidate()
         tapHandle = nil
         isActive = false
+        stallGuard.reset()
     }
 
     /// 语音会话开始，开始吞键。
@@ -300,8 +335,15 @@ final class RemoteKeySuppressor {
         // 系统可能因超时或用户输入过快禁用 tap，重新启用。
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             tapHandle?.setEnabled(true)
+            // 2026-11-10 事故前这里是静默的，事后查不出 tap 有没有被系统停过。
+            AppLogger.shared.log(
+                "按键抑制器被系统停用（\(type == .tapDisabledByTimeout ? "回调超时" : "用户输入")），已重新启用")
             return Unmanaged.passUnretained(event)
         }
+
+        // 看门狗的对账依据。**在 `isActive` 之前**：平时也要对，
+        // 2026-11-10 那次正是在不在会话里的时候把键盘吞了。
+        if type == .keyDown { stallGuard.sawKeyDown() }
 
         guard isActive else { return Unmanaged.passUnretained(event) }
 
