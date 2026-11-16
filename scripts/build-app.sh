@@ -98,6 +98,15 @@ print "tokenizer 已随包分发"
 # 固定身份的指纹不变，授权一次即可长期有效。创建方法见 docs/dev-signing.md。
 # 没有该身份时退回 ad-hoc，保证脚本在任何机器上都能跑通。
 SIGN_ID="vInput Dev"
+
+# 签名前清掉全部扩展属性。上面每一步都用了 ditto --noextattr，但仓库在
+# OneDrive 里，文件写进 dist/ 之后 File Provider 会自己给它们补上
+# com.apple.FinderInfo（值全是 FF）等属性——2026-11-16 实测四个文件被补，
+# 都是从 .xcbuild 拷来的资源 bundle 里的。codesign 见到 FinderInfo 就拒签：
+#     resource fork, Finder information, or similar detritus not allowed
+# 这一步不能挪到前面去：属性是写完之后才被补上的，必须紧贴着签名做。
+xattr -cr "$APP_DIR"
+
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
   codesign --force --deep --sign "$SIGN_ID" --timestamp=none "$APP_DIR"
   print "已用固定身份签名: $SIGN_ID"
@@ -105,5 +114,12 @@ else
   codesign --force --deep --sign - --timestamp=none "$APP_DIR"
   print "已 ad-hoc 签名（每次构建都会重置系统授权，见 docs/dev-signing.md）"
 fi
+
+# 签完立刻严格校验一遍：签名坏了要在这里响，而不是等用户打开时被 Gatekeeper 拦。
+if ! codesign --verify --deep --strict "$APP_DIR"; then
+  print -u2 "签名校验失败: $APP_DIR"
+  exit 1
+fi
+print "签名校验通过"
 
 print "已构建: $APP_DIR"
